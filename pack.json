@@ -1,0 +1,197 @@
+{
+  "id": "agent2api-providers",
+  "name": "Agent2API 官方提供商",
+  "version": "0.1.0",
+  "protocol": 1,
+  "providers": [
+    {
+      "id": "demo",
+      "label": "示例提供商",
+      "order": 0,
+      "default_enabled": false
+    },
+    {
+      "id": "commandcode",
+      "label": "Command Code",
+      "order": 1,
+      "default_enabled": true
+    },
+    {
+      "id": "modelscope",
+      "label": "ModelScope 国内版",
+      "order": 2,
+      "default_enabled": true
+    },
+    {
+      "id": "modelscope-intl",
+      "label": "ModelScope 国际版",
+      "order": 3,
+      "default_enabled": true
+    },
+    {
+      "id": "orcaterm",
+      "label": "OrcaTerm",
+      "order": 4,
+      "default_enabled": true
+    },
+    {
+      "id": "loomy",
+      "label": "Loomy",
+      "order": 5,
+      "default_enabled": true
+    },
+    {
+      "id": "lobsterai",
+      "label": "LobsterAI",
+      "order": 6,
+      "default_enabled": true
+    },
+    {
+      "id": "raccoon",
+      "label": "小浣熊",
+      "order": 7,
+      "default_enabled": true
+    },
+    {
+      "id": "atomcode",
+      "label": "AtomCode",
+      "order": 8,
+      "default_enabled": true
+    },
+    {
+      "id": "chatglm",
+      "label": "智谱清言",
+      "order": 9,
+      "default_enabled": true
+    },
+    {
+      "id": "autoclaw",
+      "label": "AutoClaw 国内版",
+      "order": 10,
+      "default_enabled": true
+    },
+    {
+      "id": "autoclaw-intl",
+      "label": "AutoClaw 国际版",
+      "order": 11,
+      "default_enabled": true
+    },
+    {
+      "id": "officeace",
+      "label": "OfficeAce 果办",
+      "order": 12,
+      "default_enabled": true
+    },
+    {
+      "id": "zcode",
+      "label": "ZCode 国内版",
+      "order": 13,
+      "default_enabled": true
+    },
+    {
+      "id": "zcode-intl",
+      "label": "ZCode 国际版",
+      "order": 14,
+      "default_enabled": true
+    },
+    {
+      "id": "workbuddy",
+      "label": "WorkBuddy 国内版",
+      "order": 15,
+      "default_enabled": true
+    },
+    {
+      "id": "workbuddy-intl",
+      "label": "WorkBuddy 国际版",
+      "order": 16,
+      "default_enabled": true
+    },
+    {
+      "id": "cline-free",
+      "label": "Cline 免费池",
+      "order": 17,
+      "default_enabled": true
+    },
+    {
+      "id": "cline-pass",
+      "label": "Cline 订阅池",
+      "order": 18,
+      "default_enabled": true
+    },
+    {
+      "id": "kuku",
+      "label": "KukuAI 库库",
+      "order": 19,
+      "default_enabled": true
+    },
+    {
+      "id": "monkeycode",
+      "label": "MonkeyCode 国内版",
+      "order": 20,
+      "default_enabled": true
+    },
+    {
+      "id": "monkeycode-intl",
+      "label": "MonkeyCode 国际版",
+      "order": 21,
+      "default_enabled": true
+    },
+    {
+      "id": "qoder",
+      "label": "Qoder 中国版",
+      "order": 22,
+      "default_enabled": true
+    },
+    {
+      "id": "qoder-intl",
+      "label": "Qoder 国际版",
+      "order": 23,
+      "default_enabled": true
+    },
+    {
+      "id": "trae",
+      "label": "Trae",
+      "order": 24,
+      "default_enabled": true
+    },
+    {
+      "id": "catpaw",
+      "label": "CatPaw",
+      "order": 25,
+      "default_enabled": true
+    },
+    {
+      "id": "accio",
+      "label": "Accio 国际版",
+      "order": 26,
+      "default_enabled": true
+    },
+    {
+      "id": "accio-cn",
+      "label": "Accio 国内版",
+      "order": 27,
+      "default_enabled": true
+    },
+    {
+      "id": "codearts",
+      "label": "CodeArts",
+      "order": 28,
+      "default_enabled": true
+    },
+    {
+      "id": "antigravity",
+      "label": "Antigravity",
+      "order": 29,
+      "default_enabled": true
+    }
+  ],
+  "icons": "assets",
+  "entry": {
+    "x86_64-pc-windows-msvc": "bin/agent2api-providers.exe",
+    "x86_64-unknown-linux-gnu": "bin/agent2api-providers",
+    "aarch64-unknown-linux-gnu": "bin/agent2api-providers",
+    "x86_64-apple-darwin": "bin/agent2api-providers",
+    "aarch64-apple-darwin": "bin/agent2api-providers"
+  },
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

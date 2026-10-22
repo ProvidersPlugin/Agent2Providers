@@ -1,0 +1,110 @@
+[package]
+name = "agent2api-providers"
+description = "Agent2API 官方提供商插件包：21 家内置提供商实现"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "agent2api-providers"
+path = "src/main.rs"
+
+# ── feature 设计 ────────────────────────────────────────────
+# `all` 打一个包含全部提供商的包（默认发布形态）。
+# 单家 feature 留给将来「按需出小包」用 —— 现在都还没实现，所以它们
+# 只控制「编不编进二进制」，不改变任何行为。
+[features]
+default = ["all"]
+all = ["demo", "commandcode", "modelscope", "orcaterm", "loomy", "lobsterai", "raccoon", "atomcode", "chatglm", "autoclaw", "officeace", "zcode", "workbuddy", "cline", "kuku", "monkeycode", "qoder", "trae", "catpaw", "accio", "codearts", "antigravity"]
+demo = []
+commandcode = []
+modelscope = []
+orcaterm = []
+loomy = []
+lobsterai = []
+raccoon = []
+atomcode = []
+chatglm = []
+autoclaw = []
+officeace = []
+zcode = []
+workbuddy = []
+cline = []
+kuku = []
+monkeycode = []
+qoder = []
+trae = []
+catpaw = []
+accio = []
+codearts = []
+antigravity = []
+
+[dependencies]
+# 同仓库内的两个契约 crate（工作区成员）。网关侧按 git tag 引用它们的
+# 发布版本，插件这边直接走相对路径 —— 改协议时本地立刻生效。
+agent2api-provider-protocol = { path = "../provider-protocol" }
+agent2api-provider-sdk = { path = "../provider-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+# 各家的 HTTP 出网（与网关同一条栈：rustls，不依赖系统 openssl）
+# `system-proxy`：Antigravity 是仓内唯一「账号没配代理时跟随系统代理」的家
+# （上游是 Google，多数网络里只有经代理才可达，见 `antigravity/mod.rs` 的
+# 模块头）。这个特性打开 hyper-util 的系统代理匹配器：`reqwest::Client` 在
+# 不显式 `.no_proxy()` 时会自己读系统设置 —— 与网关 `egress` 同一口径。
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks", "system-proxy"] }
+futures = "0.3"
+# MonkeyCode 的任务流是 WebSocket（建任务 → WS 任务流 → ACP 事件）；
+# 与网关同一条栈（rustls，不依赖系统 openssl）
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+# 帧在插件内部以字节块流转（MonkeyCode 的翻译器产出 Bytes）
+bytes = "1"
+# Command Code 的设备指纹派生（sha256）与会话 id 派生（sha1）
+sha1 = "0.10"
+sha2 = "0.10"
+# base64：JWT payload 解码、文件导入
+base64 = "0.22"
+# Loomy 的 CAccount 请求签名（HMAC-SHA1 + base64(md5(body))）
+hmac = "0.12"
+md-5 = "0.10"
+# Command Code 的 `config.date` 要当天 UTC 日期
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# 指纹里的随机抖动与 traceparent（与网关同一条随机源）
+getrandom = "0.2"
+# 小浣熊网页登录的授权地址拼接与回调解析（`office-raccoon://` 自定义协议，
+# 手拼 query 会漏编码中文 appname）
+url = "2"
+# 桌面端 Electron safeStorage 的 AES-256-GCM 解密（chatglm / autoclaw 共用，
+# 见 `src/crypto.rs`）。与网关同一条栈：Postfix tag 拼法是 aes-gcm 的默认语义。
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+
+# Qoder 的 COSY 签名要 AES-128 单块加密 + 大整数取模（见 `qoder/cosy.rs`）
+aes = "0.9"
+num-bigint = "0.4"
+# Qoder 的风控身份组件是 tar.gz 分发包（见 `qoder/risk.rs`）
+flate2 = "1"
+# CatPaw 的入站图片压缩（>60KB 时最长边 1568 / JPEG 质量 80→55，见
+# `catpaw/image_compress.rs`）。与网关同一条栈与同一组特性。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Trae 登录的设备密钥对是 EC P-256（SPKI / PKCS#8 PEM，见 `trae/device.rs`）
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+# Cookies SQLite（kuku 的「文件导入」读用户手选的 Cookies 数据库）。
+# `bundled` 与网关同一条栈：不依赖用户机器上的 sqlite3.dll。
+#
+# ⚠ 这是**全平台**依赖，不能放进下面的 `cfg(windows)` 段：kuku 的文件导入
+# （`read_credentials_from_path`）在三个平台上都走这条路，只在 Windows 声明
+# 会让 Linux / macOS 编译直接报「找不到 rusqlite」—— 而 CI 矩阵正是三平台
+# 各编一次，第一次跑就会撞上。
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+# DPAPI（`CryptUnprotectData`）只有 Windows 有；非 Windows 编译到一份返回
+# 中文错误的桩（见 `crypto.rs` 的 `dpapi` 子模块）。
+[target.'cfg(windows)'.dependencies]
+# 用 `windows` 而不是 `windows-sys`：这里要的是「一次调用 + 结构化错误 +
+# 释放 DPAPI 分配的内存」，windows crate 把 BOOL 包成 Result、把输出 blob
+# 包成带 Drop 的 HLOCAL。只开一个叶子 feature。
+windows = { version = "0.61", features = ["Win32_Security_Cryptography"] }
+

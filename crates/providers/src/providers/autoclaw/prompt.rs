@@ -1,0 +1,378 @@
+//! AutoClaw 出站 system 提示规范化：把客户端自己的 system 提示**包进**上游要求的
+//! OpenClaw 身份前缀里（本次新增，起因是上游 2026-09-22 起加的闸门）。
+//!
+//! ── 上游加了什么（逐条实测，国内版免费账号，2026-09-22）───────
+//! `POST .../autoclaw-proxy/proxy/autoclaw/chat/completions` 对**系统提示词**
+//! 做了检查。同一账号、同一请求，只改 system 一项的实测结论：
+//!
+//! ```text
+//!   system 内容                                          结果
+//!   ───────────────────────────────────────────────────  ──────────────────
+//!   身份句 + `## Tooling` 段                             200
+//!   上面那段 + 客户端自己的提示词（任意内容接在后面）     200
+//!   只有身份句、没有 `## Tooling` 段                      403 pay-view
+//!   中性句（You are a helpful assistant.）                406（空响应体）
+//!   完全没有 system 消息                                  406（空响应体）
+//!   身份句 + "You are ZCode…"                            406
+//!   身份句 + "You are Claude Code…"                      406
+//! ```
+//!
+//! 即：**必须**以身份句开头且带 `## Tooling` 段，同时**不能**出现外来 harness
+//! 的身份句。黑名单是**字面**判定（`You are <产品名>` 形态）：把主语换掉的
+//! "ZCode is an interactive coding agent." 实测放行，所以改写产品名后不再命中。
+//!
+//! 身份句与 `## Tooling` 段的原文取自客户端自带的运行时
+//! （`resources/gateway/openclaw/dist/system-prompt-config-*.js` 里
+//! `buildSystemPrompt` 的开头两行）—— 照抄它的好处是出站形态与官方客户端一致，
+//! 而不是我们自己编一句「看起来像」的话。
+//!
+//! ── 国际版实测（2026-09-24，issue #10）──────────────────────
+//! 同一道闸门在**国际版**（provider id `autoclaw-intl`）上被独立复现，形态与
+//! 国内版一致 —— 同一账号、同一模型、只改 system 一句即 200 / 406 两分
+//! （下表都经网关出站，前缀由本模块补）：
+//!
+//! ```text
+//!   system 内容                                                结果
+//!   ────────────────────────────────────────────────────────  ──────────────────
+//!   You are a helpful assistant.                               200
+//!   You are an AI agent powered by DeepSeek Harness.           406（空响应体）
+//!   同上，把 DeepSeek 里的 e 写成 E（大小写变体）               406
+//!   You are Codex, based on GPT-5. You are running as a
+//!     coding agent.                                            406
+//!   上面那句放进 **user** 消息、system 用中性句                200
+//!   You are ZCode, an interactive coding agent                 200（本表已改写）
+//! ```
+//!
+//! 三条结论，每一条都对应本表的一处设计：
+//!   1. 闸门**只看 system / developer 消息** —— 同一句放进 user 消息不触发，
+//!      所以改写只做在 system 上（见「边界」）；
+//!   2. 黑名单是**字面匹配**，不是语义审核 —— 所以改写产品名后不再命中；
+//!   3. 匹配**大小写不敏感** —— 所以本表的替换也必须忽略大小写，否则同一句
+//!      指纹换个大小写就漏网（原先是大小写敏感的 `str::replace`）。
+//!
+//! 客户端侧的表现形态与之吻合：首笔 system 轻量（DeepSeek Harness 的 Minimal
+//! 模式整句就是 `You are a helpful software engineer assistant.`）的请求 200，
+//! 第二笔带上完整 agent 提示词后必 406；走 `/v1/responses` 的 Codex CLI 第一笔
+//! 就带身份句（`instructions` → 首条 system，见 `core::protocol::responses`），
+//! 因此第一笔即 406。
+//!
+//! ── 本模块做什么（两条纯文本变换）──────────────────────────
+//!   1. **前置** [`IDENTITY_PREFIX`]：首条 system / developer 消息的正文前面插入
+//!      它，客户端自己的提示词**逐字保留在后面**。刻意不替换客户端提示词（用户
+//!      明确要求保留）：上游只要求「以身份句开头」，前缀之后接什么它不管；
+//!   2. **改写**外来身份句（[`FOREIGN_IDENTITIES`]）：产品名换成中性说法，语义
+//!      不变、字面匹配被破坏 —— 与 `core::sanitize` 同一手法，但**规则独立**：
+//!      那边对付的是 workbuddy 上游的内容审核指纹（插一个词就够），这条闸门更严
+//!      （连 sanitize 改写后的 "You are Claude Code, …" 都拦），所以本表是
+//!      **把产品名整个去掉**，不是插词；匹配**忽略大小写**（闸门自己就不敏感）。
+//!
+//! ── 边界（刻意不做的事，别顺手补）──────────────────────────
+//!   - **不动 user / assistant / tool 消息**：闸门只看系统提示词，改写用户内容
+//!     属于破坏数据；
+//!   - **不替换、也不追加** system 消息：前缀直接拼在原有 system 正文之前。
+//!     追加第二条 system 是另一条路（`core::prompt` 的 `append` 模式在做全局
+//!     提示词），本模块不掺和；
+//!   - **不碰 `tools` / `stream` / 其它字段**：tools 不是这条闸门的判据
+//!     （实测不带 tools 的 OpenClaw prompt 同样 200）；
+//!   - **不管 406 之后的动作**：分类与重试在 `adapter::classify_error`（406 空
+//!     响应体在那里补可执行提示）与 `upstream::provider_loop`；本模块只负责
+//!     「发出去的 body 里没有未覆盖的身份句」这一件事。
+//!
+//! ── 幂等性（重要）──────────────────────────────────────────
+//! 正文已经以身份句开头时**只改写、不再前置**：官方客户端的请求本身就带 OpenClaw
+//! 提示词，重复前缀会把提示词写两遍（降级 / 同家重试路径上必然发生）。判据只有
+//! `starts_with(IDENTITY_LINE)` 一条。
+//!
+//! ── 与网关提示词层（`core::prompt`）的关系 ─────────────────
+//! 那一层是**网关自有**提示词（透传 / 替换 / 追加，全局配置），跑在
+//! `upstream::payload::send_body` 里，**先于**本模块；本模块是**这一家**的出站
+//! 整形，与 `model` 改写同处（`adapter::build_chat_request`）。因此在 `custom`
+//! 模式下出站形态是「网关提示词 → 再包上 OpenClaw 身份前缀」，两层叠加、互不替代。
+//!
+//! ── 硬约束 ─────────────────────────────────────────────────
+//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。形态怪异（`content`
+//! 是数组 / null / 消息不是对象）时一律「尽力产出能发出去的 body」，绝不失败 ——
+//! 与 `core::prompt` 的 `rewrite` / `append` 同一条纪律。
+
+use serde_json::{json, Value};
+
+/// 上游闸门要求「以它开头」的身份句（`IDENTITY_PREFIX` 的第一行，单独导出给
+/// 幂等判定与日志文案用）。
+pub const IDENTITY_LINE: &str = "You are a personal assistant running inside OpenClaw.";
+
+/// 出站身份前缀：身份句 + `## Tooling` 段（官方 prompt 的开头两行，逐字照抄）。
+///
+/// 末尾带一个 `\n`，[`join_prefix`] 再补一个空行 —— 于是客户端正文另起一段，
+/// 与官方 prompt 的段落风格一致。
+const IDENTITY_PREFIX: &str = "You are a personal assistant running inside OpenClaw.\n\n\
+## Tooling\n\
+Available tools are policy-filtered. Names are case-sensitive; call exactly as listed.\n";
+
+/// 外来身份句 → 中性说法（**长的在前**）。
+///
+/// 顺序与 `sanitize.rs` 的规则表同一条纪律：短的在前会把长匹配串切碎，于是
+/// 「改写后仍含产品名」这种半吊子结果会被漏掉（例如先命中 `You are ZCode` 就
+/// 再也匹配不到 `You are ZCode, an interactive coding agent`）。
+///
+/// 每条的替换串都**不含产品名**：闸门拦的是产品名本身，插一个词（sanitize 的
+/// 手法）在这里不够用。
+///
+/// 匹配**忽略 ASCII 大小写**（[`replace_all_ignore_ascii_case`]）：闸门自己就是
+/// 大小写不敏感的（国际版实测：把 `DeepSeek` 里的 e 写成 E 仍 406），替换若
+/// 大小写敏感，同一句指纹换个大小写就漏网。
+///
+/// 实测口径（别把没测过的写成测过的）：
+///   - **国内版**：ZCode / Claude Code / 老 Codex CLI 三句实测过「改写后 200」；
+///   - **国际版**：`DeepSeek Harness` 与新版 Codex 首句（`You are Codex, based on
+///     GPT-5…`）实测过「原样出站 406」，**改写后的结果尚未实测**（issue #10 的
+///     报告只验到拦截侧）；Codex 第二句（`You are running as a coding agent in the
+///     Codex CLI…`）按老句同形推断会被拦，同样待实测。
+const FOREIGN_IDENTITIES: &[(&str, &str)] = &[
+    (
+        "You are ZCode, an interactive coding agent",
+        "You are an interactive coding agent",
+    ),
+    (
+        "You are a coding agent running in the Codex CLI tool",
+        "You are a coding agent running in a terminal CLI tool",
+    ),
+    (
+        "You are a coding agent running in the Codex CLI",
+        "You are a coding agent running in a terminal CLI",
+    ),
+    (
+        "You are running as a coding agent in the Codex CLI",
+        "You are running as a coding agent in a terminal CLI",
+    ),
+    // Claude Code 的整句是 "You are Claude Code, Anthropic's official CLI tool for
+    // Claude."；只改到「You are Claude Code」为止，后面的产品说明原样保留。
+    ("You are Claude Code", "You are a coding assistant"),
+    ("You are ZCode", "You are an interactive coding agent"),
+    // 国际版追加（issue #10）：句式照旧，只把产品名换成中性说法。
+    (
+        "You are an AI agent powered by DeepSeek Harness",
+        "You are an AI agent powered by a local coding harness",
+    ),
+    // 放最后：它最短、最通用（新版 Codex 的首句就是它），必须让上面那些更长的
+    // Codex CLI 句式先有机会命中（长在前是本表的固定纪律）。
+    ("You are Codex", "You are a coding agent"),
+];
+
+/// 客户端可见的 **406 拒收提示**：附在 `上游返回 406: 上游错误` 之后（与
+/// `content_block::CONTENT_BLOCK_HINT` 同一取向 —— 上游连错误体都不给，只回
+/// 一句原文的话，用户既不知道是网关的问题还是自己的问题，也不知道下一步
+/// 改什么）。
+///
+/// 406 是上游预校验拒收的**统一形态**，实测过三个**独立**方向（别把它们写成
+/// 一个原因 —— #58 / #69 的报告人就因为旧文案只提提示词、在提示词上绕了远路；
+/// #115 的作者也专门对比过 406 与 403 的响应形状差异）：
+///   1. **`max_tokens` 取值**（#69 评论区两份独立实测）：30 ~ 8192 的小正整数
+///      一律 406 空响应体，不传或 ≥ 10000 则 200 —— 网关已在出站前把小正整数
+///      归一到 10000（`adapter::normalize_max_tokens`），正常客户端无需处理；
+///      仍在文案里保留这个方向，是因为它最难自查（空响应体、报错快）；
+///   2. **system 首句指纹**（issue #10）：外来 harness 身份句按逐字匹配拦截，
+///      切「替换」模式后不再命中（system 换成网关提示词，外来身份句随之消失）；
+///      把漏网的身份句反馈回来，让 [`FOREIGN_IDENTITIES`] 覆盖到它；
+///   3. **请求形态风控**（#58 的指纹怀疑方向，暂无实测结论）：同一 token 直连
+///      能进业务逻辑、换网关形态被静默拒 —— 目前无解，只能反馈现象。
+///
+/// 方向 ① 里说明「网关已归一」是对旧纪律（「措辞只描述用户能做的事，不描述
+/// 网关做了什么」）的一处有意突破：不写明这一句，用户看到 406 仍会先去改
+/// `max_tokens` 白绕一圈 —— 告知「网关已替你做掉」本身就是用户需要做的事。
+/// 其余纪律不变：网关内部过程在请求日志的重试链里，那里是逐请求事实。
+pub const UPSTREAM_406_HINT: &str = "；上游拒收（406）且未给出原因，实测过的方向：\
+① 请求体 max_tokens 取小值（如 1024 / 2048 / 4096）会被上游预校验拦截 —— 网关已把小值归一到 10000，若仍复现请把客户端请求体发到项目 issue；\
+② system 首句命中逐字指纹拦截 —— 可在设置页「通用 → 系统提示词」切到「替换」模式绕过，或把漏网的 system 首句发到项目 issue 以便补进指纹表；\
+③ 请求形态被上游风控拦截（①②都排除时）—— 请把现象发到项目 issue";
+
+/// 出站前规范化 body 里的系统提示词（**就地修改**）。
+///
+/// 两步：① 所有 system / developer 消息里的外来身份句改写；② 保证首条消息是
+/// system / developer 且正文以身份句开头（是则前置前缀，否则在 `messages[0]`
+/// 插一条带前缀的 system 消息）。
+///
+/// `messages` 缺失或不是数组时**直接返回**：那不是本模块能修的形态，交给上游报
+/// 格式错误比在这里造一个空 `messages` 更能说明问题（与 `adapter` 对非对象 body
+/// 的处置同一取向）。
+pub fn normalize(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages.iter_mut() {
+        if !is_system_role(message) {
+            continue;
+        }
+        if let Some(content) = message.get_mut("content") {
+            rewrite_identities_in_place(content);
+        }
+    }
+    // 首条就是 system / developer：前缀拼进它自己的正文（客户端提示词保留在后）。
+    if messages.first().map(is_system_role).unwrap_or(false) {
+        if let Some(first) = messages.first_mut() {
+            prepend_prefix(first);
+        }
+        return;
+    }
+    // 首条不是：补一条只带前缀的 system 消息。**不改**后面那些 system 消息的
+    // 位置 —— 重排消息序列的风险（破坏客户端的轮次结构）远大于收益。
+    messages.insert(
+        0,
+        json!({ "role": "system", "content": IDENTITY_PREFIX }),
+    );
+}
+
+/// 给一条消息的 `content` 前置身份前缀（已经以身份句开头则不动）。
+///
+/// `content` 的三种形态：
+///   - 字符串：直接拼；
+///   - 数组（多 part）：拼进**第一个文本 part**；一个文本 part 都没有时在数组
+///     头部插一个 —— 上游闸门看的是文本，插一个 part 比替换整个数组安全；
+///   - 其它（null / 对象 / 数字）：换成前缀本身。这种 content 当 system 提示词
+///     本来就不成立（上游会当空提示词处理，稳定 406），换掉比原样发出去好。
+fn prepend_prefix(message: &mut Value) {
+    let Some(content) = message.get_mut("content") else {
+        // 连 content 字段都没有：补上（`role` 已经是 system 了，补 content 不会
+        // 改变这条消息的语义，只是让闸门能过）
+        if let Some(object) = message.as_object_mut() {
+            object.insert(
+                "content".to_string(),
+                Value::String(IDENTITY_PREFIX.to_string()),
+            );
+        }
+        return;
+    };
+    match content {
+        Value::String(text) => {
+            if !text.starts_with(IDENTITY_LINE) {
+                let next = join_prefix(text);
+                *text = next;
+            }
+        }
+        Value::Array(parts) => {
+            let index = parts
+                .iter()
+                .position(|part| part.get("text").and_then(Value::as_str).is_some());
+            match index {
+                Some(index) => {
+                    let already = parts
+                        .get(index)
+                        .and_then(|part| part.get("text"))
+                        .and_then(Value::as_str)
+                        .map(|text| text.starts_with(IDENTITY_LINE))
+                        .unwrap_or(false);
+                    if already {
+                        return;
+                    }
+                    // `index` 是上面按 `as_str().is_some()` 选出来的，所以这里的
+                    // `get_mut` 必然是字符串 —— `if let` 不是「可能静默跳过」的
+                    // 分支，而是没有 `as_str_mut` 可用时的取值写法。
+                    if let Some(Value::String(text)) = parts
+                        .get_mut(index)
+                        .and_then(|part| part.get_mut("text"))
+                    {
+                        let next = join_prefix(text);
+                        *text = next;
+                    }
+                }
+                None => parts.insert(
+                    0,
+                    json!({ "type": "text", "text": IDENTITY_PREFIX }),
+                ),
+            }
+        }
+        other => {
+            *other = Value::String(IDENTITY_PREFIX.to_string());
+        }
+    }
+}
+
+/// 前缀 + 一个空行 + 原文（原文为空时不留多余空行）。
+fn join_prefix(original: &str) -> String {
+    if original.is_empty() {
+        return IDENTITY_PREFIX.to_string();
+    }
+    let mut out = String::with_capacity(IDENTITY_PREFIX.len() + original.len() + 1);
+    out.push_str(IDENTITY_PREFIX);
+    out.push('\n');
+    out.push_str(original);
+    out
+}
+
+/// 就地改写 content（字符串 / 文本 part 数组）里的外来身份句。
+///
+/// 只处理这两种承载文本的形态：`content` 是别的东西（null / 对象）时无文本可改，
+/// 由 [`prepend_prefix`] 统一处置。
+fn rewrite_identities_in_place(content: &mut Value) {
+    match content {
+        Value::String(text) => rewrite_identities(text),
+        Value::Array(parts) => {
+            for part in parts.iter_mut() {
+                if let Some(Value::String(text)) = part.get_mut("text") {
+                    rewrite_identities(text);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 逐条套用 [`FOREIGN_IDENTITIES`]（**全量**替换，一条文本里出现多次也一并改掉）。
+///
+/// 匹配忽略 ASCII 大小写 —— 闸门自己就不敏感（见模块头的国际版实测），替换也
+/// 必须不敏感：否则同一句指纹换个大小写就原样出站被拦。
+fn rewrite_identities(text: &mut String) {
+    for (from, to) in FOREIGN_IDENTITIES {
+        if let Some(next) = replace_all_ignore_ascii_case(text, from, to) {
+            *text = next;
+        }
+    }
+}
+
+/// `from` 在 `text` 里的**全量**替换（忽略 ASCII 大小写）；一次都没命中返回
+/// `None`（调用方据此跳过写回，与「不命中就不动原串」同一取向）。
+///
+/// 替换串 `to` 里即使含 `from` 也不会死循环：每轮从匹配处**之后**继续扫，
+/// 替换出来的字节永不被重新检查。
+fn replace_all_ignore_ascii_case(text: &str, from: &str, to: &str) -> Option<String> {
+    find_ignore_ascii_case(text, from)?;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = find_ignore_ascii_case(rest, from) {
+        out.push_str(&rest[..start]);
+        out.push_str(to);
+        rest = &rest[start + from.len()..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// `from` 在 `text` 里首次出现的**字节下标**（只折叠 ASCII 大小写）。
+///
+/// 为什么不是 `text.to_lowercase()` 再找：Unicode 折叠会改变字节长度（`İ` 折叠
+/// 出来是两个字符），折叠后的下标回不到原文，切片就会错位。这里按字节滑窗加
+/// `eq_ignore_ascii_case` 比较：`from` 全是 ASCII，而 UTF-8 里非 ASCII 字符的每个
+/// 字节都 >= 0x80，折叠后不可能等于 ASCII 字节 —— 于是命中区间只可能由 ASCII
+/// 字节组成，起止点都是字符边界，切片安全（本文件 `panic=abort`，这里连一个
+/// `unwrap` 都不需要）。
+fn find_ignore_ascii_case(text: &str, from: &str) -> Option<usize> {
+    let haystack = text.as_bytes();
+    let needle = from.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len())
+        .find(|&start| haystack[start..start + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+/// 该消息是否承载 system 级指令：角色**精确**等于 `system` 或 `developer`。
+///
+/// 与 `core::prompt::is_system_role` 同一口径（那边是私有函数，本目录不跨模块
+/// 借用）：精确匹配而不是前缀 / 包含，其余角色（含未知值）一律不动 —— 这是
+/// 「不动用户内容」这条边界的判据。
+fn is_system_role(message: &Value) -> bool {
+    message
+        .get("role")
+        .and_then(Value::as_str)
+        .map(|role| role == "system" || role == "developer")
+        .unwrap_or(false)
+}

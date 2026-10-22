@@ -1,0 +1,8 @@
+# 编译产物
+/target/
+
+# 打包产物（scripts/pack.mjs 产出的 zip）
+/dist/
+
+# 签名私钥（默认落 ~/.agent2api/，但有人会 --key 指到仓库里）
+*.key.json

@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = ["crates/providers", "crates/provider-protocol", "crates/provider-sdk"]
+
+# ── 这个 workspace 是什么 ─────────────────────────────────────
+# 提供商插件的**独立仓库**。网关（aimod-cc/Agent2API）只依赖这里发布的
+# `agent2api-provider-protocol`（契约）与 `agent2api-provider-sdk`
+# （trait + serve），从不依赖本仓库的实现代码。
+#
+# 三个 crate 的分工：
+#   crates/provider-protocol  线上类型（契约）—— 网关与插件共同编译
+#   crates/provider-sdk       Provider trait 与 serve() 主循环（给第三方用）
+#   crates/providers          21 家内置实现 —— 编译成插件二进制
+#
+# ── 为什么契约库也放在这个仓库 ───────────────────────────────
+# 曾经考虑单独一个仓库（让网关和插件各引用一份），但那样改协议要在两个
+# 仓库之间对版本、先发布再更新，成本明显更高。放同一个仓库后：一次提交
+# 同时改契约与实现，网关按 tag 引用这里的契约库。
+#
+# 网关侧的引用形态（`desktop-tauri/src-tauri/server/Cargo.toml`）：
+# ```toml
+# agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.1.0" }
+# ```
+#
+# ── 为什么不发布到 crates.io ─────────────────────────────────
+# 不需要。第三方写插件时用 git 依赖即可（`git = "...", tag = "v0.1.0"`），
+# 与 crates.io 的体验差别只是「要写 git 地址」。这样省掉账号、发布流程与
+# 版本号永久占用的约束。
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license-file = "LICENSE"
+repository = "https://github.com/ProvidersPlugin/Agent2Providers"
+homepage = "https://github.com/aimod-cc/Agent2API"
+
+[profile.release]
+# 与网关保持一致的硬约束：任何 panic 都会带走整个插件进程 —— 但**不会**
+# 带走网关，这正是插件架构的收益。用 unwind 而不是 abort 是为了让
+# `catch_unwind` 能在单个请求边界上兜住（见 crates/providers/src/lib.rs
+# 的 `guard` 辅助）。
+panic = "unwind"
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

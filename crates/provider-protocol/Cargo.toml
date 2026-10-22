@@ -1,0 +1,24 @@
+[package]
+name = "agent2api-provider-protocol"
+version = "0.1.0"
+description = "Agent2API 提供商插件协议：网关与插件宿主之间的线上类型与分帧"
+authors = ["Agent2API"]
+edition = "2021"
+rust-version = "1.88"
+license-file = "../../LICENSE"
+repository = "https://github.com/ProvidersPlugin/Agent2Providers"
+homepage = "https://github.com/aimod-cc/Agent2API"
+
+# ── 这个 crate 为什么独立存在 ─────────────────────────────────
+# 它是**契约**：网关（本仓库）与插件包（另一个仓库、由用户安装）各编各的
+# 二进制，唯一共享的就是这里面的类型。因此依赖面刻意压到最小 ——
+# serde / serde_json / base64 与 tokio 的 io-util（只为了分帧）。
+# **不要**把 reqwest、rusqlite、axum 之类加进来：那会让插件作者为了拿一个
+# 结构体定义而被迫拉进整套网关依赖树。
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 流式帧的 chunk 载荷（二进制不安全，base64 过线）
+base64 = "0.22"
+# 分帧只需要 AsyncRead/AsyncWrite 与 BufReader，不需要运行时
+tokio = { version = "1", features = ["io-util"] }

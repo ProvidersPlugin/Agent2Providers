@@ -1,0 +1,830 @@
+//! Qoder 对话转发（移植来源 `Qoder-Proxy/src/upstream.mjs` 的 `postChat` /
+//! `runOnce` 与 `chat.mjs` 的 `handleChat`）。
+//!
+//! ── 为什么走会话式转发入口（`is_stateful`）────────────────────
+//! `ProviderAdapter` 的无状态路径（`build_chat_request`）假设上游是「一次 HTTP
+//! 请求 = 一次对话」且**请求体由通用层序列化后原样发出**。Qoder 有两处不满足：
+//!
+//!   1. 请求体必须**先编码再签名**（`cosy::encode_body` → `cosy::build_auth_headers`），
+//!      而签名覆盖编码后的字节 —— 通用层的 `serde_json::to_string` 出来的字节
+//!      既没编码也没被签名覆盖，发出去必然被上游拒绝；
+//!   2. 下游帧需要**拆掉上游的一层信封**（`{statusCodeValue, body}` → 内层
+//!      OpenAI chunk），通用层的 SSE 透传只做帧的**转发**与可选 model 回写，
+//!      不认识这层包装。
+//!
+//! 因此本模块实现 `forward_conversation`，把「构造 → 发送 → 翻译」整条链收进来。
+//! 产出仍然是编排层认识的 `ForwardOutcome`，于是 `chat.rs` 的其余链路
+//! （脱敏、记账、错误写出）零改动。
+//!
+//! ── 额度/鉴权错误为什么在流内也要判 ───────────────────────────
+//! Qoder 上游的业务错误**不体现在 HTTP 状态码上**（永远是 200），而是放在
+//! SSE 信封的 `statusCodeValue` 里。所以「换个账号重试」这个动作不能只靠
+//! HTTP 错误触发 —— 本模块在读到信封错误时，把它转成一个带状态码的网关错误
+//! 交回编排层，由编排层的账号循环接着换下一个账号（`QuotaLimited` 语义）。
+//!
+//! ── 硬约束 ──────────────────────────────────────────────────
+//! release 是 `panic=abort`：零 unwrap/expect/panic；不持锁穿越 await
+//! （凭证在进函数时取好快照）。
+
+use std::sync::Arc;
+
+use serde_json::{json, Map, Value};
+
+use agent2api_provider_sdk::PluginCtx;
+use crate::telemetry::RequestTelemetry;
+use crate::http as egress;
+use agent2api_provider_protocol::WireProxy as ResolvedProxy;
+
+use crate::errors::GatewayError;
+use crate::logging;
+
+use super::context;
+use super::cosy::{self, CosyIdentity};
+use super::credentials::Credentials;
+use super::errors;
+use super::protocol;
+use super::stream;
+
+/// 一次转发所需的全部素材（进函数时组装好，之后只读）
+pub struct ChatPlan {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// 已编码的请求体（签名覆盖的就是它）
+    pub body: Vec<u8>,
+    /// 客户端请求的模型名（下发帧的 `model` 字段用它）
+    pub model_name: String,
+    /// 上游模型标识（会话派生与日志用）
+    pub upstream_key: String,
+    /// 是否要下发思考内容（决定要不要启用标签拆解器）
+    pub thinking: bool,
+}
+
+/// 上游排队态（业务码 10605：「模型请求排队中」）。
+///
+/// ── 为什么它是「可重试」而不是「错误」─────────────────────────
+/// 上游对免费模型（`qfmodel` = Qwen3.8-Flash）走排队制：空闲时几秒内直接出字，
+/// 繁忙时用 403 + 10605 回一句「暂不可服务，建议 N 秒后再来」。官方 CLI 的
+/// 处理是**等一会儿再发同一请求**（其二进制里有 `queuePollCount` /
+/// `queueRecoveryAttempt` 这类计数），参考实现（CLIProxyAPI 的 qoder2api 插件、
+/// 9router 的队列增强分支）同样按上游建议时长退避重试。因此这里把排队态单独
+/// 建模：调用方拿它睡一觉重发，而不是当成「登录态失效」把用户引去重新登录。
+pub struct Queued {
+    /// 上游建议的重试间隔（毫秒，已带缺省与钳制）
+    pub retry_after_ms: u64,
+    /// 面向客户端的说明（等待预算用尽时作为错误文案）
+    pub message: String,
+    /// 上游原文（截断；进日志与最终错误体，便于排障）
+    pub raw: String,
+    /// 排障信息（`queueType` / `queueCount` / 服务可用性），日志用
+    pub detail: String,
+}
+
+/// 一次上游往返的失败。
+///
+/// 排队与其它错误的**唯一**区别是「还能再试」：`Queued` 交给退避循环，
+/// `Fatal` 原样交回编排层。把这条区别做成类型而不是「看状态码猜」，
+/// 是因为排队态的状态码（403 → 曾经映射 401）会同时骗过刷新凭证与换账号
+/// 两条动作 —— 那种错误没有任何日志会提示。
+pub enum AttemptError {
+    Queued(Queued),
+    /// 鉴权失败（HTTP 401 / 业务码 105）：**可以强制续期凭证后同账号重试一次**。
+    ///
+    /// 与 `Fatal` 分开的理由与排队态同源：这一档要触发一个动作（续期），
+    /// 而动作只在「首帧之前」可行 —— 流已经开始下发时它退化成 `Fatal`
+    /// （见 `into_gateway`）。
+    Auth(GatewayError),
+    Fatal(GatewayError),
+}
+
+impl AttemptError {
+    /// 落定成客户端可见的错误（等待预算用尽 / 流已开始 / 续期已试过一次时）。
+    pub fn into_gateway(self) -> GatewayError {
+        match self {
+            Self::Fatal(error) | Self::Auth(error) => error,
+            Self::Queued(queued) => queued_error(&queued, 0),
+        }
+    }
+}
+
+/// 排队态落定：**503** + 一句「不是登录态或额度问题」。
+///
+/// 状态码不能是 401 / 429：那两档在编排层与本项目内部都带动作（刷新凭证 /
+/// 落账号限额冷却），排队既不是凭证问题也不是账号问题 —— 换账号也一样在排队。
+/// 与参考实现（qoder2api 插件的 `qoder_model_busy`）取同一档。
+pub fn queued_error(queued: &Queued, waited_ms: u64) -> GatewayError {
+    let detail: String = queued.raw.chars().take(300).collect();
+    let waited = if waited_ms >= 1000 { waited_ms / 1000 } else { 0 };
+    let waited_note = if waited > 0 {
+        format!("（已按上游建议等待 {waited} 秒仍不可服务）")
+    } else {
+        String::new()
+    };
+    GatewayError::with_status(503, format!("{}{waited_note}（上游原文：{detail}）", queued.message))
+        .with_code("qoder_model_busy")
+}
+
+/// 单次排队等待的时长（毫秒）：跟随上游建议，缺省 15 秒，钳在 5～30 秒。
+///
+/// 上限 30 秒与实测的建议值区间（9～30 秒）同档：等得比上游建议更久没有意义，
+/// 只会把客户端的首字等待拖长。
+pub fn queue_wait_ms(retry_after_secs: Option<u64>) -> u64 {
+    const MIN_SECS: u64 = 5;
+    const MAX_SECS: u64 = 30;
+    const FALLBACK_SECS: u64 = 15;
+    retry_after_secs.unwrap_or(FALLBACK_SECS).clamp(MIN_SECS, MAX_SECS) * 1000
+}
+
+/// 客户端请求体 → 一次上游调用的完整计划。
+///
+/// 这是「构造」阶段，**不含网络**，因此可以在账号循环里对每个候选账号各跑一次
+/// （每个账号的凭证不同 → 签名不同）。
+pub fn build_plan(
+    credentials: &Credentials,
+    body: &Value,
+    model_name: &str,
+) -> Result<ChatPlan, GatewayError> {
+    let model = super::models::resolve(model_name, credentials.region).ok_or_else(|| {
+        GatewayError::with_status(400, format!(
+            "模型不存在: {model_name}。Qoder 可用模型见 GET /v1/models"
+        ))
+        .with_code("model_not_found")
+    })?;
+    let upstream_key = model
+        .get("upstreamKey")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if upstream_key.is_empty() {
+        return Err(GatewayError::with_status(502, "Qoder 模型目录缺少上游标识"));
+    }
+    let model_config = model.get("config").cloned().unwrap_or(Value::Null);
+
+    // ── 消息规整 ──────────────────────────────────────────────
+    let raw_messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+    let messages = protocol::normalize_messages(&raw_messages);
+    // system 提示必须放进 messages 里（上游顶层 system 字段无效），
+    // 且要排在**最前面** —— 源实现在调用处显式做了这一步
+    let system_texts: Vec<String> = raw_messages
+        .iter()
+        .filter(|message| {
+            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+            role == "system" || role == "developer"
+        })
+        .map(|message| {
+            message
+                .get("content")
+                .map(protocol::content_to_text)
+                .unwrap_or_default()
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
+    let final_messages: Vec<Value> = if system_texts.is_empty() {
+        messages
+    } else {
+        let mut ordered: Vec<Value> = system_texts
+            .iter()
+            .map(|text| json!({ "role": "system", "content": text }))
+            .collect();
+        ordered.extend(
+            messages
+                .into_iter()
+                .filter(|message| message.get("role").and_then(Value::as_str) != Some("system")),
+        );
+        ordered
+    };
+
+    let tools = protocol::normalize_tools(body.get("tools"));
+    let thinking = protocol::resolve_thinking(body, &model);
+    let max_tokens = body
+        .get("max_tokens")
+        .and_then(Value::as_i64)
+        .or_else(|| body.get("max_completion_tokens").and_then(Value::as_i64));
+    // 下游若给了 user / session_id，用它做会话种子，同一对话复用同一 session
+    let session_seed = body
+        .get("user")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("session_id").and_then(Value::as_str));
+
+    let mut upstream_body = protocol::build_upstream_body(
+        &upstream_key,
+        &model_config,
+        &final_messages,
+        tools.as_ref(),
+        max_tokens,
+        &thinking,
+        &credentials.user_id,
+        session_seed,
+    );
+
+    // ── 上下文档位：装了才升级 ────────────────────────────────
+    // 上游每个模型有多档上下文窗口（200K / 400K / 1M），默认只启用其中一档
+    // （见 `context.rs`）。prompt 超过当前档时升到「最小的够用档」—— 多数请求
+    // 不触发（`resolve` 返回 None），那时的请求体与改造前逐字相同。
+    if let Some(tier) = context::resolve(&model_config, &final_messages, tools.as_ref()) {
+        logging::verbose("[Qoder]", &format!("上下文升档 → {}", context::describe(&tier)));
+        context::apply(&mut upstream_body, &tier);
+    }
+
+    // ── 编码 → 签名（顺序不能颠倒，理由见模块头）────────────────
+    let encoded = cosy::encode_body(upstream_body.to_string().as_bytes());
+    let url = format!(
+        "{}algo/api/v2/service/pro/sse/agent_chat_generation\
+         ?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",
+        // 对话链路按令牌前缀选主机（作业令牌 jt- 走 api2，见 `inference_base`）
+        credentials.region.inference_base(&credentials.access_token)
+    );
+    let identity = CosyIdentity {
+        user_id: &credentials.user_id,
+        auth_token: &credentials.access_token,
+        name: &credentials.name,
+        email: &credentials.email,
+        machine_id: &credentials.machine_id,
+    };
+    let mut headers = cosy::build_auth_headers(Some(&encoded), &url, &identity)?;
+    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    headers.push(("Accept".to_string(), "text/event-stream".to_string()));
+    headers.push(("Cache-Control".to_string(), "no-cache".to_string()));
+    headers.push(("Accept-Encoding".to_string(), "identity".to_string()));
+    // 上游靠这两个头做模型路由与来源标记。来源取目录条目自己的 `source`
+    // （兜底 "system"）：写死会让 BYOK 一类的条目在国际版上被标错来源。
+    let model_source = model_config
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("system")
+        .to_string();
+    headers.push(("X-Model-Key".to_string(), upstream_key.clone()));
+    headers.push(("X-Model-Source".to_string(), model_source));
+
+    Ok(ChatPlan {
+        url,
+        headers,
+        body: encoded,
+        model_name: model_name.to_string(),
+        upstream_key,
+        // 只有「模型支持思考」时才启用标签拆解（否则正文里的尖括号是用户内容）
+        thinking: thinking.enable.is_some() || thinking.effort.is_some(),
+    })
+}
+
+/// 发一次上游请求（不读体，交给调用方决定怎么消费）。
+///
+/// 等待响应头有上限：值取设置页「请求超时 → 等待响应超时」（与
+/// `upstream::request::send_chat_request` 同一口径、同一份配置）。Qoder 走的
+/// 是自己的发送函数而不是那个入口（请求形状差异大），这个上限不能只加在
+/// 统一入口上 —— 否则改名成「等待响应超时」的设置对 Qoder 静默失效。
+pub async fn send(
+    plan: &ChatPlan,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<reqwest::Response, GatewayError> {
+    let client = egress::client(proxy, "direct");
+    let mut builder = client.post(&plan.url).body(plan.body.clone());
+    for (key, value) in &plan.headers {
+        builder = builder.header(key, value);
+    }
+    let via = match proxy {
+        // `WireProxy` 没有 label 字段（网关那份 `ResolvedProxy` 有）：
+        // 用 host:port 代替，排障时同样能看出走的是哪条出口
+        Some(proxy) => format!("经代理 {}:{}", proxy.host, proxy.port.unwrap_or(0)),
+        None => "直连".to_string(),
+    };
+    let budget = std::time::Duration::from_millis(
+        crate::timeouts::current().headers_ms(),
+    );
+    match tokio::time::timeout(budget, builder.send()).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) if error.is_timeout() => {
+            // `send()` 阶段的超时只可能来自连接（等待响应头由外层计时器管）：
+            // 文案给设置页旋钮名与实际生效的秒数（与通用层 send_chat_request 同一口径）
+            Err(GatewayError::with_status(
+                502,
+                format!(
+                    "Qoder 连接中超时({}秒，出口 {via})",
+                    crate::timeouts::current().connect_ms() / 1000
+                ),
+            ))
+        }
+        Ok(Err(error)) => Err(GatewayError::with_status(
+            502,
+            format!("Qoder 上游请求失败（{via}）: {}", egress::describe_chain(&error)),
+        )),
+        Err(_elapsed) => Err(GatewayError::with_status(
+            502,
+            format!("Qoder 等待响应超时({}秒，出口 {via})", budget.as_secs()),
+        )),
+    }
+}
+
+/// 把**失败**的上游响应转成「排队态或定论错误」。
+///
+/// ── 为什么返回裸错误而不是 `Option`（调用方已经判过状态了）────────
+/// 成功响应是**流式**的：`response.text()` 会把整条 SSE 拉完并丢掉流句柄，
+/// 调用方就再也拿不到字节流。所以「要不要读体」这个判断必须留在调用方
+/// （它先看 `is_success()`）。若本函数返回 `Option`，编译器会看到一条
+/// 「读完了体、又没返回错误、继续用那个已被移动的 response」的路径 ——
+/// 那是**不可达但类型上成立**的分支，只能靠调用方 `unwrap` 才能消掉，
+/// 而 release 是 panic=abort，不能 unwrap。返回裸错误即让类型如实反映契约：
+/// 「调用我 = 我已经不成功」。
+pub async fn http_error(status: u16, response: reqwest::Response) -> AttemptError {
+    let text = response.text().await.unwrap_or_default();
+    let classified = errors::classify_upstream_error(status, &text);
+    if classified.kind == errors::UpstreamKind::Queued {
+        return AttemptError::Queued(queued_of(&classified, &text));
+    }
+    let detail: String = text.chars().take(300).collect();
+    let message = if classified.message.is_empty() {
+        format!("上游返回 {status}: {detail}")
+    } else {
+        let pricing = classified
+            .pricing_url
+            .as_deref()
+            .map(|url| format!(" 套餐与额度：{url}"))
+            .unwrap_or_default();
+        format!("上游请求失败：{}{pricing}（上游原文：{detail}）", classified.message)
+    };
+    // 额度/限流用 429、鉴权用 401：编排层按这两档决定「换账号」与「刷新后重试」。
+    // 裸 403（Forbidden）也走 401 出口 —— 文案里本来就写着「可能是登录态失效或
+    // 权限不足」，客户端按鉴权错误处理是改造前就有的口径；区别只在**适配器不**为
+    // 它刷新凭证（凭证没问题，刷了也白刷）。
+    let mapped = match classified.kind {
+        errors::UpstreamKind::Quota | errors::UpstreamKind::Rate => 429,
+        errors::UpstreamKind::Auth | errors::UpstreamKind::Forbidden => 401,
+        _ => 502,
+    };
+    let error = GatewayError::with_status(mapped, message).with_optional_code(Some(status as i64));
+    if classified.kind == errors::UpstreamKind::Auth {
+        AttemptError::Auth(error)
+    } else {
+        AttemptError::Fatal(error)
+    }
+}
+
+/// 分类结果 + 上游原文 → 排队态（退避时长在这里钳制，见 `queue_wait_ms`）。
+pub fn queued_of(classified: &errors::ClassifiedError, raw: &str) -> Queued {
+    let queue = classified.queue.clone().unwrap_or_default();
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(kind) = &queue.queue_type {
+        notes.push(format!("队列 {kind}"));
+    }
+    if let Some(count) = queue.queue_count {
+        notes.push(format!("排队 {count}"));
+    }
+    if queue.service_available == Some(false) {
+        notes.push("上游声明服务不可用".to_string());
+    }
+    Queued {
+        retry_after_ms: queue_wait_ms(queue.retry_after_secs),
+        message: classified.message.clone(),
+        raw: raw.chars().take(300).collect(),
+        detail: notes.join("，"),
+    }
+}
+
+/// 上游帧 → 客户端帧 的翻译状态（流式与非流式共用同一套累积逻辑）。
+///
+/// ── 为什么把「翻译」与「下发」分开 ────────────────────────────
+/// 流式要把每个 delta 立刻变成 SSE 帧；非流式要把它们聚合成一个完整
+/// `chat.completion`。两者的**解析与拆解规则必须完全一致**（尤其是思考标签
+/// 的跨分片处理），所以规则只写在这里一份，两条出口各自决定怎么消费产出。
+pub struct Translator {
+    /// 面向客户端的响应 id
+    pub response_id: String,
+    created: i64,
+    model_name: String,
+    /// 上游回传的模型名（映射回对外 id 后下发）
+    model_reported: Option<String>,
+    /// 下发帧固定回客户端请求的那个名字（见 `new` 的说明）
+    echo_requested_model: bool,
+    /// 工具调用按 index 累积
+    tool_state: std::collections::BTreeMap<i64, ToolCallState>,
+    /// 是否已下发过 role 帧（流式）
+    role_sent: bool,
+    /// 思考标签拆解器（**跨 chunk 长驻**）。
+    ///
+    /// ── 为什么是字段而不是每次现建 ─────────────────────────────
+    /// 拆解器要在缓冲区里留「可能是标签前缀」的尾巴（`<thi` + `nking>` 分两片
+    /// 到达）。若每个 chunk 都新建一个，那片尾巴会在 chunk 结束时被当成正文
+    /// 吐出去 —— 跨分片的标签拆解就永远不会生效，而这正是它存在的全部理由。
+    /// None = 该模型不支持思考，正文不作拆解（此时尖括号是用户内容）。
+    parser: Option<stream::ThinkingParser>,
+    /// usage 取最后一次出现
+    pub usage: Option<Value>,
+    /// finish_reason 取最后一次非空
+    pub finish_reason: Option<String>,
+    /// 非流式累积的正文
+    pub content: String,
+    /// 非流式累积的思考
+    pub reasoning: String,
+    /// 收到的 chunk 数（排障用）
+    pub chunk_count: usize,
+}
+
+#[derive(Default)]
+struct ToolCallState {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl Translator {
+    /// ── 为什么「客户端给的名字认得出来」就固定回它 ────────────────
+    /// 上游回的 `model` 是**路由档位**而不是我们请求的那个模型：请求
+    /// `Qwen3.8-Flash`（上游 key `qfmodel`）时实测回的是 `"auto"`。按它做映射
+    /// 会把下游帧里的模型名换成另一个模型（`auto` → 清单里的 `Auto`），
+    /// 客户端日志与计费归集都会看到「我没请求过的模型」。
+    ///
+    /// 只有当客户端写的是**内部 key**（`qfmodel` 这类认不出来的名字）时才保留
+    /// 映射：那种情况的映射是在把它归一成可读的模型名，是需要的。
+    pub fn new(response_id: String, model_name: String, thinking_enabled: bool) -> Self {
+        let echo_requested_model = super::models::resolve(
+            &model_name,
+            super::endpoints::Region::Global,
+        )
+        .is_some();
+        Self {
+            response_id,
+            created: logging::now_ms() / 1000,
+            model_name,
+            model_reported: None,
+            echo_requested_model,
+            tool_state: std::collections::BTreeMap::new(),
+            role_sent: false,
+            parser: if thinking_enabled {
+                Some(stream::ThinkingParser::new())
+            } else {
+                None
+            },
+            usage: None,
+            finish_reason: None,
+            content: String::new(),
+            reasoning: String::new(),
+            chunk_count: 0,
+        }
+    }
+
+    /// 一个上游 chunk → 若干个「面向客户端的 delta」。
+    ///
+    /// 每条产出是 `(delta, is_reasoning)`：`is_reasoning` 为真时进
+    /// `reasoning_content`，否则进 `content`。工具调用单独走 `tool_deltas`。
+    pub fn consume(
+        &mut self,
+        chunk: &Value,
+        telemetry: Option<&Arc<RequestTelemetry>>,
+    ) -> Vec<TranslatedDelta> {
+        self.chunk_count += 1;
+        if let Some(model) = chunk.get("model").and_then(Value::as_str) {
+            if !model.is_empty() {
+                self.model_reported = protocol::map_model_back(model);
+            }
+        }
+        if let Some(usage) = chunk.get("usage").filter(|value| value.is_object()) {
+            self.usage = Some(usage.clone());
+            if let Some(telemetry) = telemetry {
+                telemetry.report_usage(usage);
+            }
+        }
+        let mut out: Vec<TranslatedDelta> = Vec::new();
+        let Some(choice) = chunk
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return out;
+        };
+        if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
+            if !finish.is_empty() {
+                self.finish_reason = Some(finish.to_string());
+            }
+        }
+        let Some(delta) = choice.get("delta") else {
+            return out;
+        };
+
+        // 上游显式给出的 reasoning_content 优先（且要去掉偶带的标签）
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+            let cleaned = stream::strip_thinking_tags(reasoning);
+            if !cleaned.is_empty() {
+                self.reasoning.push_str(&cleaned);
+                out.push(TranslatedDelta::Reasoning(cleaned));
+            }
+        }
+        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+            if !content.is_empty() {
+                if self.parser.is_some() {
+                    // 上游可能把思考混在正文里：按标签拆开（**跨分片的标签前缀
+                    // 留在解析器缓冲里**，所以解析器必须长驻，见字段说明）
+                    let pieces = {
+                        let parser = match self.parser.as_mut() {
+                            Some(parser) => parser,
+                            None => return out,
+                        };
+                        parser.push(content);
+                        parser.take()
+                    };
+                    for piece in pieces {
+                        if piece.is_thinking {
+                            self.reasoning.push_str(&piece.text);
+                            out.push(TranslatedDelta::Reasoning(piece.text));
+                        } else {
+                            self.content.push_str(&piece.text);
+                            out.push(TranslatedDelta::Content(piece.text));
+                        }
+                    }
+                } else {
+                    self.content.push_str(content);
+                    out.push(TranslatedDelta::Content(content.to_string()));
+                }
+            }
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let index = call.get("index").and_then(Value::as_i64).unwrap_or(0);
+                let entry = self.tool_state.entry(index).or_default();
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if !id.is_empty() {
+                        entry.id = id.to_string();
+                    }
+                }
+                if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                    if !name.is_empty() {
+                        entry.name = name.to_string();
+                    }
+                }
+                if let Some(arguments) =
+                    call.pointer("/function/arguments").and_then(Value::as_str)
+                {
+                    entry.arguments.push_str(arguments);
+                }
+                out.push(TranslatedDelta::ToolCall {
+                    index,
+                    id: call.get("id").and_then(Value::as_str).map(str::to_string),
+                    name: call.pointer("/function/name").and_then(Value::as_str).map(str::to_string),
+                    arguments: call
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+            }
+        }
+        out
+    }
+
+    /// 收尾：把解析器缓冲里残留的尾巴冲刷出来。
+    ///
+    /// **必须在流结束时调用**：解析器留着「可能是标签前缀」的尾巴（见
+    /// `parser` 字段的说明），不冲刷的话回答末尾会少几个字符
+    /// （例如正文以 `<think` 结尾时，那几个字符会永远留在缓冲里）。
+    /// 幂等：解析器的 `finish` 有 finished 标记，重复调用不会再产出。
+    /// 返回值与 `consume` 同形，调用方按同一套规则下发。
+    pub fn finish(&mut self) -> Vec<TranslatedDelta> {
+        let Some(parser) = self.parser.as_mut() else {
+            return Vec::new();
+        };
+        parser.finish();
+        let mut out = Vec::new();
+        for piece in parser.take() {
+            if piece.is_thinking {
+                self.reasoning.push_str(&piece.text);
+                out.push(TranslatedDelta::Reasoning(piece.text));
+            } else {
+                self.content.push_str(&piece.text);
+                out.push(TranslatedDelta::Content(piece.text));
+            }
+        }
+        out
+    }
+
+    /// 下游要的 model 名：客户端给的是清单里的名字时固定回它，否则用上游
+    /// 回传值映射后的结果（见 `new` 的说明）。
+    pub fn model_out(&self) -> String {
+        if self.echo_requested_model {
+            return self.model_name.clone();
+        }
+        self.model_reported
+            .clone()
+            .unwrap_or_else(|| self.model_name.clone())
+    }
+
+    /// 流式的 role 帧是否已发过（第一次产出 delta 前要补一帧 role）
+    pub fn take_role_frame(&mut self) -> bool {
+        if self.role_sent {
+            return false;
+        }
+        self.role_sent = true;
+        true
+    }
+
+    /// 收尾的工具调用聚合（非流式用；参数拼好后做一次 JSON 规范化）
+    pub fn final_tool_calls(&self) -> Vec<Value> {
+        self.tool_state
+            .iter()
+            .map(|(index, state)| {
+                let arguments = match serde_json::from_str::<Value>(&state.arguments) {
+                    Ok(parsed) => parsed.to_string(),
+                    Err(_) => {
+                        if state.arguments.is_empty() {
+                            "{}".to_string()
+                        } else {
+                            state.arguments.clone()
+                        }
+                    }
+                };
+                let id = if state.id.is_empty() {
+                    format!("call_{index}")
+                } else {
+                    state.id.clone()
+                };
+                json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": state.name, "arguments": arguments },
+                })
+            })
+            .collect()
+    }
+
+    /// 最终 finish_reason：有工具调用就是 `tool_calls`
+    pub fn final_finish(&self) -> String {
+        if !self.tool_state.is_empty() {
+            return "tool_calls".to_string();
+        }
+        self.finish_reason.clone().unwrap_or_else(|| "stop".to_string())
+    }
+
+    /// 流式 chunk 帧（OpenAI `chat.completion.chunk`）
+    pub fn chunk_frame(&self, delta: Value, finish: Option<&str>) -> Value {
+        let mut choice = Map::new();
+        choice.insert("index".to_string(), Value::from(0));
+        choice.insert("delta".to_string(), delta);
+        choice.insert(
+            "finish_reason".to_string(),
+            finish.map(|text| Value::String(text.to_string())).unwrap_or(Value::Null),
+        );
+        json!({
+            "id": self.response_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model_out(),
+            "choices": [Value::Object(choice)],
+        })
+    }
+
+    /// usage 帧（OpenAI 在流的末尾下发的形态：choices 为空数组）
+    pub fn usage_frame(&self) -> Value {
+        json!({
+            "id": self.response_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model_out(),
+            "choices": [],
+            "usage": self.usage.clone().unwrap_or(Value::Null),
+        })
+    }
+
+    /// 非流式的完整响应体（OpenAI `chat.completion`）
+    pub fn completion_body(&self) -> Value {
+        let mut message = Map::new();
+        message.insert("role".to_string(), Value::String("assistant".to_string()));
+        message.insert(
+            "content".to_string(),
+            if self.content.is_empty() {
+                Value::Null
+            } else {
+                Value::String(self.content.clone())
+            },
+        );
+        if !self.reasoning.is_empty() {
+            message.insert(
+                "reasoning_content".to_string(),
+                Value::String(self.reasoning.clone()),
+            );
+        }
+        let tool_calls = self.final_tool_calls();
+        if !tool_calls.is_empty() {
+            message.insert("tool_calls".to_string(), Value::Array(tool_calls));
+        }
+        json!({
+            "id": self.response_id,
+            "object": "chat.completion",
+            "created": self.created,
+            "model": self.model_out(),
+            "choices": [{
+                "index": 0,
+                "message": Value::Object(message),
+                "finish_reason": self.final_finish(),
+            }],
+            "usage": self.usage.clone().unwrap_or_else(|| json!({
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            })),
+        })
+    }
+}
+
+/// 从上游 chunk 翻译出的一条增量
+pub enum TranslatedDelta {
+    Content(String),
+    Reasoning(String),
+    ToolCall {
+        index: i64,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+}
+
+/// 把一条 `TranslatedDelta` 变成 OpenAI 的 delta JSON（流式下发用）
+pub fn delta_json(delta: &TranslatedDelta) -> Value {
+    match delta {
+        TranslatedDelta::Content(text) => json!({ "content": text }),
+        TranslatedDelta::Reasoning(text) => json!({ "reasoning_content": text }),
+        TranslatedDelta::ToolCall { index, id, name, arguments } => {
+            let mut function = Map::new();
+            if let Some(name) = name {
+                function.insert("name".to_string(), Value::String(name.clone()));
+            }
+            if let Some(arguments) = arguments {
+                function.insert("arguments".to_string(), Value::String(arguments.clone()));
+            }
+            let mut call = Map::new();
+            call.insert("index".to_string(), Value::from(*index));
+            if let Some(id) = id {
+                call.insert("id".to_string(), Value::String(id.clone()));
+            }
+            call.insert("type".to_string(), Value::String("function".to_string()));
+            call.insert("function".to_string(), Value::Object(function));
+            json!({ "tool_calls": [Value::Object(call)] })
+        }
+    }
+}
+
+/// 上游业务错误（信封里的 statusCodeValue）→ 排队态或网关错误。
+///
+/// ── 状态码映射必须基于**分类结果**，不能只看业务码 ──────────────
+/// 上游用 403 表达多种情况：带 pricingUrl 是套餐/额度不足、裸 403 才是鉴权问题、
+/// 带 `isQueued` / 业务码 10605 则是**排队**（见 `errors::classify_upstream_error`
+/// 的说明）。所以编排层要看的**不是**上游的业务码，而是「这条错误该触发哪个
+/// 动作」：
+///   排队        → **`Queued`**（调用方退避重发；不是错误，也不该刷新凭证/换号）；
+///   额度 / 限流 → **429**（编排层据此标记该账号冷却并换下一个账号）；
+///   鉴权        → **401**（编排层据此刷新凭证后同账号重试一次）；
+///   其余        → 502（原样透传给客户端）。
+/// 直接拿业务码当状态码会把「该充值」变成「登录失效」、把「排会儿队」变成
+/// 「登录失效」，客户端与用户都会走错方向。
+pub fn business_error(
+    status: u16,
+    kind: errors::UpstreamKind,
+    raw: &str,
+    message: &str,
+    pricing_url: Option<&str>,
+    queue: Option<errors::QueueInfo>,
+) -> AttemptError {
+    if kind == errors::UpstreamKind::Queued {
+        let classified = errors::ClassifiedError {
+            kind,
+            message: message.to_string(),
+            pricing_url: None,
+            queue,
+        };
+        return AttemptError::Queued(queued_of(&classified, raw));
+    }
+    let detail: String = raw.chars().take(300).collect();
+    let message = if message.is_empty() {
+        format!("上游返回 {status}: {detail}")
+    } else {
+        let pricing = pricing_url.map(|url| format!(" 套餐与额度：{url}")).unwrap_or_default();
+        format!("上游请求失败：{message}{pricing}（上游原文：{detail}）")
+    };
+    let mapped = match kind {
+        errors::UpstreamKind::Quota | errors::UpstreamKind::Rate => 429,
+        errors::UpstreamKind::Auth | errors::UpstreamKind::Forbidden => 401,
+        _ => 502,
+    };
+    let error = GatewayError::with_status(mapped, message).with_optional_code(Some(status as i64));
+    if kind == errors::UpstreamKind::Auth {
+        AttemptError::Auth(error)
+    } else {
+        AttemptError::Fatal(error)
+    }
+}
+
+/// 一次会话的凭证快照（跨 await 使用的形态）
+pub struct AccountContext {
+    pub credentials: Credentials,
+    pub proxy: Option<ResolvedProxy>,
+}
+
+/// 取某账号的凭证快照（含临期主动刷新）。`region` 是本适配器的地区身份
+/// （拆家后 provider 即地区，见 `qoder::mod` 的模块头）。
+pub async fn account_context(
+    ctx: &PluginCtx,
+    region: super::endpoints::Region,
+    account_id: &str,
+    force_refresh: bool,
+) -> Result<AccountContext, GatewayError> {
+    let credentials = super::refresh::ensure_fresh(ctx, region, account_id, force_refresh).await?;
+    let (record, _) = super::refresh::snapshot(ctx, region, account_id).await?;
+    let proxy = super::auth::account_proxy(&record)?;
+    Ok(AccountContext { credentials, proxy })
+}

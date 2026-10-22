@@ -1,0 +1,163 @@
+//! 账号凭证的读写：插件侧的统一入口。
+//!
+//! ── 为什么要有这一层 ────────────────────────────────────────
+//! 从网关搬来的各家 `credentials.rs` 都长成同一个形状：`from_record(Some(&record))`
+//! 里用 `record.get("accessToken")` 这样的取值链。搬家时如果每家都改一遍取值
+//! 方式，diff 会淹没真正的逻辑改动 —— 而逐字核对正是迁移验收的手段。
+//!
+//! 所以这里做一件事：把「插件的不透明 secret」**拼成网关记录的形状**（把
+//! 账号 id 并进顶层），于是 `from_record` 可以逐字保留，只是数据来源从
+//! `store.xxx_account_record(id)` 换成 [`record`]。
+//!
+//! ── 字段名为什么沿用网关的驼峰名 ────────────────────────────
+//! `secret` 是插件自己定义的 JSON，用哪套键名都行。沿用 `accessToken` /
+//! `refreshToken` / `expiresAt` 这些名字的好处是：搬来的代码不用改，人肉核对
+//! 两份实现时字段一一对应。代价是与内置家「字段同名、语义不同」（内置家的
+//! `accessToken` 在账号记录顶层，插件的在 `pluginSecret` 里）—— 但两者物理
+//! 隔离（网关从不解析 `pluginSecret`），不会串。
+//!
+//! ── 写回为什么必须「比较再写」───────────────────────────────
+//! 见 `plugin_accounts::plugin_update_secret` 的说明：两个并发刷新会互相覆盖。
+//! [`save`] 强制调用方传入**读到时的那份 secret**，网关只在值没变时才写。
+
+use agent2api_provider_sdk::{PluginCtx, StoreAccount};
+use serde_json::{Map, Value};
+
+use crate::errors::GatewayError;
+
+/// 读一条账号的 secret，并拼成「网关记录形态」（顶层带 `id`）。
+///
+/// `account` 为空串 = 该 provider 的队首账号（与内置家的语义一致）。
+pub async fn record(
+    ctx: &PluginCtx,
+    provider: &str,
+    account: &str,
+) -> Result<Value, GatewayError> {
+    let found = ctx.store_get(provider, account).await.map_err(|error| {
+        GatewayError::with_status(401, format!("读取账号失败：{error}"))
+    })?;
+    Ok(record_of(&found))
+}
+
+/// 列出一个 provider 的全部账号（记录形态，顺序即网关给的顺序）。
+///
+/// 网关 `list_accounts()` 的同义物：搬来的家有几处要「扫一遍账号找代表」
+/// （ZCode 的配置同步、签到选路），那些判据本身是纯函数，喂一份快照就能跑。
+pub async fn list(
+    ctx: &PluginCtx,
+    provider: &str,
+) -> Result<Vec<Value>, GatewayError> {
+    let accounts = ctx
+        .store_list(provider)
+        .await
+        .map_err(|error| GatewayError::with_status(401, format!("读取账号列表失败：{error}")))?;
+    Ok(accounts.iter().map(record_of).collect())
+}
+
+/// 把一条 [`StoreAccount`] 摊成「网关记录形态」。
+///
+/// `secret` 里的键全部提到顶层，再补 `id` / `provider` / `name`（后者来自
+/// `public`）。`secret` 里若已有同名字段，**以 secret 为准** —— 它才是凭证本体。
+pub fn record_of(account: &StoreAccount) -> Value {
+    let mut merged = Map::new();
+    if let Some(object) = account.public.as_object() {
+        if let Some(name) = object.get("name") {
+            merged.insert("name".to_string(), name.clone());
+        }
+    }
+    merged.insert("id".to_string(), Value::String(account.id.clone()));
+    merged.insert(
+        "provider".to_string(),
+        Value::String(account.provider.clone()),
+    );
+    if let Some(object) = account.secret.as_object() {
+        for (key, value) in object {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(merged)
+}
+
+/// 记录形态 → secret 形态（去掉 [`record_of`] 补上的三个键）。
+///
+/// ── 为什么写回前必须走一遍 ──────────────────────────────────
+/// [`record_of`] 把 `id` / `provider` / `name` 提到了顶层，而网关存的 secret
+/// **没有**这三个键。拿记录形态直接当 `expect` 去比较，结果永远不等 ——
+/// 于是"比较再写"退化成"永远不写"，症状是令牌续期后账号记录一直没变。
+pub fn secret_view(record: &Value) -> Value {
+    let mut secret = record.clone();
+    if let Some(object) = secret.as_object_mut() {
+        object.remove("id");
+        object.remove("provider");
+        object.remove("name");
+    }
+    secret
+}
+
+/// 读原始 secret（写回时的 `expect` 用它）。
+#[allow(dead_code)]
+pub async fn secret(
+    ctx: &PluginCtx,
+    provider: &str,
+    account: &str,
+) -> Result<(String, Value), GatewayError> {
+    let found = ctx
+        .store_get(provider, account)
+        .await
+        .map_err(|error| GatewayError::with_status(401, format!("读取账号失败：{error}")))?;
+    Ok((found.id, found.secret))
+}
+
+/// 比较再写：只有当前 secret 仍等于 `expect` 时才写入。
+///
+/// 返回 `false` = 期望值已变（另一个刷新先落盘了）。那不是错误 —— 调用方
+/// 应当重新读一遍再决定（与网关 `plugin_update_secret` 的语义一致）。
+pub async fn save(
+    ctx: &PluginCtx,
+    account: &str,
+    expect: &Value,
+    next: &Value,
+) -> Result<bool, GatewayError> {
+    ctx.store_update(account, expect, next)
+        .await
+        .map_err(|error| GatewayError::with_status(502, format!("写回账号失败：{error}")))
+}
+
+/// 在 secret 上原地改几个字段（其余字段原样保留）。
+///
+/// ── 为什么不能整份替换 ──────────────────────────────────────
+/// 各家 secret 里除了令牌还有身份载荷件（LobsterAI 的 uuid / keyfrom、
+/// AtomCode 的 userId…）。续期只该动令牌那几个键 —— 整份替换会把身份件丢掉，
+/// 而丢了它们账号就永远续不了期。
+pub fn with_fields(secret: &Value, fields: &[(&str, Value)]) -> Value {
+    let mut next = secret.clone();
+    let Some(object) = next.as_object_mut() else {
+        return next;
+    };
+    for (key, value) in fields {
+        object.insert((*key).to_string(), value.clone());
+    }
+    next
+}
+
+/// 从 secret 里取一个非空字符串（多候选键，宽容读取）。
+pub fn pick(record: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        let value = record
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 令牌尾 4 字符（公开视图的展示字段）。
+pub fn token_tail(token: &str) -> String {
+    let chars: Vec<char> = token.chars().collect();
+    let start = chars.len().saturating_sub(4);
+    chars[start..].iter().collect()
+}

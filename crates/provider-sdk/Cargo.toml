@@ -1,0 +1,20 @@
+[package]
+name = "agent2api-provider-sdk"
+version = "0.1.0"
+description = "Agent2API 提供商插件 SDK：实现 Provider trait 即可被网关加载"
+authors = ["Agent2API"]
+edition = "2021"
+rust-version = "1.88"
+license-file = "../../LICENSE"
+repository = "https://github.com/ProvidersPlugin/Agent2Providers"
+homepage = "https://github.com/aimod-cc/Agent2API"
+
+# ── 这个 crate 是给谁用的 ──────────────────────────────────────
+# 插件作者。他只需要实现一个 `Provider` trait，然后调 `serve()`，
+# 进程就变成网关能加载的提供商宿主。所有 IPC、背压、取消、日志回传
+# 都由这里的 `serve()` 处理掉 —— 作者不该看见一个帧。
+[dependencies]
+agent2api-provider-protocol = { path = "../provider-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }

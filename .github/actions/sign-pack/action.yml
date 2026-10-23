@@ -1,0 +1,43 @@
+name: 签名插件包
+description: 用仓库 secret 里的 ed25519 私钥给 dist/*.zip 签名（覆盖二进制与 ui/ 下每个文件的 sha256）
+
+# ── 为什么抽成复合 action ────────────────────────────────────
+# 五个平台 job 各要签一次，写五遍必然漂移 —— 某天改了密钥文件格式或签名
+# 参数，只改其中两三处，剩下两个平台就会静默发出未签名的包。
+#
+# ── 没配 secret 时不失败 ────────────────────────────────────
+# fork 与 PR 拿不到 secret。那两种场景本来就出不了官方签名的包，打出来的
+# 包保持未签名状态（网关允许安装、界面标黄）比让 CI 红掉更合适。
+
+inputs:
+  key:
+    description: 密钥文件内容（仓库 secret AGENT2API_PLUGIN_KEY 的原文）
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: 写入私钥并签名
+      shell: bash
+      env:
+        SIGNING_KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        if [ -z "$SIGNING_KEY" ]; then
+          echo "::warning::没有 AGENT2API_PLUGIN_KEY，本次产物未签名"
+          exit 0
+        fi
+        KEY_FILE="$RUNNER_TEMP/plugin-signing-key.json"
+        printf '%s' "$SIGNING_KEY" > "$KEY_FILE"
+        # 私钥用完即删：runner 是临时的，但日志与残留文件仍不该留它
+        trap 'rm -f "$KEY_FILE"' EXIT
+        shopt -s nullglob
+        zips=(dist/*.zip)
+        if [ ${#zips[@]} -eq 0 ]; then
+          echo "::error::dist/ 里没有 zip，打包步骤可能失败了"
+          exit 1
+        fi
+        for zip in "${zips[@]}"; do
+          node scripts/sign.mjs sign --zip "$zip" --key "$KEY_FILE"
+        done

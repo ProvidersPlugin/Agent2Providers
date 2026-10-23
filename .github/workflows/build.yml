@@ -93,6 +93,11 @@ jobs:
       - name: 打包
         run: node scripts/pack.mjs --skip-build --target x86_64-pc-windows-msvc
 
+      - name: 签名
+        uses: ./.github/actions/sign-pack
+        with:
+          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
+
       - name: 上传产物
         uses: actions/upload-artifact@v7
         with:
@@ -133,6 +138,11 @@ jobs:
       - name: 打包
         run: node scripts/pack.mjs --skip-build --target x86_64-apple-darwin
 
+      - name: 签名
+        uses: ./.github/actions/sign-pack
+        with:
+          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
+
       - name: 上传产物
         uses: actions/upload-artifact@v7
         with:
@@ -168,6 +178,11 @@ jobs:
 
       - name: 打包
         run: node scripts/pack.mjs --skip-build --target aarch64-apple-darwin
+
+      - name: 签名
+        uses: ./.github/actions/sign-pack
+        with:
+          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
 
       - name: 上传产物
         uses: actions/upload-artifact@v7
@@ -233,6 +248,11 @@ jobs:
 
       - name: 打包
         run: node scripts/pack.mjs --skip-build --target "${{ matrix.target }}"
+
+      - name: 签名
+        uses: ./.github/actions/sign-pack
+        with:
+          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
 
       - name: 上传产物
         uses: actions/upload-artifact@v7

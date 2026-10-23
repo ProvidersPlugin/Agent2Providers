@@ -68,10 +68,13 @@
 // 保留的理由与 `captcha` 相同：这些判据是 parity 的对照材料，而且将来若把
 // 调度也搬进插件，它们就是现成的实现。
 #![allow(dead_code)]
+use std::sync::{Mutex, OnceLock};
+
 use serde_json::{json, Value};
 
 use crate::http::send_raw;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
+use agent2api_provider_sdk::PluginCtx;
 use crate::errors::GatewayError;
 
 use super::region::Region;
@@ -86,14 +89,31 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 ///
 /// 上游拿它判「这个客户端够不够新」（`1004 ineligible` 就包含版本不达标），
 /// 活动也可能要求最低版本。参考实现把它做成配置项（`identity.appVersion`，
-/// 环境变量 `ZCODE_APP_VERSION` 可覆盖），默认值是 **ZCode 客户端当前版本**
-/// `3.14.0`。
+/// 环境变量 `ZCODE_APP_VERSION` 可覆盖），默认值取 **ZCode 客户端当前版本**。
 ///
 /// ★ 别拿参考项目自己的版本号（它 `package.json` 里那个 `4.6.9`）—— 那个数字
 /// 无法以客户端形态通过校验，`app_version` 与 `X-ZCode-App-Version` 都会对不上，症状是
 /// 领取被判 `1004 ineligible`（而这看起来像「账号没资格」，极易误判）。
-/// 上游抬门槛时用户可以用环境变量覆盖，不必等发版。
-const DEFAULT_APP_VERSION: &str = "3.14.0";
+///
+/// ── 这个数字是**活动的入场门槛**，不是「随便填个新版本」──────────
+/// 2026-10-23 实测（`GET billing/preview`，匿名 + 稳定 `X-Device-Mid`，
+/// win32-x64 / darwin-arm64 / linux-x64 三个平台结果一致）：
+///
+/// | app_version | `data.plans` |
+/// |---|---|
+/// | 3.13.0 / 3.14.0 / 3.14.3 / 3.15.0 / 3.15.1 / 3.16.0 | `[]` |
+/// | 3.16.1 / 3.16.2 / 3.17.0 | 含 `zcode-v3-start-plan-1024` |
+///
+/// 上一期（2026-10-23 的 ZCode 1024 Dev Day，5 亿 token）的门槛落在
+/// 3.16.0 → 3.16.1 之间；旧值 `3.14.0` 拿到的是一份**空列表**（`code: 0`，
+/// 不是错误），于是症状是「活动明明在，我们却一个套餐都探不到」——
+/// 看起来像上游没这活动，实际是客户端被判太旧。
+///
+/// ★ 门槛会随每期活动上移。上游抬门槛时的表现**不是报错**，而是静默返回
+/// 空 `plans`，所以这张表要跟着官方 changelog（zcode.z.ai/cn/changelog）
+/// 一起更新；排障时也可以先用 `ZCODE_APP_VERSION` 环境变量试几个版本，
+/// 不必改代码重发版。
+const DEFAULT_APP_VERSION: &str = "3.16.2";
 
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
@@ -227,13 +247,86 @@ pub fn captcha_hint(config: &CaptchaConfig) -> String {
     }
 }
 
-/// 客户端版本号（`ZCODE_APP_VERSION` 可覆盖）
+/// 设置页填的版本号（`settings.get` 的 `appVersion` 键）的进程内快照。
+///
+/// ── 为什么是「快照」而不是每次问网关 ────────────────────────
+/// [`app_version`] 是**同步**函数（`build_chat_request` 那条路不能 await），
+/// 而 `ctx.settings_get` 是异步回调。把签名改成异步会牵动全部 8 个调用点，
+/// 其中 `claim` / `balance` / `oauth` 里的那几处都在构造 URL 的同步段里。
+/// 因此这里照 `captcha::set_required` 的同一模式：读侧同步取快照，
+/// 由拿到 ctx 的异步入口（[`refresh_override`]）刷新它。
+///
+/// `None` = 设置页没填（或还没读到）→ 回落 [`DEFAULT_APP_VERSION`]。
+static VERSION_OVERRIDE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn version_override() -> &'static Mutex<Option<String>> {
+    VERSION_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+/// 设置页的键名（`settings.get(provider, "appVersion")`）。
+///
+/// 网关把它存成 `plugin.<provider>.appVersion`（见 `plugin_host` 的
+/// `plugin_settings_key`），因此这里只需给出后半段。
+pub const SETTING_APP_VERSION: &str = "appVersion";
+
+/// 读这份设置时用的 provider 名。
+///
+/// ── 为什么固定 `"zcode"` 而不是 `region.provider_id()` ──────
+/// 客户端版本号是**设备形态**，国内版与国际版共用同一个（见
+/// [`DEFAULT_APP_VERSION`] 的表：门槛不分地区）。用固定的 `"zcode"` 让
+/// 两家读到同一份设置 —— 用户在设置页填一次，两个地区同时生效；
+/// 若按地区分开存，用户改完国内版还得记得再改一次国际版。
+const APP_VERSION_SETTING_OWNER: &str = "zcode";
+
+/// 从网关读一次版本号覆盖，写进进程内快照（在拿到 ctx 的异步入口里调）。
+///
+/// ── 三条口径 ────────────────────────────────────────────────
+///   · 读失败（网关老、键不存在、RPC 故障）**保持现值**，不清空 ——
+///     一次读失败不该让已经生效的自定义版本号静默退回默认值；
+///   · 空串 / 纯空白 = 用户在设置里清空了 → 存 `None`（回落默认），
+///     这是唯一会把覆盖撤掉的路径；
+///   · 每次调用都取一次、不比对是否变化：读取是一次几十微秒的本机 RPC，
+///     而调用它的都是低频动作（探测 / 领取 / 余额），不值得维护脏标记。
+pub async fn refresh_app_version_override(ctx: &PluginCtx) {
+    let value = match ctx.settings_get(APP_VERSION_SETTING_OWNER, SETTING_APP_VERSION).await {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let picked = value
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    if let Ok(mut guard) = version_override().lock() {
+        *guard = picked;
+    }
+}
+
+/// 客户端版本号。
+///
+/// 取值优先级（改之前先读）：
+///   1. `ZCODE_APP_VERSION` 环境变量 —— 排障时的临时覆盖，最高优先
+///      （不改设置、不改代码就能试几个版本，见 [`DEFAULT_APP_VERSION`] 的表）；
+///   2. 设置页「ZCode 客户端版本号」填的值（`settings.get` 的 `appVersion`）；
+///   3. [`DEFAULT_APP_VERSION`] —— 编译期默认值。
+///
+/// 第 2 项存在的理由：上游的门槛随每期活动上移，而**落后时的表现是空列表
+/// 而不是报错**（见 [`DEFAULT_APP_VERSION`] 的实测表）。有这一格之后，
+/// 用户遇到「活动在但探不到」时可以在设置里自己填一个更新的版本号，
+/// 不必等我们发版。
 pub fn app_version() -> String {
-    std::env::var("ZCODE_APP_VERSION")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string())
+    if let Ok(value) = std::env::var("ZCODE_APP_VERSION") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Ok(guard) = version_override().lock() {
+        if let Some(value) = guard.as_ref() {
+            return value.clone();
+        }
+    }
+    DEFAULT_APP_VERSION.to_string()
 }
 
 /// 平台标识（参考实现的 `${process.platform}-${process.arch}`）。

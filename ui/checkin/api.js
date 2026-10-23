@@ -29,6 +29,44 @@ let panelHeaders = {};
 let headersReady = false;
 
 /**
+ * 应用宿主告知的主题模式（`light` / `dark` / `system`）。
+ *
+ * ── 为什么要宿主告诉我们 ────────────────────────────────────
+ * 主题选择存在宿主的 localStorage 里（键 `workbuddy-desktop-theme`），iframe
+ * 是**独立文档**，读不到它 —— 而 `prefers-color-scheme` 只在宿主把窗口主题
+ * 交回系统时才跟着变（用户显式选了深色而系统是浅色时，它读到的仍是浅色）。
+ * 所以模式必须由宿主递进来，写到自己 `<html data-theme>` 上，交给
+ * `/plugins/theme.css` 里那套 `:root[data-theme="…"]` 选择器生效。
+ *
+ * 拿不到时保持 HTML 上的初值 `system`：那条路径靠 `prefers-color-scheme`
+ * 兜底（与宿主 `applyTheme` 交回系统时同一条通道），最坏情况是「用户显式
+ * 选了深色但系统是浅色」时页面偏亮 —— 比整页没有背景色好得多。
+ */
+function applyTheme(mode) {
+  const value = mode === 'dark' || mode === 'light' ? mode : 'system';
+  document.documentElement.dataset.theme = value;
+  // 原生控件（滚动条、输入框、下拉箭头）的深浅由 color-scheme 决定，
+  // 不跟着设就会在深色页面上出现一条白滚动条
+  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true;
+  document.documentElement.style.colorScheme =
+    value === 'dark' || (value === 'system' && systemDark) ? 'dark' : 'light';
+}
+
+/**
+ * 监听宿主的消息：凭证与主题走同一条通道（`agent2api:*` 命名空间）。
+ *
+ * 监听**常驻不摘**：主题随时可能被用户在设置里改，凭证也可能迟到
+ * （见 `waitForCredentials` 的时序说明）。两条消息互不依赖，谁先到都行。
+ */
+window.addEventListener('message', event => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'agent2api:panel-theme') {
+    applyTheme(data.theme);
+  }
+});
+
+/**
  * 等宿主递凭证的上限。
  *
  * 页面**主动**向父窗口要一次（`agent2api:request-credentials`），而不是干等
@@ -75,6 +113,22 @@ function waitForCredentials() {
     }
     window.setTimeout(finish, CREDENTIAL_TIMEOUT_MS);
   });
+}
+
+/**
+ * 主动向宿主问一次当前主题（页面首帧就用上正确的深浅）。
+ *
+ * 与凭证同一个模式：宿主**会**在 iframe `load` 后推一次，但那条路可能输给
+ * 页面的首帧（模块脚本先于 `load` 执行完），所以页面自己再要一次。
+ * 父窗口不可达（页面被单独打开调试）时保持 `system`，`prefers-color-scheme`
+ * 仍然够用。
+ */
+export function requestTheme() {
+  try {
+    window.parent?.postMessage({ type: 'agent2api:request-theme' }, '*');
+  } catch {
+    /* 单独打开：保持 system */
+  }
 }
 
 /** 把三种信封归一成 `{ data, error }`；`error` 非空即失败 */

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hans">
+<html lang="zh-Hans" data-theme="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,27 +18,52 @@
   一条定时条目可能横跨九家，卸载插件不能让用户丢排程；这些事实与「装了什么
   插件」无关，所以它们在网关侧，页面只是它的一份视图。
 
-  ── 主题 ────────────────────────────────────────────────────
-  用 `prefers-color-scheme`：宿主切主题时会把窗口主题一起切掉，WebView2 的
-  这个媒体查询跟着变（见宿主 app.js 的 applyTheme 注释）。iframe 是独立文档，
-  读不到宿主的 data-theme，这是唯一可靠的通道。
+  ── 样式与组件从哪来 ────────────────────────────────────────
+  三份资源都由网关出（`/plugins/runtime/*`，见网关 `api::plugin_theme`）：
+
+    · `runtime/theme.css`     宿主的设计令牌原文（色板 / 圆角 / 阴影 / 滚动条）
+    · `runtime/islands/ui.css` 组件库样式（Tailwind 产物，不含 preflight）
+    · `runtime/islands/ui.js`  组件库 + React，挂到 `window.wbUiKit`
+
+  iframe 是独立文档，这三样都读不到宿主的 —— 由网关把**同一份**出过来，
+  于是这一页的按钮、徽章、开关与宿主逐字相同（它们就是同一个组件），
+  色板与圆角也自动跟随网关版本。
+
+  加载顺序：两份 CSS 在 head（先令牌后组件，组件里的 var() 才解析得到）；
+  `ui.js` 用普通 script 同步加载，必须早于 `main.js`（后者是 module，
+  defer 执行 —— 普通脚本天然先跑完）。
+
+  ── 主题怎么定 ──────────────────────────────────────────────
+  宿主的主题选择在 localStorage 里（iframe 读不到），所以由宿主通过
+  postMessage 告知，页面写到自己的 `<html data-theme>` 上（见 main.js）。
+  拿不到时保持 `system`：WebView2 的 `prefers-color-scheme` 跟着窗口主题走，
+  与宿主 `applyTheme` 交回系统的那条路径一致。
 -->
+<link rel="stylesheet" href="/plugins/runtime/theme.css">
+<link rel="stylesheet" href="/plugins/runtime/layout.css">
+<link rel="stylesheet" href="/plugins/runtime/components.css">
+<link rel="stylesheet" href="/plugins/runtime/tooltip.css">
+<link rel="stylesheet" href="/plugins/runtime/islands/ui.css">
 <link rel="stylesheet" href="page.css">
+<script src="/plugins/runtime/islands/ui.js"></script>
 </head>
 <body>
 <div class="ck-shell">
-  <div class="ck-tabs" role="tablist">
-    <button type="button" class="ck-tab active" data-tab="center" role="tab">签到中心</button>
-    <button type="button" class="ck-tab" data-tab="schedule" role="tab">定时签到</button>
-    <button type="button" class="ck-tab" data-tab="records" role="tab">签到记录</button>
-    <span class="ck-tab-spacer"></span>
-    <span class="ck-auto-badge" id="auto-badge" hidden></span>
-    <button type="button" class="ck-btn ck-btn-ghost" id="reload" title="重新读取">刷新</button>
+  <div class="ck-inner">
+    <!-- Tab 条：三个档位由 main.js 用组件库的 SegmentedControl 渲染进 #tabs-host，
+         右侧徽标与「刷新」也由它渲染（它们同样是组件库的 Badge / Button）。
+         结构留在 HTML 里只是为了先占位，避免首帧闪一下空白。 -->
+    <div class="ck-tabs">
+      <span id="tabs-host"></span>
+      <span class="ck-tab-spacer"></span>
+      <span id="auto-badge"></span>
+      <span id="reload-host"></span>
+    </div>
+    <div class="ck-error" id="page-error" hidden></div>
+    <div class="ck-body" id="tab-center"></div>
+    <div class="ck-body" id="tab-schedule" hidden></div>
+    <div class="ck-body" id="tab-records" hidden></div>
   </div>
-  <div class="ck-error" id="page-error" hidden></div>
-  <div class="ck-body" id="tab-center"></div>
-  <div class="ck-body" id="tab-schedule" hidden></div>
-  <div class="ck-body" id="tab-records" hidden></div>
 </div>
 <div class="ck-toast" id="toast" hidden></div>
 <script type="module" src="main.js"></script>

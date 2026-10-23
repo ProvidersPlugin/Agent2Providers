@@ -2,15 +2,21 @@
  * 极小的 DOM 构造工具。
  *
  * ── 为什么不用框架 ──────────────────────────────────────────
- * 这一页要装进插件包，随包分发。引 React 会让包体积翻几倍，而这一页只有
- * 三个标签页、十几处交互 —— 全量重绘（`replaceChildren`）已经够快，还省掉了
- * 「状态与视图同步」这一整类问题。
+ * 这一页的**结构**由命令式代码拼（三个标签页、十几处交互，全量重绘足够快，
+ * 还省掉「状态与视图同步」这一整类问题）。
+ *
+ * 但**控件**不自己画：`badge` / `button` / `toggle` 三个函数把组件库的
+ * `Badge` / `Button` / `Switch` 渲染进 DOM（见 `kit.js` 的说明）。早先这几个
+ * 也是自绘的，结果与宿主差着一档尺寸（按钮矮 4px、开关滑块小 4px、徽章圆角
+ * 不同）—— 迁移过来的页面因此一眼看出不一样。现在它们就是同一个组件。
  *
  * ── 为什么全部走 textContent ────────────────────────────────
  * 页面里的文字大量来自上游（账号名、错误原文、任务标题）。用 innerHTML 拼接
  * 意味着上游一句话里带个 `<` 就能破坏版面 —— 这里一律 `textContent`，需要
  * 结构就建节点。唯一的例外是 `svg()`：图标是本地常量，不含数据。
  */
+
+import { renderKit, requireKit } from './kit.js';
 
 /**
  * 建一个元素。
@@ -100,26 +106,49 @@ export function icon(name, size = 16) {
 }
 
 /**
- * 提供商徽标：首字母 + 按 id 定的底色。
+ * 提供商图标：优先用真图标（网关 `/plugins/runtime/providers/<id>.png`），
+ * 没有则回落首字母。
  *
- * 为什么不显示各家真图标：图标是**客户端**的资源（宿主 `ui/assets/providers/`
- * 下那一批），插件包拿不到它们，而网关的 `/assets/*` 只有 headless 形态才托管
- * —— 桌面端 iframe 里会 404。首字母徽标两端都成立，也不必为二十几家各塞一张图。
+ * ── 图标从哪来 ──────────────────────────────────────────────
+ * 图标是**客户端**的资源（宿主 `ui/assets/providers/` 下那一批），插件包拿不到。
+ * 网关因此专门开了一条 `/plugins/runtime/providers/*` 把它们出给 iframe
+ * （见 `api::plugin_theme`）—— 于是这一页画出来的图标与宿主账号页是同一张图，
+ * 而不是「一个灰底字母」。
+ *
+ * ── 哪些 id 没有专属图 ──────────────────────────────────────
+ * 国际版与国内版共用同一张（`workbuddy-intl` → `workbuddy`、`qoder-intl` →
+ * `qoder` …），与宿主 `PROVIDER_ICONS` 的回落口径一致：两家本来就是一条
+ * 产品线，硬凑一张不同的图反而让人以为是两个东西。
  */
+const ICON_FALLBACK = {
+  'workbuddy-intl': 'workbuddy',
+  'autoclaw-intl': 'autoclaw',
+  'qoder-intl': 'qoder',
+  'zcode-intl': 'zcode',
+  'monkeycode-intl': 'monkeycode',
+  'modelscope-intl': 'modelscope',
+  'cline-pass': 'cline',
+  'cline-free': 'cline',
+  'accio-cn': 'accio',
+};
+
 export function providerBadge(id, label) {
   const name = String(label || id || '·');
   const initial = name.trim().slice(0, 1).toUpperCase() || '·';
-  // 稳定的色相：同一个 id 永远同一个颜色（换机器、重装都一样）
-  let hash = 0;
-  for (let index = 0; index < id.length; index += 1) {
-    hash = (hash * 31 + id.charCodeAt(index)) % 360;
-  }
-  return el('span', {
-    class: 'ck-badge',
-    text: initial,
-    style: { background: `oklch(0.66 0.11 ${hash})` },
-    title: name,
+  const slug = ICON_FALLBACK[id] || id;
+  const node = el('span', { class: 'ck-badge', title: name });
+  // `<img>` 的 onError 回落到首字母：网关没这张图时不留一个破图图标
+  const img = el('img', {
+    src: `/plugins/runtime/providers/${slug}.png`,
+    alt: '',
+    loading: 'lazy',
   });
+  img.addEventListener('error', () => {
+    img.remove();
+    node.textContent = initial;
+  });
+  node.append(img);
+  return node;
 }
 
 /** 时间戳（毫秒）→ 本地可读时间；缺失 / 非法给 `—` */
@@ -140,33 +169,187 @@ export function formatClock(value) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-/** 徽章（语义色由 `tone` 定：ok / warn / err / brand / plain） */
-export function badge(label, tone = 'plain', title = '') {
-  return el('span', { class: `ck-pill ck-pill-${tone}`, text: label, title: title || null });
+/**
+ * 徽章 —— 直接用组件库的 `Badge`。
+ *
+ * `tone` 是本页的语义档（ok / warn / err / brand / plain），映射到组件库的
+ * `variant`：success / warning / destructive / brand / outline。`shape` 照原实现
+ * 传（`tag` 是行内状态标，`pill` 是默认胶囊）。
+ */
+const BADGE_VARIANT = {
+  ok: 'success',
+  warn: 'warning',
+  err: 'destructive',
+  brand: 'brand',
+  plain: 'outline',
+};
+
+export function badge(label, tone = 'plain', title = '', shape = 'pill') {
+  const { React, Badge } = requireKit();
+  return renderKit(React.createElement(Badge, {
+    variant: BADGE_VARIANT[tone] || 'outline',
+    shape: shape === 'tag' ? 'tag' : 'pill',
+    title: title || undefined,
+  }, label));
 }
 
-/** 按钮（`tone`：default / outline / ghost / danger） */
-export function button(label, options = {}) {
-  const node = el('button', {
-    type: 'button',
-    class: `ck-btn ck-btn-${options.tone || 'outline'}`,
-    disabled: options.disabled === true,
-    title: options.title || null,
-    onClick: options.onClick,
+/**
+ * 按钮 —— 直接用组件库的 `Button`。
+ *
+ * `tone` 映射：default → `default`、outline → `outline`、ghost → `ghost`、
+ * danger → `destructive`。尺寸统一 `sm`（26px 高），与原实现的用法一致。
+ *
+ * ── 图标怎么传 ──────────────────────────────────────────────
+ * 调用方给的是图标**名**（`options.icon`），这里翻成 React 的 `<svg>` 当
+ * children —— 组件库的 `Button` 布局是 `inline-flex gap-1.5`，图标与文字
+ * 的间距由它自己管，不必在调用点拼 span。
+ *
+ * 为什么不复用上面的 `icon()`：那个返回的是 DOM 节点，React 不接受把已有
+ * DOM 节点当 children（会当成未知对象渲染）。同一个图标表，两种产出形态。
+ */
+const BUTTON_VARIANT = {
+  default: 'default',
+  outline: 'outline',
+  ghost: 'ghost',
+  danger: 'destructive',
+};
+
+/** 图标名 → React `<svg>` 元素（图标表见 `ICONS`） */
+function iconElement(React, name, size = 14) {
+  // 图标是本地常量（`ICONS` 表），不含用户数据 —— 用 dangerouslySetInnerHTML
+  // 是安全的，也与 `icon()` 的 innerHTML 写法一致
+  return React.createElement('svg', {
+    viewBox: '0 0 24 24',
+    width: size,
+    height: size,
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+    dangerouslySetInnerHTML: { __html: ICONS[name] || ICONS.spark },
   });
-  if (options.icon) node.append(icon(options.icon, options.iconSize || 14));
-  if (label) node.append(el('span', { text: label }));
-  return node;
 }
 
-/** 开关（原生 checkbox 加样式，不引组件库） */
-export function toggle(checked, options = {}) {
-  const input = el('input', {
-    type: 'checkbox',
-    class: 'ck-switch',
+export function button(label, options = {}) {
+  const { React, Button } = requireKit();
+  const children = [];
+  if (options.icon) children.push(iconElement(React, options.icon, options.iconSize || 14));
+  if (label) children.push(label);
+  return renderKit(React.createElement(Button, {
+    size: 'sm',
+    variant: BUTTON_VARIANT[options.tone] || 'outline',
+    disabled: options.disabled === true,
+    title: options.title || undefined,
+    // `className` 交给组件库的 `cn()` 合并：它用 tailwind-merge，后写的同类
+    // 工具类赢过组件默认类（例如 `text-destructive` 盖掉 ghost 的 `text-subtle`）
+    className: options.className || undefined,
+    onClick: options.onClick,
+  }, ...children));
+}
+
+/**
+ * 改一颗按钮的禁用态。
+ *
+ * ── 为什么不能直接 `host.disabled = flag` ──────────────────
+ * `button()` 返回的是 `renderKit()` 的包装 span（`display: contents`），
+ * 真按钮在它里面 —— 在 span 上写 `disabled` 只是个无人理会的自有属性。
+ *
+ * ── 为什么要等一帧 ─────────────────────────────────────────
+ * `createRoot().render()` 在 React 18 里是**异步提交**的，调用方拿到 span 时
+ * 里面常常还是空的。这里先试一次，没找到就排到下一帧 —— 那一次提交一定已经
+ * 完成。调用方（表单里随勾选变化的「保存」）不需要知道这件事。
+ */
+export function setDisabled(host, flag) {
+  const apply = () => {
+    const handle = host?.querySelector?.('button');
+    if (!handle) return false;
+    handle.disabled = flag === true;
+    return true;
+  };
+  if (apply()) return;
+  requestAnimationFrame(() => { apply(); });
+}
+
+/**
+ * 复选框 —— 直接用组件库的 `Checkbox`。
+ *
+ * 原生 `<input type=checkbox>` + `accent-color` 只能改填充色：尺寸、圆角、
+ * 勾形都由浏览器决定（Windows 上是 13px 方块 + 系统勾）。组件库那份是 14px、
+ * 3px 圆角、选中填主色 —— 签到范围一屏十几个框并排，差一档就看得出。
+ *
+ * `onChange` 收的是新值（不是事件）：调用方要的是「勾上没有」。
+ */
+export function checkbox(checked, options = {}) {
+  const { React, Checkbox } = requireKit();
+  return renderKit(React.createElement(Checkbox, {
     checked: checked === true,
     disabled: options.disabled === true,
-    onChange: event => options.onChange?.(event.target.checked),
+    onCheckedChange: next => options.onChange?.(next === true),
+  }));
+}
+
+/**
+ * 开关 —— 直接用组件库的 `Switch`。
+ *
+ * 受控组件：`checked` 由调用方给（每次重绘都传当前值），`onChange` 里改状态。
+ * 原实现是「原生 checkbox + 自绘轨道」，尺寸与组件库差 2px（19 vs 21 高）、
+ * 滑块差 4px（13 vs 17），一行里几个开关并排时肉眼可见。
+ */
+export function toggle(checked, options = {}) {
+  const { React, Switch } = requireKit();
+  return renderKit(React.createElement(Switch, {
+    checked: checked === true,
+    disabled: options.disabled === true,
+    onCheckedChange: next => options.onChange?.(next === true),
+  }));
+}
+
+/**
+ * 文本输入框 —— 组件库的 `Input`。
+ *
+ * ── 为什么是「非受控 + 回调」而不是受控 ──────────────────────
+ * 调用方（`schedule.js` / `records.js`）的用法是「拿一个节点、读它的
+ * `.value`」：草稿对象在事件里就地改，不触发重绘。若做成受控组件，每次
+ * 按键都要把值写回 React state 并重画 —— 而这一页的重绘是**整块替换**，
+ * 光标会跳走。
+ *
+ * 所以这里用 `defaultValue` + `onChange` 把值交给调用方，React 不持有状态。
+ * 需要程序化改值时调用方自己拿节点写 `.value`（与原生 input 完全一致）。
+ *
+ * ── 为什么返回的是 `<input>` 本身 ────────────────────────────
+ * 调用方会直接 `input.value = …`、`input.classList.add(…)`，所以必须给真
+ * input。`renderKit()` 返回的是 `display:contents` 的包装 span，读不到
+ * `.value` —— 这里改用 `flushSync` 强制同步提交，渲染完再取出那个节点。
+ * 没有 `flushSync` 的话 `createRoot().render()` 是异步的，函数返回时
+ * 容器还是空的。
+ */
+export function textInput(options = {}) {
+  const { React, Input, createRoot, flushSync } = requireKit();
+  const host = document.createElement('div');
+  host.style.display = 'contents';
+  const root = createRoot(host);
+  flushSync(() => {
+    root.render(React.createElement(Input, {
+      type: options.type || 'text',
+      defaultValue: options.value === undefined ? '' : String(options.value),
+      placeholder: options.placeholder || undefined,
+      disabled: options.disabled === true,
+      // 宽度约束走组件库的 `cn()`：`w-full` 是组件默认类，`className` 里的
+      // `max-w-[220px]` 与它不同属性，两者并存即可（收窄而不塌成 0）
+      className: options.className || undefined,
+      onChange: event => options.onInput?.(event.target.value),
+      onKeyDown: options.onKeydown,
+    }));
   });
-  return el('label', { class: 'ck-switch-wrap' }, input, el('span', { class: 'ck-switch-track' }));
+  const node = host.firstElementChild;
+  // React 没渲染出东西（不该发生）时退回一个原生 input，至少不返回 null
+  if (node) return node;
+  return el('input', {
+    type: options.type || 'text',
+    value: options.value === undefined ? '' : String(options.value),
+    placeholder: options.placeholder || null,
+    onInput: event => options.onInput?.(event.target.value),
+  });
 }

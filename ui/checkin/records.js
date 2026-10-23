@@ -10,7 +10,7 @@
  * 服务端真分页（`limit` / `offset` + 同条件 `total`）。筛选变化时 offset 归零。
  */
 
-import { badge, button, el, fill, formatTime, icon } from './dom.js';
+import { badge, button, el, fill, formatTime, textInput } from './dom.js';
 import { loadRecords, patch, store } from './state.js';
 
 /** 结果档位 → 文案与徽章色（`outcome` 由后端判） */
@@ -88,19 +88,19 @@ function filtersBar() {
   );
   outcomeSelect.value = query.outcome || '';
 
-  const keyword = el('input', {
+  const keyword = textInput({
     type: 'search',
-    class: 'ck-input ck-input-search',
     value: query.keyword || '',
     placeholder: '搜索账号 / 说明',
     // 输入框失焦或回车才查：每敲一个字都打一次网关没必要
     onKeydown: event => {
       if (event.key === 'Enter') applyFilter({ keyword: event.target.value.trim() });
     },
-    onChange: event => {
-      if (!event.target.value.trim()) applyFilter({ keyword: '' });
+    onInput: value => {
+      if (!value.trim()) applyFilter({ keyword: '' });
     },
   });
+  keyword.classList.add('ck-input-search');
 
   return el('div', { class: 'ck-filters' },
     seg,
@@ -128,7 +128,17 @@ function recordsTable() {
   if (!rows.length) {
     return el('div', { class: 'ck-empty', text: '这段时间里还没有签到记录。' });
   }
-  const table = el('table', { class: 'ck-records' });
+  const table = el('table', { class: 'ck-table ck-records-table' });
+  // 列宽由 `table-layout: fixed` + 这里的 <col> 分配（见 page.css 的说明）：
+  // 时间列定宽 160px，其余按百分数吃掉剩余宽度。
+  table.append(el('colgroup', {},
+    el('col', { class: 'ck-col-time' }),
+    el('col', { class: 'ck-col-account' }),
+    el('col', { class: 'ck-col-provider' }),
+    el('col', { class: 'ck-col-source' }),
+    el('col', { class: 'ck-col-outcome' }),
+    el('col', { class: 'ck-col-detail' }),
+  ));
   table.append(el('thead', {},
     el('tr', {},
       el('th', { text: '时间' }),
@@ -142,22 +152,22 @@ function recordsTable() {
   const body = el('tbody');
   for (const row of rows) {
     const view = OUTCOME_VIEW[row.outcome] || { label: row.outcome || '—', tone: 'plain' };
-    const timeCell = el('td', { class: 'ck-nowrap' },
+    const timeCell = el('td', { class: 'ck-col-time ck-nowrap' },
       el('span', { text: formatTime(row.ts) }),
       // 北京时间的自然日（上游口径）：与本地时间可能差一天，单独一行给出来
-      row.date ? el('span', { class: 'ck-sub ck-block', text: row.date }) : null,
+      row.date ? el('span', { class: 'ck-record-date', text: row.date }) : null,
     );
     const detail = detailText(row);
     body.append(el('tr', { class: row.ok ? '' : 'ck-row-fail' },
       timeCell,
       el('td', { text: row.accountName || '—' }),
-      el('td', { class: 'ck-sub', text: row.provider || '—' }),
+      el('td', { class: 'ck-record-source', text: row.provider || '—' }),
       el('td', {},
         el('span', { text: SOURCE_LABEL[row.source] || row.source || '—' }),
-        row.reason ? el('span', { class: 'ck-sub', text: ` ${row.reason}` }) : null,
+        row.reason ? el('span', { class: 'ck-record-reason', text: row.reason }) : null,
       ),
       el('td', {}, badge(view.label, view.tone)),
-      el('td', { class: detail && !row.ok ? 'ck-detail-fail' : '', text: detail || '—' }),
+      el('td', { class: detail && !row.ok ? 'ck-record-detail-fail' : '', text: detail || '—' }),
     ));
   }
   table.append(body);
@@ -197,10 +207,10 @@ export function renderRecords(container) {
     return;
   }
   fill(container, el('div', { class: 'ck-main' },
-    el('section', { class: 'ck-panel' },
-      el('div', { class: 'ck-panel-head' },
+    el('section', { class: 'panel' },
+      el('div', { class: 'panel-head' },
         el('h2', { text: '签到记录' }),
-        el('span', { class: 'ck-panel-sub', text: '每账号一条明细 · 失败时给上游原文' }),
+        el('span', { class: 'panel-sub', text: '每账号一条明细 · 失败时给上游原文' }),
       ),
       filtersBar(),
       recordsTable(),

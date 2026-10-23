@@ -240,6 +240,29 @@ impl Provider for ZcodeProvider {
                 expiry: vec!["expiresAt".to_string()],
                 ..Default::default()
             })
+            // 签到能力申报：本家 `checkin` 恒 false（没有每日签到），但它有
+            // 「活动福利」——限时套餐领取。网关的签到中心按这一块决定「活动福利」
+            // 那张卡里列哪些账号（见 `api::checkin_center` 的 `plan_rows`），
+            // 不申报的话四个 ZCode 账号一个都不会出现。
+            //
+            // 迁移到插件申报时漏掉了这一处：网关侧原来写死 `provider ==
+            // "zcode" || provider == "zcode-intl"`，改成读插件申报之后这里没有
+            // 对应补上，于是那张卡永远是「没有可领套餐的账号」。
+            .with_checkin(proto::CheckinInfo {
+                description: Some(format!(
+                    "限时体验套餐领取 · 每日一份 · {}",
+                    self.region.label()
+                )),
+                // 领取走的是一次独立的「探测 + 领取」，不分档，所以只有一个
+                // `Claim` 档；`Full` 是「签到 + 领取都做」，本家没有签到。
+                modes: vec![proto::CheckinMode::Claim],
+                // **不参与每日签到**：本家没有签到链路（`checkin` 恒 false）。
+                // 不写这一位的话，申报本身会被网关当成「有签到」，四个账号会
+                // 进「每日签到」卡并每天落一条必然失败的记录。
+                daily: false,
+                plans: true,
+                ..Default::default()
+            })
     }
 
     /// 映射上绑定的思考等级作为**默认档**注入（客户端自己点名了就让位）。
@@ -498,6 +521,9 @@ impl Provider for ZcodeProvider {
         _refresh: bool,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
+            // 刷新「客户端版本号」覆盖（设置页可改，见 `claim::app_version`）。
+            // 必须在 `preview` 之前：版本号决定上游下不下发套餐列表。
+            claim::refresh_app_version_override(ctx).await;
             let record = crate::store::record(ctx, self.region.provider_id(), account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -585,6 +611,9 @@ impl Provider for ZcodeProvider {
         claim_id: &'a str,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
+            // 领取同样先刷一次版本号覆盖（与 `claim_status` 同口径）：
+            // 用户可能刚在设置里填完就直接点了领取，两条路的判定要一致。
+            claim::refresh_app_version_override(ctx).await;
             let record = crate::store::record(ctx, self.region.provider_id(), account)
                 .await
                 .map_err(GatewayError::into_message)?;

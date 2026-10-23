@@ -12,10 +12,16 @@
  */
 
 import { badge, button, el, fill, formatClock, formatTime, icon, providerBadge } from './dom.js';
+import { renderKit, requireKit } from './kit.js';
 import {
   claimOnboardingAll, growthOf, onboardingOf, patch, queryGrowth, queryOnboarding,
   runAllCheckin, runGrowth, runSchool, runTravel, signSingle, store, toast,
 } from './state.js';
+
+/** 请求切到某个标签页（监听在 main.js 的 ck:switch-tab 事件里） */
+function switchTab(tab) {
+  window.dispatchEvent(new CustomEvent('ck:switch-tab', { detail: { tab } }));
+}
 
 /** 一组账号是否已全部签完（决定徽章） */
 function groupTone(group) {
@@ -27,10 +33,10 @@ function groupTone(group) {
 
 function groupBadge(group) {
   const tone = groupTone(group);
-  if (tone === 'none') return badge('无账号', 'plain');
-  if (tone === 'done') return badge('已签', 'ok');
-  if (tone === 'part') return badge('部分', 'warn');
-  return badge('待签', 'brand');
+  if (tone === 'none') return badge('无账号', 'plain', '', 'tag');
+  if (tone === 'done') return badge('已签', 'ok', '', 'tag');
+  if (tone === 'part') return badge('部分', 'warn', '', 'tag');
+  return badge('待签', 'brand', '', 'tag');
 }
 
 /** 这一组申报了某个附加钩子（`CheckinInfo::ui_hooks`） */
@@ -103,7 +109,7 @@ function accountRows(group) {
     }
     body.append(el('tr', {},
       nameCell,
-      el('td', {}, account.checkedInToday ? badge('已签', 'ok') : badge('待签', 'brand')),
+      el('td', {}, account.checkedInToday ? badge('已签', 'ok', '', 'tag') : badge('待签', 'brand', '', 'tag')),
       el('td', { class: 'ck-sub', text: formatTime(account.checkinAt) }),
       actions,
     ));
@@ -499,12 +505,12 @@ function growthRow(row) {
 
 /** 一块面板：标题 + 副标题 + 右侧操作 + 内容 */
 function panel(title, subtitle, actions, content) {
-  const head = el('div', { class: 'ck-panel-head' },
+  const head = el('div', { class: 'panel-head' },
     el('h2', { text: title }),
-    subtitle ? el('span', { class: 'ck-panel-sub', text: subtitle }) : null,
-    actions ? el('span', { class: 'ck-panel-actions' }, actions) : null,
+    subtitle ? el('span', { class: 'panel-sub', text: subtitle }) : null,
+    actions ? el('span', { class: 'head-actions' }, actions) : null,
   );
-  return el('section', { class: 'ck-panel' }, head, content);
+  return el('section', { class: 'panel' }, head, content);
 }
 
 /** 总览卡 */
@@ -523,26 +529,48 @@ function statsCard() {
   const onboardingUnclaimed = onboardingRows
     .reduce((sum, row) => sum + (onboardingOf(row.id).unclaimed || 0), 0);
 
-  const card = (label, value, unit, foot) => el('div', { class: 'ck-stat' },
-    el('div', { class: 'ck-stat-label', text: label }),
-    el('div', { class: 'ck-stat-value' }, String(value),
-      unit ? el('small', { text: unit }) : null),
-    el('div', { class: 'ck-stat-foot', text: foot }),
-  );
+  // 总览卡。`link` 非空时整张卡可点（跳到对应标签页）——旧实现里
+  // 「定时签到」「累计签到记录」两张是这样，另两张是纯读数。
+  // `pending` = 数据还没到：显示灰色 `—` 而不是 `0`，否则用户会以为
+  // 「今天一个都没签」，实际是还没读到。
+  const card = (label, value, unit, foot, options = {}) => {
+    const valueNode = el('div', { class: 'ck-stat-value' },
+      options.pending
+        ? el('span', { class: 'ck-pending', text: '—' })
+        : String(value),
+      !options.pending && unit ? el('small', { text: unit }) : null,
+    );
+    const box = el('div', { class: options.link ? 'ck-stat ck-stat-link' : 'ck-stat' },
+      el('div', { class: 'ck-stat-label', text: label }),
+      valueNode,
+      el('div', { class: 'ck-stat-foot', text: foot }),
+    );
+    if (options.link) {
+      box.setAttribute('role', 'button');
+      box.setAttribute('tabindex', '0');
+      box.addEventListener('click', options.link);
+      box.addEventListener('keydown', event => {
+        if (event.key === 'Enter') options.link();
+      });
+    }
+    return box;
+  };
 
   const total = daily?.todayEligible || 0;
   const done = daily?.todayDone || 0;
-  const bar = el('div', { class: 'ck-bar' },
-    el('div', {
-      class: 'ck-bar-fill',
-      style: { width: `${total > 0 ? Math.round((done / total) * 100) : 0}%` },
-    }),
-  );
+  // 进度条直接用组件库的 `Progress`（旧实现就是这样），不再自绘 ——
+  // 它的高度 / 轨道色 / 过渡曲线都由组件自己定义，抄数值总会差一点。
+  const { React, Progress } = requireKit();
+  const bar = renderKit(React.createElement(Progress, {
+    className: 'ck-stat-bar',
+    value: total > 0 ? (done / total) * 100 : 0,
+  }));
   const progress = card(
     '今日签到进度',
     done,
-    total > 0 ? ` / ${total}` : '',
+    ` / ${total}`,
     outCount > 0 ? `另有 ${outCount} 个账号不参与每日签到` : '全部账号均可签到',
+    { pending: !daily },
   );
   progress.append(bar);
 
@@ -551,12 +579,16 @@ function statsCard() {
     card('定时签到', enabled, ` / ${entries.length} 条启用`,
       auto?.enabled !== true
         ? '总开关已关闭 · 在「定时签到」页打开'
-        : nextRun ? `下次 ${formatClock(nextRun)} · 点此管理条目` : '暂无启用的条目 · 点此添加'),
-    card('待领新手福利', onboardingRows.length ? onboardingUnclaimed : '无',
+        : nextRun ? `下次 ${formatClock(nextRun)} · 点此管理条目` : '暂无启用的条目 · 点此添加',
+      { link: () => switchTab('schedule'), pending: !auto }),
+    card('待领新手福利',
+      onboardingRows.length ? onboardingUnclaimed : '',
       onboardingRows.length ? ' 项' : '',
-      onboardingRows.length ? `共 ${onboardingRows.length} 个账号` : '没有支持新手福利的账号'),
-    card('累计签到记录', store.records?.total ?? '—', '',
-      '每账号一条明细 · 见「签到记录」页'),
+      onboardingRows.length ? `共 ${onboardingRows.length} 个账号` : '没有支持新手福利的账号',
+      { pending: !onboardingRows.length }),
+    card('累计签到记录', store.records?.total ?? 0, '',
+      '每账号一条明细 · 点此查看「签到记录」',
+      { link: () => switchTab('records'), pending: store.records == null }),
   );
 }
 

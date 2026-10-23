@@ -107,12 +107,7 @@ export function normalizeSnapshot(raw) {
         : [],
     },
     auto: normalizeAuto(data.auto),
-    keepalive: {
-      models: Array.isArray(data.keepalive?.models) ? data.keepalive.models.map(text).filter(Boolean) : [],
-      defaultModels: Array.isArray(data.keepalive?.defaultModels)
-        ? data.keepalive.defaultModels.map(text).filter(Boolean)
-        : [],
-    },
+    keepalive: normalizeKeepalive(data.keepalive),
     travel: normalizeTravel(data.travel),
     history: Array.isArray(data.history) ? data.history : [],
     adminPanels: Array.isArray(data.adminPanels) ? data.adminPanels.map(text) : [],
@@ -146,6 +141,15 @@ export function normalizeAuto(raw) {
         lastResult: entry?.lastResult || null,
       }))
       : [],
+  };
+}
+
+/** 保活模型链（`{models, defaultModels}`，读接口与保存接口同形） */
+export function normalizeKeepalive(raw) {
+  const data = raw || {};
+  return {
+    models: Array.isArray(data.models) ? data.models.map(text).filter(Boolean) : [],
+    defaultModels: Array.isArray(data.defaultModels) ? data.defaultModels.map(text).filter(Boolean) : [],
   };
 }
 
@@ -260,6 +264,12 @@ export const store = {
   travelTimesDraft: null,
   /** 保活模型链草稿，null = 跟随快照 */
   keepaliveDraft: null,
+  /** 保活模型链保存中（按钮显示「保存中…」并禁用整块清单） */
+  keepaliveSaving: false,
+  /** 猫猫旅行保存中 */
+  travelSaving: false,
+  /** 猫猫旅行正在手动巡检 */
+  travelRunning: false,
 };
 
 const listeners = new Set();
@@ -633,15 +643,25 @@ export async function runTravel(id) {
 
 /* ─── 写：定时签到 ───────────────────────────── */
 
-/** 保存一条定时条目（成功返回整份状态） */
-export async function saveScheduleEntry(payload) {
+/**
+ * 保存一条定时条目（成功返回整份状态）。
+ *
+ * `options.closeEditor` 决定保存后要不要收起编辑表单：表单里的「保存」要收，
+ * 条目行上的开关不要 —— 后者不是「编辑完成」，把用户正在看的表单关掉
+ * 是纯副作用（旧实现的两个入口也是分开的）。
+ */
+export async function saveScheduleEntry(payload, options = {}) {
   if (store.saving) return;
   patch({ saving: true });
   try {
     const data = await saveSchedule(payload);
-    patch({ schedules: normalizeAuto(data), schedulesError: '', editingId: null });
+    patch({
+      schedules: normalizeAuto(data),
+      schedulesError: '',
+      ...(options.closeEditor === false ? {} : { editingId: null }),
+    });
     void loadCenter();
-    toast('✅ 已保存');
+    if (options.toast !== false) toast('✅ 已保存');
   } catch (error) {
     toast(`保存失败：${errorMessage(error)}`, 'err');
   } finally {
@@ -699,35 +719,57 @@ export async function toggleMaster(enabled) {
 
 /** 保活模型链（国际版的领日活玩法） */
 export async function saveKeepaliveModels(models) {
+  if (store.keepaliveSaving) return;
+  patch({ keepaliveSaving: true });
   try {
-    await saveKeepalive(models);
-    patch({ keepaliveDraft: null });
-    await loadCenter();
+    // 保存接口直接返回新的 `{models, defaultModels}`：就地覆盖快照里的
+    // keepalive 段，草稿与快照同一帧对齐。不必再跑一趟 loadCenter ——
+    // 那会让面板先闪回旧清单（草稿已清、快照还是旧的），再跳到新清单。
+    const data = await saveKeepalive(models);
+    const snapshot = store.snapshot;
+    patch({
+      keepaliveDraft: null,
+      snapshot: snapshot && data ? { ...snapshot, keepalive: normalizeKeepalive(data) } : snapshot,
+    });
     toast('✅ 模型链已保存');
   } catch (error) {
     toast(`保存失败：${errorMessage(error)}`, 'err');
+  } finally {
+    patch({ keepaliveSaving: false });
   }
 }
 
 /** 猫猫旅行排程 */
 export async function saveTravel(patchBody) {
+  if (store.travelSaving) return;
+  patch({ travelSaving: true });
   try {
-    await saveTravelSchedule(patchBody);
-    patch({ travelTimesDraft: null });
-    await loadCenter();
+    // 同 saveKeepaliveModels：接口回的是保存后的整份排程，直接覆盖
+    const data = await saveTravelSchedule(patchBody);
+    const snapshot = store.snapshot;
+    patch({
+      travelTimesDraft: null,
+      snapshot: snapshot && data ? { ...snapshot, travel: normalizeTravel(data) } : snapshot,
+    });
     toast('✅ 已保存');
   } catch (error) {
     toast(`保存失败：${errorMessage(error)}`, 'err');
+  } finally {
+    patch({ travelSaving: false });
   }
 }
 
 export async function runTravelNowOnce() {
+  if (store.travelRunning) return;
+  patch({ travelRunning: true });
   try {
     await runTravelNow();
     toast('✅ 已执行一轮');
   } catch (error) {
     toast(`执行失败：${errorMessage(error)}`, 'err');
   } finally {
+    patch({ travelRunning: false });
+    // 巡检会改账号状态与积分，快照要整份重读（与「立即执行」条目同一口径）
     await loadCenter();
   }
 }

@@ -537,6 +537,21 @@ pub struct CheckinInfo {
     /// 有没有「活动套餐领取」（ZCode 那种限时套餐）。
     #[serde(default)]
     pub plans: bool,
+    /// 是否参与**每日签到**（默认 `true`）。
+    ///
+    /// ── 为什么需要这一位 ────────────────────────────────────────
+    /// 在这之前，「申报了 `CheckinInfo`」就等同于「有每日签到」
+    /// （见网关 `billing::checkin::supports_checkin`）。但 ZCode 是反例：
+    /// 它没有每日签到（`Capabilities::checkin` 恒 false），只有「活动福利」
+    /// ——限时体验套餐领取。为了让它出现在活动福利那张卡里，它必须申报
+    /// `plans: true`；而一旦申报，就会被当成有签到链路拉进每日签到，
+    /// 结果是每天落一条必然失败的记录、把签到进度分母撑大。
+    ///
+    /// 所以把两件事拆开：`daily` 管每日签到，`plans` / `onboarding` /
+    /// `growth` 各管自己那张卡。默认 `true` 是为了让**既有插件**的行为
+    /// 一字不变 —— 它们都真的有每日签到。
+    #[serde(default = "yes")]
+    pub daily: bool,
     /// 有没有「成长任务」（WorkBuddy 国内版的任务树）。
     #[serde(default)]
     pub growth: bool,
@@ -656,6 +671,21 @@ pub struct PackUiPage {
     pub icon: Option<String>,
     /// 入口 HTML（相对包根，例如 `ui/checkin/index.html`）。
     pub entry: String,
+    /// 菜单项默认归到哪一组（客户端的**内置分组 id**，如 `g-overview`）。
+    ///
+    /// ── 为什么插件要申报这个 ────────────────────────────────────
+    /// 客户端把插件页补进侧边栏时得知道「它属于哪一族」：签到中心是「看一眼
+    /// 现状」的概览项，模型任务树可能是「转发链路」的扩展。客户端猜不出来 ——
+    /// 它不认识插件的业务。不申报时归到第一组（概览），这是最不容易放错的
+    /// 位置：放错到「诊断」会让用户以为它是排障工具。
+    ///
+    /// 值必须是客户端认得的内置分组 id（`g-overview` / `g-forward` /
+    /// `g-diag` / `g-system`）；不认识的 id 客户端按「未申报」处理，**不报错**
+    /// —— 分组 id 是客户端的事实，插件说错了不该让整个页面消失。
+    ///
+    /// 用户拖过之后以用户存的位置为准（申报值只影响「首次出现时补到哪」）。
+    #[serde(default)]
+    pub group: Option<String>,
     /// 排序（同值按 id 排）。默认排在客户端内置页面之后。
     #[serde(default)]
     pub order: i32,

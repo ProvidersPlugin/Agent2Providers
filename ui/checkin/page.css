@@ -1,67 +1,55 @@
 /* ─────────────────────────────────────────────
    插件包签到页的样式。
 
-   ── 为什么自带一套变量 ──────────────────────────────────────
-   这一页在 iframe 里，**读不到**宿主 `ui/css/tokens.css` 的变量（独立文档）。
-   所以这里复制一份最小的色板：浅色 / 深色两套，靠 `prefers-color-scheme`
-   切换 —— 宿主切主题时会连窗口主题一起切掉，WebView2 的这个媒体查询跟着变。
+   ── 色板来自宿主，不自己抄 ──────────────────────────────────
+   本页在 iframe 里，是独立文档，**读不到**宿主 `ui/css/tokens.css` 的变量。
+   早先这里复制了一份手抄色板（`--ck-bg` 之类），结果是迁移过来的页面与宿主
+   长得不一样：圆角差一档、深色模式偏色、卡片阴影不同。
 
-   ── 为什么不引组件库 ────────────────────────────────────────
-   页面随插件包分发，体积是硬成本。控件只有按钮、开关、输入框、徽标、表格
-   五种，自绘比引一套 UI 库划算得多。
+   现在由网关的 `/plugins/theme.css` 把宿主那份 tokens.css **原文**出给插件页
+   （见网关 `api::plugin_theme` 的模块头），index.html 里 `<link>` 一下即可。
+   于是下面这层 `--ck-*` 只是**别名**：值全部指向宿主的令牌，一处漂移都不会有。
+   保留这层别名的理由：页面 CSS 通篇写的是 `--ck-*`（几百处），改成宿主名
+   既没有收益，又会让「这页能不能独立于宿主变量」这件事变得看不出来。
+
+   ── 兜底值为什么还留着 ──────────────────────────────────────
+   `var(--surface, oklch(…))` 的第二个参数是 `/plugins/theme.css` 拉不到时的
+   兜底（老版本网关、或页面被单独打开调试）。正常路径永远走不到它 —— 但少了它
+   就是一整页透明背景配黑字，比轻微色差糟糕得多。
+
+   ── 深色模式 ────────────────────────────────────────────────
+   由宿主的 tokens.css 负责：`:root[data-theme="dark"]` 与
+   `:root[data-theme="system"] + prefers-color-scheme: dark`。本页只需在
+   `<html>` 上写好 `data-theme`（值由宿主通过 postMessage 告知，见 main.js）。
 
    ── 命名 ────────────────────────────────────────────────────
    一律 `ck-` 前缀，避免与将来嵌进来的任何东西撞名。
    ───────────────────────────────────────────────────────────── */
 
 :root {
-  --ck-bg: oklch(0.978 0.0026 286);
-  --ck-surface: oklch(1 0 0);
-  --ck-surface-2: oklch(0.968 0.0026 286);
-  --ck-inset: oklch(0.935 0.0054 286);
-  --ck-border: oklch(0.145 0 0 / 10%);
-  --ck-border-strong: oklch(0.145 0 0 / 20%);
-  --ck-hairline: oklch(0.145 0 0 / 8%);
-  --ck-text: oklch(0.145 0 0);
-  --ck-text-2: oklch(0.37 0 0);
-  --ck-text-3: oklch(0.49 0 0);
-  --ck-primary: oklch(0.603 0.218 257.3);
-  --ck-primary-soft: oklch(0.95 0.03 257);
-  --ck-ok: oklch(0.596 0.145 163);
-  --ck-ok-soft: oklch(0.95 0.04 163);
-  --ck-warn: oklch(0.681 0.162 76);
-  --ck-warn-soft: oklch(0.96 0.04 76);
-  --ck-danger: oklch(0.577 0.245 27);
-  --ck-danger-soft: oklch(0.96 0.03 27);
-  --ck-radius: 10px;
-  --ck-radius-sm: 7px;
-  --ck-shadow: 0 1px 2px oklch(0.145 0 0 / 6%);
-  --ck-font: "Segoe UI", "Microsoft YaHei", "Microsoft YaHei UI", system-ui, sans-serif;
-  --ck-mono: Consolas, "Cascadia Mono", "Courier New", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ck-bg: oklch(0.19 0.006 286);
-    --ck-surface: oklch(0.235 0.006 286);
-    --ck-surface-2: oklch(0.27 0.006 286);
-    --ck-inset: oklch(0.29 0.006 286);
-    --ck-border: oklch(1 0 0 / 12%);
-    --ck-border-strong: oklch(1 0 0 / 22%);
-    --ck-hairline: oklch(1 0 0 / 9%);
-    --ck-text: oklch(0.96 0 0);
-    --ck-text-2: oklch(0.82 0 0);
-    --ck-text-3: oklch(0.66 0 0);
-    --ck-primary: oklch(0.68 0.18 257);
-    --ck-primary-soft: oklch(0.32 0.06 257);
-    --ck-ok: oklch(0.72 0.14 163);
-    --ck-ok-soft: oklch(0.3 0.05 163);
-    --ck-warn: oklch(0.78 0.14 76);
-    --ck-warn-soft: oklch(0.32 0.05 76);
-    --ck-danger: oklch(0.7 0.19 27);
-    --ck-danger-soft: oklch(0.32 0.06 27);
-    --ck-shadow: 0 1px 2px oklch(0 0 0 / 30%);
-  }
+  --ck-bg: var(--bg, oklch(0.978 0.0026 286));
+  --ck-surface: var(--surface, oklch(1 0 0));
+  --ck-surface-2: var(--surface-2, oklch(0.968 0.0026 286));
+  --ck-inset: var(--surface-inset, oklch(0.935 0.0054 286));
+  --ck-border: var(--border, oklch(0.145 0 0 / 10%));
+  --ck-border-strong: var(--border-strong, oklch(0.145 0 0 / 20%));
+  --ck-hairline: var(--hairline, oklch(0.145 0 0 / 8%));
+  --ck-text: var(--text, oklch(0.145 0 0));
+  --ck-text-2: var(--text-2, oklch(0.37 0 0));
+  --ck-text-3: var(--text-3, oklch(0.49 0 0));
+  --ck-primary: var(--primary, oklch(0.603 0.218 257.3));
+  --ck-primary-soft: var(--primary-soft, oklch(0.95 0.03 257));
+  --ck-ok: var(--ok, oklch(0.596 0.145 163));
+  --ck-ok-soft: var(--ok-soft, oklch(0.95 0.04 163));
+  --ck-warn: var(--warn, oklch(0.681 0.162 76));
+  --ck-warn-soft: var(--warn-soft, oklch(0.96 0.04 76));
+  --ck-danger: var(--danger, oklch(0.577 0.245 27));
+  --ck-danger-soft: var(--danger-soft, oklch(0.96 0.03 27));
+  --ck-radius: var(--r-md, 10px);
+  --ck-radius-sm: var(--r-sm, 7px);
+  --ck-shadow: var(--shadow-1, 0 1px 2px oklch(0.145 0 0 / 6%));
+  --ck-font: var(--font-sans, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif);
+  --ck-mono: var(--font-mono, Consolas, "Cascadia Mono", "Courier New", monospace);
 }
 
 * { box-sizing: border-box; }
@@ -77,132 +65,99 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* 页面自己滚：iframe 高度由宿主撑满，内容长了在这一层滚 */
+/* 页面骨架。
+   ── 留白为什么是 0 ──────────────────────────────────────────
+   iframe 挂在宿主的 `.page[data-page="__plugin__"]` 里，而那一层**已经**在
+   `.content` 的 `padding: var(--pad) var(--pad) 0` 之内 —— 左右 20px 是宿主
+   给的。早先这里又加了一遍 20px，于是内容区比其它页窄了 40px（还叠了一层
+   `max-width: 80vw`，实际窄得更多）。iframe 内部只负责「底部留 20px」
+   （宿主那一层的 `padding-bottom` 被归零了，见 layout.css 的说明）。
+
+   ── 为什么不再限宽 ──────────────────────────────────────────
+   宿主的 `.content-inner` 用 `max-width: var(--content-max)` 限宽。iframe
+   的宽度已经是 `.content` 的**内容宽度**，再限一次等于把 80vw 套在已经
+   扣掉侧栏和留白的宽度上 —— 算出来的版心比宿主窄一大截。 */
 .ck-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 14px 16px 16px;
+  padding: 0 0 20px;
   overflow: hidden;
+}
+/* 内容限宽 + 居中：与宿主 `.content-inner` 同一口径（`--content-max` = 80vw）。
+   tab 条与三个标签页都在这一层里，于是它们的左缘永远对齐 —— 挂在 `.ck-body`
+   上会让 tab 条比内容宽出一截（tab 条不在滚动区内）。 */
+/* 内容列：铺满 iframe 的宽度，**不再限宽**（理由见 `.ck-shell` 的说明）。
+   保留这一层是为了让 tab 条与三个标签页共用一个 flex 列 —— 它们的左缘
+   必须对齐，而 tab 条不在滚动区里。 */
+.ck-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
 }
 
 .ck-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding-bottom: 20px;
   overscroll-behavior: contain;
 }
 
-/* ── 标签条 ── */
+/* ── 标签条 ──
+   原实现用组件库的 `SegmentedControl`：一个胶囊容器（描边 + 浅底 + 2px 内边距）
+   里并排三个 24px 高的分段，选中项底色由滑块画（主色淡底）。这里自绘同一形态，
+   取值照抄 `ui-kit/src/segmented-control.tsx`：
+     · 容器 `border + bg-control + p-0.5 + rounded-md + gap-0.5`
+     · 分段 `h-6 + px-2.5 + rounded-sm + text-xs font-medium`
+     · 选中 `bg-primary-soft + text-primary-fg`
+   容器与右侧的「今日已执行」徽标之间保持 12px（原 `.ck-tabs` 的 gap）。 */
 .ck-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   margin-bottom: 14px;
   flex: none;
 }
-.ck-tab {
-  padding: 6px 14px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ck-text-2);
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-.ck-tab:hover { background: var(--ck-surface-2); }
-.ck-tab.active {
-  background: var(--ck-surface);
-  border-color: var(--ck-border);
-  color: var(--ck-text);
-  font-weight: 600;
-  box-shadow: var(--ck-shadow);
-}
+/* Tab 条：档位由组件库的 `SegmentedControl` 渲染（见 main.js 的 paintTabs），
+   右侧徽标与刷新按钮同理。这里只剩「它们之间的间距」——
+   与旧实现 `.ck-tabs { gap: 12px }` 一致。 */
 .ck-tab-spacer { flex: 1; }
-.ck-auto-badge {
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  background: var(--ck-surface-2);
-  color: var(--ck-text-2);
-  border: 1px solid var(--ck-border);
-}
-.ck-auto-badge[data-tone="ok"] { background: var(--ck-ok-soft); color: var(--ck-ok); border-color: transparent; }
-.ck-auto-badge[data-tone="warn"] { background: var(--ck-warn-soft); color: var(--ck-warn); border-color: transparent; }
 
 /* ── 错误条 ── */
+/* 页面级错误条：取值照抄旧实现的 `.ck-page-error`
+   （`--danger-bd` 描边 + `--danger-soft` 底、13px 字、`--r-sm` 圆角）。 */
 .ck-error {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
-  padding: 9px 14px;
-  border-radius: var(--ck-radius-sm);
-  background: var(--ck-danger-soft);
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  border: 1px solid var(--danger-bd, var(--ck-danger));
+  border-radius: var(--r-sm, var(--ck-radius-sm));
+  background: var(--danger-soft, var(--ck-danger-soft));
   color: var(--ck-danger);
-  font-size: 12.5px;
+  font-size: 13px;
   flex: none;
 }
 
-/* ── 按钮 ── */
-.ck-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 11px;
-  border-radius: var(--ck-radius-sm);
-  border: 1px solid var(--ck-border);
-  background: var(--ck-surface);
-  color: var(--ck-text);
-  font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.4;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.ck-btn:hover:not(:disabled) { border-color: var(--ck-border-strong); }
-.ck-btn:disabled { opacity: .5; cursor: not-allowed; }
-.ck-btn-default {
-  background: var(--ck-primary);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 600;
-}
-.ck-btn-default:hover:not(:disabled) { filter: brightness(1.06); }
-.ck-btn-ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--ck-text-2);
-  padding: 4px 8px;
-}
-.ck-btn-ghost:hover:not(:disabled) { background: var(--ck-surface-2); color: var(--ck-text); }
-.ck-btn-outline { background: var(--ck-surface); }
-.ck-btn svg { flex: none; }
+/* `hidden` 属性必须真的隐藏。
+   浏览器的 `[hidden] { display: none }` 是 UA 样式，优先级低于上面那条
+   `display: flex` —— 于是「没有错误」时这个空元素仍按 flex 盒渲染，露出一条
+   没有文字的粉色横条（截图里总览卡上方那条）。显式加一条把属性语义找回来：
+   `hidden` 在 HTML 里的意思就是「不渲染」，不该被页面样式悄悄推翻。 */
+.ck-error[hidden] { display: none; }
 
-/* ── 徽标 / 药丸 ── */
-.ck-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.6;
-  white-space: nowrap;
-}
-.ck-pill-ok { background: var(--ck-ok-soft); color: var(--ck-ok); }
-.ck-pill-warn { background: var(--ck-warn-soft); color: var(--ck-warn); }
-.ck-pill-err { background: var(--ck-danger-soft); color: var(--ck-danger); }
-.ck-pill-brand { background: var(--ck-primary-soft); color: var(--ck-primary); }
-.ck-pill-plain {
-  background: var(--ck-surface-2);
-  color: var(--ck-text-3);
-  border: 1px solid var(--ck-border);
-}
 
-/* 提供商首字母徽标 */
+
+/* 提供商首字母徽标。
+   ── 为什么是灰底灰字而不是彩色 ──────────────────────────────
+   原实现（page-checkin.css 的 .ck-prov-logo）用的是 `--control-bg` 底 +
+   `--text-2` 字：整列十几个徽标若各自一个颜色，视觉噪音会盖过真正要看的信息
+   （账号数、待签状态）。这里照抄同一组取值 —— 迁移不该顺手换掉配色。 */
 .ck-badge {
   flex: none;
   width: 30px;
@@ -212,8 +167,11 @@ html, body {
   place-items: center;
   font-size: 12px;
   font-weight: 700;
-  color: #fff;
+  background: var(--control-bg, var(--ck-surface-2));
+  color: var(--text-2, var(--ck-text-2));
+  overflow: hidden;
 }
+.ck-badge img { width: 100%; height: 100%; object-fit: contain; }
 
 /* ── 总览卡 ── */
 .ck-stats {
@@ -228,63 +186,60 @@ html, body {
 .ck-stat {
   background: var(--ck-surface);
   border: 1px solid var(--ck-border);
-  border-radius: var(--ck-radius);
+  border-radius: var(--r-md, 12.8px);
   box-shadow: var(--ck-shadow);
-  padding: 12px 15px;
+  padding: 13px 16px;
   min-width: 0;
 }
+/* 可点击的总览卡（跳到对应标签页）：悬停时描边加深，给一点「这是入口」的反馈 */
+.ck-stat-link { cursor: pointer; }
+.ck-stat-link:hover { border-color: var(--ck-border-strong); }
+/* 数据还没到：显示灰色 `—` 而不是 `0`。
+   写成 `.ck-stat-value .ck-pending` 而不是只写 `.ck-pending` —— 后者会
+   被 `.ck-stat-value` 的 `font-size: 22px` 继承成一枚巨大的破折号。 */
+.ck-stat-value .ck-pending { color: var(--ck-text-3); }
 .ck-stat-label { font-size: 12px; color: var(--ck-text-3); }
 .ck-stat-value {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  margin-top: 3px;
-  font-size: 21px;
+  margin-top: 4px;
+  font-size: 22px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.ck-stat-value small { font-size: 12.5px; font-weight: 500; color: var(--ck-text-3); }
-.ck-stat-foot { margin-top: 3px; font-size: 11.5px; color: var(--ck-text-3); }
-.ck-bar {
-  height: 4px;
-  margin-top: 8px;
-  border-radius: 999px;
-  background: var(--ck-inset);
-  overflow: hidden;
-}
-.ck-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--ck-primary);
-  transition: width .2s;
+.ck-stat-value small { font-size: 13px; font-weight: 500; color: var(--ck-text-3); }
+.ck-stat-foot { margin-top: 4px; font-size: 12px; color: var(--ck-text-3); }
+/* 进度条由组件库的 `Progress` 渲染（见 center.js 的 statsCard），
+   这里只剩「它与上方读数之间的间距」这一条 —— 旧实现里也是
+   `.ck-stat .ck-stat-bar { margin-top: 8px }` 这么一行。 */
+.ck-stat .ck-stat-bar { margin-top: 8px; }
+
+/* 面板 / 面板头 / 面板体的样式全部来自宿主的 layout.css
+   （`.panel` / `.panel-head` / `.panel-sub` / `.head-actions` / `.panel-body`）——
+   插件页直接用这几个类名，与其它页逐字相同，不再自己画一套。 */
+
+/* 三个标签页的内容列。
+   `.panel` 自带 `margin-bottom: 14px`，这里用 `+` 选择器统一成 14px 的间距，
+   抵掉面板自身的 margin（margin 会与相邻面板的 margin 折叠成 14px，
+   但显式写一条让「间距是多少」在样式表里可读）。 */
+.ck-main { min-width: 0; display: grid; gap: 0; }
+.ck-main > .panel { margin-bottom: 0; }
+.ck-main > .panel + .panel { margin-top: 14px; }
+
+/* 卡内说明块（保活模型链底部那段）：下沉一档的底 + 小字，与 `.ck-fold-note`
+   的差别是它**在**正文里（有圆角与上边距），不是贴在卡片下缘的条带。 */
+.ck-note {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-xs, 4px);
+  background: var(--surface-inset, var(--ck-inset));
+  font-size: 12px;
+  color: var(--ck-text-3);
+  line-height: 1.7;
 }
 
-/* ── 面板 ── */
-.ck-main { display: flex; flex-direction: column; gap: 14px; }
-.ck-panel {
-  background: var(--ck-surface);
-  border: 1px solid var(--ck-border);
-  border-radius: var(--ck-radius);
-  box-shadow: var(--ck-shadow);
-  overflow: hidden;
-}
-.ck-panel-half { max-width: 720px; }
-.ck-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 11px 15px;
-  border-bottom: 1px solid var(--ck-hairline);
-}
-.ck-panel-head h2 {
-  margin: 0;
-  font-size: 13.5px;
-  font-weight: 600;
-}
-.ck-panel-sub { font-size: 11.5px; color: var(--ck-text-3); }
-.ck-panel-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
-.ck-panel-body { padding: 12px 15px; }
+
 
 /* ── 可展开的行（每日签到 / 新手福利 / 活动福利 / 成长任务）── */
 .ck-row { border-bottom: 1px solid var(--ck-hairline); }
@@ -292,8 +247,10 @@ html, body {
 .ck-row-main {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 10px 15px;
+  gap: 12px;
+  padding: 11px 16px;
+  cursor: pointer;
+  user-select: none;
 }
 .ck-row[role] .ck-row-main, .ck-row-main[role="button"] { cursor: pointer; }
 .ck-row-main[role="button"]:hover { background: var(--ck-surface-2); }
@@ -304,28 +261,34 @@ html, body {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
 }
-.ck-row-desc { margin-top: 1px; font-size: 11.5px; color: var(--ck-text-3); }
-.ck-row-right { display: flex; align-items: center; gap: 8px; flex: none; }
-.ck-row-count { font-size: 12px; color: var(--ck-text-2); font-variant-numeric: tabular-nums; }
-.ck-row-detail { padding: 2px 15px 12px 56px; }
+.ck-row-desc { margin-top: 2px; font-size: 12px; color: var(--ck-text-3); }
+.ck-row-right { display: flex; align-items: center; gap: 10px; flex: none; }
+.ck-row-count { font-size: 12.5px; color: var(--ck-text-2); font-variant-numeric: tabular-nums; }
+.ck-row-detail { padding: 2px 16px 12px 58px; }
 .ck-chev { display: inline-flex; color: var(--ck-text-3); transition: transform .15s; }
 .ck-row.open .ck-chev { transform: rotate(90deg); }
 .ck-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-nowrap { white-space: nowrap; }
 
 /* 账号明细表（展开区里的小表） */
+/* 小表（展开区里的账号明细 + 记录页明细共用）。
+   取值照抄旧实现 `page-checkin.css` 的 `.ck-table`：`--surface-inset` 底、
+   `--r-xs` 圆角、单元格 `7px 12px`、表头 11.5px/500。
+   **注意**：这份定义原本在网关的 page-checkin.css 里（随旧页一起删了），
+   所以插件页必须自带 —— 它不是组件库的类。 */
 .ck-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
-  background: var(--ck-inset);
-  border-radius: var(--ck-radius-sm);
+  background: var(--surface-inset, var(--ck-inset));
+  border-radius: var(--r-xs, 4px);
   overflow: hidden;
 }
 .ck-table th {
-  padding: 6px 11px;
+  padding: 7px 12px;
   text-align: left;
   font-size: 11.5px;
   font-weight: 500;
@@ -334,7 +297,7 @@ html, body {
   white-space: nowrap;
 }
 .ck-table td {
-  padding: 6px 11px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--ck-hairline);
   font-variant-numeric: tabular-nums;
 }
@@ -344,8 +307,8 @@ html, body {
 
 /* ── 折叠说明 ── */
 .ck-fold-note {
-  padding: 9px 15px;
-  font-size: 11.5px;
+  padding: 9px 16px;
+  font-size: 12px;
   line-height: 1.7;
   color: var(--ck-text-3);
   background: var(--ck-surface-2);
@@ -358,21 +321,29 @@ html, body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 0 15px 10px 56px;
+  /* 与原实现同口径（`pl-[58px] pr-4`）：左缩进对齐到行内文字起点，
+     而不是贴着卡片边缘 —— 这条提示属于它上面那一行，不是独立段落 */
+  padding: 0 16px 10px 58px;
   font-size: 12px;
   color: var(--ck-text-3);
 }
+.ck-hint-action { display: inline-flex; align-items: center; gap: 8px; }
+
+/* 失败的记录行：整行文字压暗一档，让成功行在长列表里更容易扫过。
+   原实现靠结果列的徽标表达，插件页额外给整行一个底 —— 记录页动辄几百行，
+   只靠一枚小徽标区分成败，扫读成本太高。 */
+.ck-row-fail td { background: var(--danger-soft, var(--ck-danger-soft)); }
 
 /* ── 任务行 ── */
 .ck-task-line {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
-  font-size: 12.5px;
+  padding: 5px 0;
+  font-size: 13px;
 }
 .ck-task-title { flex: 1; min-width: 0; }
-.ck-task-pts { font-size: 11.5px; color: var(--ck-text-3); font-variant-numeric: tabular-nums; }
+.ck-task-pts { font-size: 12px; color: var(--ck-text-3); font-variant-numeric: tabular-nums; }
 .ck-task-st { margin-left: auto; flex: none; }
 .ck-tick {
   flex: none;
@@ -393,134 +364,144 @@ html, body {
 .ck-task-tick { flex: none; display: inline-flex; color: var(--ck-text-3); }
 
 /* ── 定时签到 ── */
+/* 一行「标签 + 内容」。
+   ── `.ck-set-v` 为什么是**块级**而不是 flex ──────────────────
+   它的内容常常是「多行」的（签到范围的复选框网格、保活模型的清单），
+   flex 会把它们排成同一行 —— 清单因此被压成一条横带。旧实现里它就是
+   `flex: 1; min-width: 0`（块级），需要横排的行自己加 `.ck-set-row`。
+   早先这里写成 `display: flex`，于是「保活模型链」的清单整块挤在标签右边，
+   表现成「独占一行」。 */
 .ck-set-line {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
-  font-size: 12.5px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--ck-hairline);
+  font-size: 13px;
 }
-.ck-set-k { flex: none; width: 56px; color: var(--ck-text-2); }
-.ck-set-v { display: flex; align-items: center; gap: 8px; }
+.ck-set-k { flex: none; width: 58px; color: var(--ck-text-2); }
+/* 最后一行不画分隔线 —— 它下面直接是卡片下缘或说明块。
+   `:last-child` 只在它真是最后一个节点时生效；后面跟了 `ck-note` 时
+   这条线要留着（说明块与设置项是两组内容）。 */
+.ck-set-line:last-child { border-bottom: 0; }
+.ck-set-v { flex: 1; min-width: 0; }
+/* 内容要横排的那几行（开关 + 说明、输入框 + 保存） */
+.ck-set-row { display: flex; align-items: center; gap: 8px; }
+/* 标签与内容顶对齐（内容是多行的复选框网格 / 清单） */
+.ck-set-line-top { align-items: flex-start; }
+.ck-set-line-top .ck-set-k { padding-top: 5px; }
 .ck-sub { font-size: 11.5px; color: var(--ck-text-3); }
 .ck-block { display: block; }
+/* 卡内正文留白：旧实现用的是 Tailwind 的 `p-4`，但那个类在本页的 ui.css 里
+   不存在（Tailwind 只输出源码引用过的类，旧 TSX 删掉后就没了）—— 所以在这里
+   落一条真实定义，取值同为 16px。 */
+.ck-panel-pad { padding: 16px; }
 
-.ck-sched-row { border-top: 1px solid var(--ck-hairline); }
-.ck-sched-row:hover { background: var(--ck-surface-2); }
-.ck-sched-row.open { background: var(--ck-surface-2); }
+/* 条目行之间用**下边框**分隔（不是上边框）：上边框会让列表首行与上方
+   「总开关」那一栏之间多出一条线，而末行又没有收口。旧实现就是下边框 +
+   末行去掉。 */
+.ck-sched-row { border-bottom: 1px solid var(--ck-hairline); }
+.ck-sched-row:last-child { border-bottom: 0; }
+/* 悬停 / 展开时给底色：一行里三段文字三个按钮，没有底色很难看出整行是一体的 */
+.ck-sched-row:hover { background: var(--row-hover, var(--ck-surface-2)); }
+.ck-sched-row.open { background: var(--row-hover, var(--ck-surface-2)); }
 .ck-sched-main {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 15px;
+  padding: 11px 16px;
 }
-.ck-sched-time {
-  flex: none;
-  width: 48px;
-  font-family: var(--ck-mono);
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
+/* 范围那一行截断：部分勾选时名字可能很长，整行会被挤成两三行；
+   全貌在 title 里（见 scopeFull） */
+.ck-sched-scope { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ck-sched-next {
   padding: 2px 8px;
   border: 1px solid var(--ck-border);
-  border-radius: var(--ck-radius-sm);
+  border-radius: var(--r-xs, 4px);
   background: var(--ck-surface);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--ck-text-2);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.ck-sched-last {
-  padding: 0 15px 8px 60px;
-  font-size: 11.5px;
+/* 新建条目那一行：卡头按钮点开就落在列表首位（左侧一枚 ＋ 与已存条目区分） */
+.ck-sched-row-new .ck-new-dot {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--ck-border-strong);
+  border-radius: 999px;
   color: var(--ck-text-3);
+  font-size: 13px;
+  line-height: 1;
 }
-
-/* 编辑表单 */
-.ck-editor {
-  padding: 10px 15px 14px 60px;
+/* 行内编辑表单：左缩进 44px 对齐到行内文字起点（跳过行首开关的宽度） */
+.ck-sched-editor {
+  padding: 2px 16px 14px 44px;
   border-top: 1px dashed var(--ck-hairline);
 }
-.ck-form-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 9px;
-  flex-wrap: wrap;
-}
-.ck-form-top { align-items: flex-start; }
-.ck-form-key { flex: none; width: 44px; font-size: 12px; color: var(--ck-text-2); }
-.ck-form-top .ck-form-key { padding-top: 5px; }
-.ck-form-body { flex: 1; min-width: 0; }
-.ck-form-note { font-size: 11.5px; color: var(--ck-text-3); }
-.ck-form-actions {
+.ck-sched-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 6px;
 }
+/* 条目行的三段文字：与账号页的 `.ck-prov-*` 同一组取值（旧实现直接复用那套） */
+.ck-prov-info { flex: 1; min-width: 0; }
+.ck-prov-name {
+  font-weight: 600;
+  font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ck-prov-desc { font-size: 12px; color: var(--ck-text-3); margin-top: 2px; }
+.ck-prov-right { display: flex; align-items: center; gap: 10px; flex: none; }
 
 /* 输入框 */
+/* ── 输入类控件的**尺寸**（视觉样式归组件库）──
+   文本框现在由 `textInput()` 渲染组件库的 `Input`（Tailwind 类，带 !important），
+   它的高度 / 描边 / 圆角 / 聚焦光晕都由组件自己负责。这里只剩三件事：
+     · 下拉框（`<select>`，仍是原生的 —— 与组件库 Select 的视觉差异小，
+       而换掉它要重写受控状态，收益不值）；
+     · 宽度约束（组件库的 input 是 `w-full`，需要在这里收窄）；
+     · 时刻框用等宽字体（数字对齐）。
+   **不要**在这里补颜色 / 圆角：那会被组件库的 !important 盖掉，写了也不生效，
+   反而让人以为样式在这里定义。 */
 .ck-input {
-  padding: 5px 10px;
-  border: 1px solid var(--ck-border);
-  border-radius: var(--ck-radius-sm);
-  background: var(--ck-surface);
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--control-border, var(--ck-border));
+  border-radius: var(--r-md, var(--ck-radius));
+  background: var(--control-bg, var(--ck-surface));
   color: var(--ck-text);
   font-family: inherit;
   font-size: 12.5px;
   min-width: 0;
-}
-.ck-input:focus {
   outline: none;
+}
+.ck-input:hover { border-color: var(--control-border-hover, var(--ck-border-strong)); }
+.ck-input:focus {
   border-color: var(--ck-primary);
-  box-shadow: 0 0 0 3px var(--ck-primary-soft);
+  box-shadow: var(--ring, 0 0 0 3px var(--ck-primary-soft));
 }
 .ck-input-time { width: 108px; font-family: var(--ck-mono); }
 .ck-input-select { min-width: 118px; }
 .ck-input-search { flex: 1; min-width: 140px; max-width: 260px; }
 
-/* 复选框（原生 + 尺寸微调，不重画） */
+/* 复选框（尺寸 / 圆角 / 勾形归组件库的 Checkbox，这里不再定义）。
+   `.ck-check` 保留给仍用原生 `<input type=checkbox>` 的位置 —— 目前签到范围
+   已改用组件库的 Checkbox，这条只剩兜底作用。 */
 .ck-check { width: 14px; height: 14px; accent-color: var(--ck-primary); flex: none; }
 
-/* 开关：原生 checkbox + 轨道 */
-.ck-switch-wrap { position: relative; display: inline-flex; flex: none; cursor: pointer; }
-.ck-switch {
-  position: absolute;
-  opacity: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  cursor: pointer;
-}
-.ck-switch-track {
-  width: 34px;
-  height: 19px;
-  border-radius: 999px;
-  background: var(--ck-inset);
-  border: 1px solid var(--ck-border);
-  position: relative;
-  transition: background .15s;
-}
-.ck-switch-track::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--ck-surface);
-  box-shadow: var(--ck-shadow);
-  transition: transform .15s;
-}
-.ck-switch:checked + .ck-switch-track { background: var(--ck-primary); border-color: transparent; }
-.ck-switch:checked + .ck-switch-track::after { transform: translateX(15px); }
-.ck-switch:disabled + .ck-switch-track { opacity: .5; }
-
-/* 签到范围的复选框网格 */
+/* 签到范围的复选框网格。
+   用 grid + auto-fill 而不是 flex-wrap：后者的每项宽度随文字长短不齐，
+   一屏十几家时列不对齐、扫读困难。132px 是「WorkBuddy 国际版」这类
+   最长标签折行前后的分界（旧实现同一取值）。 */
 .ck-range {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
@@ -531,37 +512,72 @@ html, body {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .ck-range-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ck-mini-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 7px;
 }
 .ck-mini-note { font-size: 11.5px; color: var(--ck-text-3); font-variant-numeric: tabular-nums; }
 .ck-mini-warn { margin-top: 6px; font-size: 11.5px; color: var(--ck-warn); }
+.ck-mini-warn[hidden] { display: none; }
+/* 「全选 / 清空 / 填入缺省链」：文字按钮，不抢「保存」的注意力。
+   这里刻意用原生 <button> 而不是组件库的 Button —— 后者最小档是 26px 高、
+   带描边与内边距，塞进这行计数文字里会把行撑高一档，而这三个动作是次要的。 */
+.ck-mini-btn {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ck-primary);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ck-mini-btn:hover { text-decoration: underline; }
+.ck-mini-btn:disabled { color: var(--ck-text-3); cursor: not-allowed; text-decoration: none; }
 
-/* 保活模型链 */
+/* ── 保活模型链：一行一个模型的清单编辑器 ──
+   顺序就是语义（按顺序逐个尝试、第一个成功即止），所以每一行左侧留一枚拖动把手、
+   行尾是移除按钮。把手是**唯一**的拖动起点 —— 行里还有 ×，整行可拖会把「点移除」
+   变成「拖走一行」。 */
+
+/* 面板本身收成半幅：里面只有一列短清单，拉满整行时那排灰条会长得没有内容。
+   再给个上限 —— 2K / 4K 上「半幅」又够宽到把清单拉回一条长带，白收。 */
+.ck-chain-panel { width: 50%; max-width: 640px; }
+
 .ck-chain { display: flex; flex-direction: column; gap: 4px; }
 .ck-chain-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 6px 3px 10px;
+  padding: 4px 8px 4px 2px;
   border: 1px solid var(--ck-border);
-  border-radius: var(--ck-radius-sm);
+  border-radius: var(--r-xs, 4px);
   background: var(--ck-surface-2);
-  font-size: 12px;
+  font-size: 12.5px;
 }
-.ck-chain-index {
+/* 拖动中的那一行压淡（与账号页 .dragging 同一观感） */
+.ck-chain-row.dragging { opacity: .45; }
+.ck-chain-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  font-size: 10.5px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs, 4px);
   color: var(--ck-text-3);
-  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  /* 触屏 / 触控板上按住拖动时不要连带触发页面滚动 */
+  touch-action: none;
 }
+.ck-chain-grip:hover { background: var(--nav-hover, var(--ck-surface)); color: var(--ck-text); }
+.ck-chain-grip svg { display: block; }
 .ck-chain-name {
   flex: 1;
   min-width: 0;
@@ -570,14 +586,46 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ck-chain-move { display: inline-flex; flex: none; }
-.ck-chain-move .ck-btn { padding: 2px 4px; }
-.ck-chain-move .ck-btn:first-child svg { transform: rotate(-90deg); }
-.ck-chain-move .ck-btn:last-child svg { transform: rotate(90deg); }
-.ck-chain-empty { font-size: 11.5px; color: var(--ck-text-3); }
+.ck-chain-index {
+  flex: none;
+  font-size: 11px;
+  color: var(--ck-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.ck-chain-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs, 4px);
+  background: transparent;
+  box-shadow: none;
+  color: var(--ck-text-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ck-chain-del:hover { background: var(--ck-danger-soft); color: var(--ck-danger); }
+.ck-chain-del:disabled { opacity: .5; cursor: not-allowed; }
+.ck-chain-empty { font-size: 12px; color: var(--ck-text-3); }
 .ck-chain-add { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.ck-chain-add .ck-input { flex: 1; min-width: 160px; max-width: 320px; }
 .ck-chain-dirty { font-size: 11.5px; color: var(--ck-warn); }
+/* 拖动期间整页禁选：不锁的话鼠标划过文本会把模型名一片片选中 */
+body.ck-chain-dragging { cursor: grabbing; user-select: none; }
+
+/* ── 输入框的宽度约束 ──
+   组件库的 `Input` 自带 `w-full`（`!important`），所以只能用 max-width 收窄，
+   或用 flex-basis 参与分配 —— 写 `width` 是压不过它的。 */
+.ck-chain-input { max-width: 260px; }
+.ck-sched-name { max-width: 220px; }
+.ck-sched-time-input { max-width: 96px; }
+/* 猫猫旅行的时刻框：够装 `09:00, 21:00, 15:30` 这类常见长度，
+   再长就让它占满剩余宽度（`w-full` 的默认行为） */
+.ck-travel-times { max-width: 320px; }
 .ck-time-chip {
   padding: 2px 8px;
   border-radius: var(--ck-radius-sm);
@@ -598,56 +646,61 @@ html, body {
 }
 .ck-filters > * { flex-shrink: 0; }
 .ck-filters-count { margin-left: auto; font-size: 11.5px; color: var(--ck-text-3); }
+/* 记录页的分段控件：与 `.ck-tab-group` 同一形态（组件库 SegmentedControl） */
 .ck-seg {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
+  border: 1px solid var(--control-border, var(--ck-border));
   border-radius: var(--ck-radius-sm);
-  background: var(--ck-inset);
+  background: var(--control-bg, var(--ck-inset));
 }
 .ck-seg-item {
-  padding: 3px 10px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: calc(var(--ck-radius-sm) - 2px);
   background: transparent;
-  color: var(--ck-text-2);
+  color: var(--ck-text-3);
   font-family: inherit;
   font-size: 12px;
-  cursor: pointer;
-}
-.ck-seg-item.active {
-  background: var(--ck-surface);
-  color: var(--ck-text);
-  font-weight: 600;
-  box-shadow: var(--ck-shadow);
-}
-.ck-records-scroll { overflow-x: auto; }
-.ck-records {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.ck-records th {
-  position: sticky;
-  top: 0;
-  padding: 8px 12px;
-  text-align: left;
-  font-size: 11.5px;
   font-weight: 500;
-  color: var(--ck-text-3);
-  background: var(--ck-surface);
-  border-bottom: 1px solid var(--ck-border);
   white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease-out, color .15s ease-out;
 }
-.ck-records td {
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--ck-hairline);
-  vertical-align: top;
+.ck-seg-item:hover { background: var(--nav-hover, var(--ck-surface)); color: var(--ck-text); }
+.ck-seg-item.active {
+  background: var(--ck-primary-soft);
+  color: var(--primary-fg, var(--ck-primary));
 }
-.ck-records tr:last-child td { border-bottom: 0; }
-.ck-records tr:hover td { background: var(--ck-surface-2); }
-.ck-nowrap { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ck-detail-fail { color: var(--ck-danger); }
+/* 记录页的明细表：**复用宿主的 `.ck-table`**（`page-checkin.css` 里那份小表样式
+   —— 展开区的账号明细用的就是它），再加上旧实现的定宽列。
+   早先这里自造了 `.ck-records` 一整套（表头底色、行高、悬停色都另写），
+   结果与「展开区里的那张小表」长得不一样，两张表在同一页里风格割裂。
+
+   `.ck-table` 的定义在 `components.css`（已由网关出给 iframe），这里只补
+   记录页特有的部分：定宽列 + 时间列不换行 + 失败行的说明文字变红。 */
+.ck-records-scroll { overflow-x: auto; }
+/* 列宽：时间列定宽 px（装的是 formatTime 的完整输出，宽窄窗口都要一行放下），
+   其余按百分数吃掉剩余宽度。与旧实现的 colgroup 分配逐字一致。 */
+.ck-records-table { table-layout: fixed; }
+.ck-records-table col.ck-col-time { width: 160px; }
+.ck-records-table col.ck-col-account { width: 18%; }
+.ck-records-table col.ck-col-provider { width: 10%; }
+.ck-records-table col.ck-col-source { width: 11%; }
+.ck-records-table col.ck-col-outcome { width: 13%; }
+.ck-records-table col.ck-col-detail { width: 48%; }
+/* 内容超出列宽就裁掉，不压到相邻列上 */
+.ck-records-table td { overflow: hidden; }
+.ck-records-table .ck-col-time { white-space: nowrap; }
+.ck-record-date { display: block; font-size: 11px; color: var(--ck-text-3); }
+.ck-record-source { font-variant-numeric: tabular-nums; }
+.ck-record-reason { margin-left: 6px; color: var(--ck-text-3); font-size: 11.5px; }
+.ck-record-detail-fail { color: var(--ck-danger); }
 .ck-pager {
   display: flex;
   align-items: center;
@@ -659,12 +712,14 @@ html, body {
 .ck-pager-label { font-size: 12px; color: var(--ck-text-3); font-variant-numeric: tabular-nums; }
 
 /* ── 空态 / 加载态 ── */
-.ck-empty { padding: 18px 15px; font-size: 12.5px; color: var(--ck-text-3); }
+.ck-empty { padding: 18px 16px; font-size: 12.5px; color: var(--ck-text-3); }
 .ck-loading {
   padding: 40px 0;
-  text-align: center;
   font-size: 13px;
   color: var(--ck-text-3);
+  display: grid;
+  place-items: center;
+  gap: 10px;
 }
 
 /* ── 页面内提示 ── */

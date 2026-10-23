@@ -1,6 +1,6 @@
 [package]
 name = "agent2api-provider-protocol"
-version = "0.2.0"
+version = "0.2.1"
 description = "Agent2API 提供商插件协议：网关与插件宿主之间的线上类型与分帧"
 authors = ["Agent2API"]
 edition = "2021"

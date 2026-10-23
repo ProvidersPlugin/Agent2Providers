@@ -1,262 +1,72 @@
-name: build
+name: release
 
-# 构建各平台的提供商插件包，产物作为 **workflow artifact** 供手动下载。
+# 推 `v*` tag 时把发版交给独立构建仓库（`Agent2Builder/agent2api-providers-releases`）。
 #
-# ── 为什么不挂 GitHub Release ─────────────────────────────────
-# 与网关主仓库同一取向（见 agent2api 仓库 `.github/workflows/build.yml` 的
-# 「触发方式」一节）：构建与发布解耦。CI 只负责把每个平台的 zip 编出来、
-# 上传成 artifact，**不建 Release、不传附件**。发版时人工从 Actions 页面
-# 下载对应平台的包，再分发给用户。
+# ── 主仓库为什么不再自己构建 ────────────────────────────────
+# 插件是五平台矩阵（Windows + 两个 macOS + 两个 Linux），跑一次是实打实的
+# 重负载；而 tag 是发版动作、频率不可控。把「打一个版本标签」变成「自动兑换
+# 五次虚拟机开机」，最坏情况下会被判定为 Actions 滥用。所以编译整体搬到
+# 专用构建账号下的仓库，主仓库这条工作流只做一件事：发一条极轻的派发请求。
 #
-# 副作用要知道：网关的「检查更新」（`plugin_host::update`）是按
-# `<id>-<version>-<target>.zip` 去 GitHub Release 里找资产的。只出 artifact
-# 时它查不到东西，界面上会显示「没有可更新的版本」—— 不会报错，只是永远
-# 提示已是最新。真要开更新检查，得自己把 zip 挂到 Release 上。
+# ── 密钥在哪 ────────────────────────────────────────────────
+# 签名私钥（`AGENT2API_PLUGIN_KEY`）**只存在构建仓库的 secrets 里**，主仓库
+# 没有、也不需要。主仓库唯一要配的是 `BUILDER_DISPATCH_TOKEN`——一个对构建
+# 仓库有 contents write 权限的 token，只用来派发事件。
 #
-# ── 五个 job 对应 pack.json 里声明的五个平台三元组 ─────────────
-#   windows-x64   windows-latest    x86_64-pc-windows-msvc
-#   macos-x64     macos-26-intel    x86_64-apple-darwin
-#   macos-arm64   macos-latest      aarch64-apple-darwin
-#   linux-x64     ubuntu-22.04     x86_64-unknown-linux-gnu
-#   linux-arm64   ubuntu-22.04-arm aarch64-unknown-linux-gnu
+# ── 为什么用 repository_dispatch 而不是 workflow_call ───────
+# 跨仓库的 `workflow_call` 要求两边在同一个仓库内，跨账号只能用 dispatch。
+# 这也是 magpie（yetone/magpie → yetone/magpie-releases）的做法。
 #
-# 少一个就有平台装不上：网关装包时硬校验「包里有没有当前平台的入口」
-# （`plugin_host::install` 的 `entry_for_target`），缺了直接报
-# 「这个包没有为当前平台提供入口二进制」。
-#
-# ── 为什么 Linux 两份要进容器编 ──────────────────────────────
-# 插件跑在**用户机器上**，Linux 桌面端与 Docker 用户共用同一份 gnu 包。
-# Docker 运行镜像是 `debian:bookworm-slim`（glibc 2.36），而 `ubuntu-latest`
-# 已是 24.04（glibc 2.39）—— 在后者上编出来的二进制会要求 `GLIBC_2.39`，
-# 装进容器里报 `version 'GLIBC_2.39' not found`，而现场只显示「插件启动
-# 失败」，很难反推到工具链世代。所以钉 `rust:1-bookworm`：与网关 Dockerfile
-# 的 builder 同一世代，glibc 向前兼容，容器与裸机都能跑。
-#
-# ⚠ 这里用 `docker run` 而不是 job 级的 `container:`。后者会让 checkout /
-# upload-artifact 这些 JS action 也在容器里找 node —— bookworm 自带的是
-# node 18，而 action 运行时要求 node 24，属于「第一次跑才发现」的坑。
-# 现在容器只负责 cargo build，打包与上传都在宿主机上跑。
-#
-# ── 依赖两个尚未发布到 crates.io 的 crate ────────────────────
-# `crates/providers/Cargo.toml` 用**路径**依赖：
-#   agent2api-provider-protocol = { path = "../../../desktop-tauri/src-tauri/crates/provider-protocol" }
-#   agent2api-provider-sdk      = { path = "../../../desktop-tauri/src-tauri/crates/provider-sdk" }
-# 这两个 crate 现在还在网关仓库里（未发布）。因此本 workflow 要能跑，
-# 前提是**插件目录已经从网关仓库搬到独立仓库，且这两个 crate 一并搬入
-# （或已发布到 crates.io、依赖改成版本号）**。在网关仓库里它不会被执行 ——
-# `/agent2api-providers/` 在 .gitignore 第 77 行被整目录排除，GitHub 上看不到。
-#
-# ── 触发方式 ─────────────────────────────────────────────────
-#   · 手动 workflow_dispatch：选分支触发，产物落 artifact
-#   · 推送 `v*` tag：插件自己的版本（见 pack.json 的 version），
-#     与网关的发版节奏无关
+# ── tag 仍然照常打 ──────────────────────────────────────────
+# 它是版本标记，也是 Cargo 按 tag 引用契约库的依据（网关 `server/Cargo.toml`
+# 的 `agent2api-provider-protocol = { git = ..., tag = "v..." }`），只是它不再
+# 触发本仓库的任何编译。
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - 'v*'
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号（不带 v 前缀；对应的 tag 必须已存在）'
+        required: true
+        type: string
 
 jobs:
-  # ── Windows x64 ───────────────────────────────────────────
-  windows-x64:
-    runs-on: windows-latest
+  dispatch:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      ref: ${{ steps.meta.outputs.ref }}
     steps:
-      - uses: actions/checkout@v7
-
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          # 插件的 target/ 在自己目录下（没有改 target-dir）
-          workspaces: . -> target
-
-      - name: 安装 Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: 编译
-        run: cargo build --release -p agent2api-providers
-
-      # 编译通过 ≠ 能运行：缺 DLL、清单不对、路径写错都只在启动时暴露。
-      # 这一步真的把二进制拉起来，走一遍协议握手，28 项全绿才算过。
-      - name: 验证协议（真机启动）
-        run: node scripts/verify.mjs --exe target/release/agent2api-providers.exe
-
-      - name: 打包
-        run: node scripts/pack.mjs --skip-build --target x86_64-pc-windows-msvc
-
-      - name: 签名
-        uses: ./.github/actions/sign-pack
-        with:
-          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: plugin-windows-x64
-          path: dist/*.zip
-          if-no-files-found: error
-
-  # ── macOS x64（Intel）─────────────────────────────────────
-  # macos-26-intel 是当前可用的 x86_64 标准 runner（macos-13 已于
-  # 2025-12-04 退役）。Apple 已停止支持 Intel，GitHub 也宣布 x86_64 macOS
-  # runner 会在 2027 年秋季彻底下线 —— 到那时若还要出 Intel 包，只能自建
-  # runner 或改出 universal 包（合并两份架构，体积翻倍）。
-  macos-x64:
-    runs-on: macos-26-intel
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-
-      - name: 安装 Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: 编译
-        run: cargo build --release -p agent2api-providers
-
-      # 编译通过 ≠ 能运行：缺系统库、无执行位、签名问题都只在启动时暴露。
-      - name: 验证协议（真机启动）
-        run: node scripts/verify.mjs --exe target/release/agent2api-providers
-
-      - name: 打包
-        run: node scripts/pack.mjs --skip-build --target x86_64-apple-darwin
-
-      - name: 签名
-        uses: ./.github/actions/sign-pack
-        with:
-          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: plugin-macos-x64
-          path: dist/*.zip
-          if-no-files-found: error
-
-  # ── macOS arm64（Apple Silicon）───────────────────────────
-  macos-arm64:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-
-      - name: 安装 Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: 编译
-        run: cargo build --release -p agent2api-providers
-
-      # 编译通过 ≠ 能运行：缺系统库、无执行位、签名问题都只在启动时暴露。
-      - name: 验证协议（真机启动）
-        run: node scripts/verify.mjs --exe target/release/agent2api-providers
-
-      - name: 打包
-        run: node scripts/pack.mjs --skip-build --target aarch64-apple-darwin
-
-      - name: 签名
-        uses: ./.github/actions/sign-pack
-        with:
-          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: plugin-macos-arm64
-          path: dist/*.zip
-          if-no-files-found: error
-
-  # ── Linux x64 + arm64 ─────────────────────────────────────
-  # 两个架构只差「要不要装交叉工具链」，用 matrix 合成一个 job，
-  # 免得两份几乎相同的步骤各自漂移。
-  # ── Linux x64 + arm64 ─────────────────────────────────────
-  #
-  # 每个架构在自己的原生 runner 上编、也在上面真跑一遍。不用 QEMU、不交叉：
-  # 交叉编译出来的 arm64 二进制在 x64 机器上跑不起来，那就没法做「真机启动
-  # 验证」—— 而编译通过不等于能运行（缺 so、权限、路径全在运行时才暴露）。
-  #
-  # ── 为什么用 ubuntu-22.04 而不是 ubuntu-latest ──────────────
-  # 插件跑在**用户机器上**，Linux 桌面端与 Docker 用户共用同一份 gnu 包。
-  # Docker 运行镜像是 `debian:bookworm-slim`（glibc 2.36）。22.04 的 glibc
-  # 是 2.35，比 bookworm 更低 —— glibc 向前兼容，所以 22.04 上编出来的包在
-  # bookworm 容器和更新的发行版上都能跑。反过来（在 24.04 上编，glibc 2.39）
-  # 装进容器会报 `GLIBC_2.39 not found`，现场只显示「插件启动失败」，很难查。
-  linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact: plugin-linux-x64
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: plugin-linux-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: 安装 Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-
-      - name: 编译
-        run: cargo build --release -p agent2api-providers
-
-      # 编译通过 ≠ 能运行：缺动态库、无执行位、路径不对都只在启动时暴露。
-      # 这一步真的把二进制拉起来，走一遍协议握手，28 项全绿才算过。
-      - name: 验证协议（真机启动）
+      - name: 解析版本号与 ref
+        id: meta
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
-          BIN=target/release/agent2api-providers
-          chmod +x "$BIN"
-          node scripts/verify.mjs --exe "$BIN"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF="$GITHUB_REF_NAME"
+            VERSION="${REF#v}"
+          else
+            VERSION="$INPUT_VERSION"
+            REF="v$VERSION"
+          fi
+          # 换行或引号会往下面的 JSON 里注入字段
+          [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "版本号不合法: $VERSION" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "派发构建：版本 $VERSION（ref: $REF）"
 
-      - name: 打包
-        run: node scripts/pack.mjs --skip-build --target "${{ matrix.target }}"
-
-      - name: 签名
-        uses: ./.github/actions/sign-pack
+      - name: 派发到构建仓库
+        uses: peter-evans/repository-dispatch@v3
         with:
-          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
+          # 对构建仓库有 contents write 权限的 token（放在主仓库 secrets 里）
+          token: ${{ secrets.BUILDER_DISPATCH_TOKEN }}
+          repository: Agent2Builder/agent2api-providers-releases
+          event-type: release
+          client-payload: '{"ref": "${{ steps.meta.outputs.ref }}", "version": "${{ steps.meta.outputs.version }}"}'
 
-      - name: 上传产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/*.zip
-          if-no-files-found: error
+      - name: 提示去哪看进度
+        run: echo "构建在 https://github.com/Agent2Builder/agent2api-providers-releases/actions"

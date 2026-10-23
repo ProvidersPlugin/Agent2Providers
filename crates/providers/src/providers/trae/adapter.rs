@@ -86,6 +86,28 @@ impl Provider for TraeProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：`edition: false` 是事实 —— 国内 SOLO 与国际版是**两套协议**
+            // 而不是一个地区的两种拼法，国际版将来接入时另立 provider id。
+            //   `usage` 对应 `usage` 模块（上游两份账：`ide_user_ent_usage` 的
+            //     权益包 / 积分池 + `ide_user_pay_status` 的快请求与 SOLO 并发）。
+            //   `credit_detail` —— 同一份 ent_usage 里还读得到**逐份权益包**的
+            //     `start_time` / `expire_time`（领取 → 到期）。签到发的包会按天
+            //     堆起来，哪一份先作废只有这份清单答得上来。
+            //   `credit_expiry` —— 上面那份 `expire_time` 就写成 `credits[].expireAt`
+            //     （毫秒，按到期升序排好），所以「快到期优先」排序对它可用。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                credit_expiry: true,
+                identifier: vec!["uid".to_string()],
+                expiry: vec!["expiresAt".to_string(), "expiresAtMs".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("SOLO 的 checkin_credits 领取 · 按自然日 0 点刷新".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     /// 模型清单 = 上一次成功刷到的那张远程表（没刷到时为空，见 `models.rs`）。

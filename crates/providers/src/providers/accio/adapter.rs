@@ -95,6 +95,20 @@ impl Provider for AccioProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：两个地区都要申报（拆家后是两家 provider，漏一个那一家
+            // 就掉进兜底，症状是余额入口消失、标识列空着）。
+            //   `usage` —— `/api/entitlement/quota` 只给用量百分比，没有逐份
+            //     积分包，所以不开 `credit_detail`。
+            //   `edition` —— 公开形态带地区，徽章要拼。
+            //   `email_as_name` —— 本家账号以邮箱报名字。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                edition: true,
+                identifier: vec!["userId".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                email_as_name: true,
+                ..Default::default()
+            })
     }
 
     fn models<'a>(

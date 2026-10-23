@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>签到中心</title>
+<!--
+  插件包里的签到中心页面。
+
+  ── 为什么这一页在插件包里 ──────────────────────────────────
+  签到能力全部来自提供商插件（自定义 API 提供商结构上不可能有签到：网关的
+  `supports_checkin` 对 `custom-*` 一律返回 false）。既然「有没有这一页」取决于
+  装了什么插件，页面本身就该由插件提供 —— 否则每加一家、每改一条链路，每个
+  客户端都要跟着改一遍。
+
+  ── 数据从哪来 ──────────────────────────────────────────────
+  页面只调网关的 `/api/*`（聚合快照、定时条目、记录台账）。**编排留在网关**：
+  一条定时条目可能横跨九家，卸载插件不能让用户丢排程；这些事实与「装了什么
+  插件」无关，所以它们在网关侧，页面只是它的一份视图。
+
+  ── 主题 ────────────────────────────────────────────────────
+  用 `prefers-color-scheme`：宿主切主题时会把窗口主题一起切掉，WebView2 的
+  这个媒体查询跟着变（见宿主 app.js 的 applyTheme 注释）。iframe 是独立文档，
+  读不到宿主的 data-theme，这是唯一可靠的通道。
+-->
+<link rel="stylesheet" href="page.css">
+</head>
+<body>
+<div class="ck-shell">
+  <div class="ck-tabs" role="tablist">
+    <button type="button" class="ck-tab active" data-tab="center" role="tab">签到中心</button>
+    <button type="button" class="ck-tab" data-tab="schedule" role="tab">定时签到</button>
+    <button type="button" class="ck-tab" data-tab="records" role="tab">签到记录</button>
+    <span class="ck-tab-spacer"></span>
+    <span class="ck-auto-badge" id="auto-badge" hidden></span>
+    <button type="button" class="ck-btn ck-btn-ghost" id="reload" title="重新读取">刷新</button>
+  </div>
+  <div class="ck-error" id="page-error" hidden></div>
+  <div class="ck-body" id="tab-center"></div>
+  <div class="ck-body" id="tab-schedule" hidden></div>
+  <div class="ck-body" id="tab-records" hidden></div>
+</div>
+<div class="ck-toast" id="toast" hidden></div>
+<script type="module" src="main.js"></script>
+</body>
+</html>

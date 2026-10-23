@@ -160,12 +160,17 @@ function readZip(buffer) {
  * ⚠ 两处必须逐字一致：改任何一行都要同步 Rust 那边，否则「所有包都验不过」，
  * 而失败信息只会说「签名与本包内容不匹配」，看不出是拼装规则写岔了。
  */
-function signingPayload(manifest, target, binarySha256) {
+function signingPayload(manifest, target, binarySha256, uiFiles) {
   const providers = manifest.providers
     .map(item => `${item.id}:${item.order ?? 0}:${item.default_enabled === false ? 0 : 1}`)
     .sort()
   const entries = Object.entries(manifest.entry || {})
     .map(([key, value]) => `${key}=${value}`)
+    .sort()
+  // UI 资源清单：`相对包根的 POSIX 路径=sha256`，按路径字典序。
+  // 没有 UI 资源时是空串 —— 老包的载荷因此逐字节不变。
+  const ui = (uiFiles || [])
+    .map(([path, hash]) => `${path}=${hash}`)
     .sort()
   return [
     'agent2api-pack-v1',
@@ -176,8 +181,29 @@ function signingPayload(manifest, target, binarySha256) {
     `providers=${providers.join(',')}`,
     `entry=${entries.join(',')}`,
     `binary=${binarySha256}`,
+    `ui=${ui.join(',')}`,
     '',
   ].join('\n')
+}
+
+/**
+ * 收集包里的 UI 资源清单：`[[相对路径, sha256], …]`。
+ *
+ * ── 为什么必须签 UI ────────────────────────────────────────
+ * 插件页面跑在管理面板的 origin 下、能拿到面板令牌。只签二进制的话，
+ * 一个包可以带合法签名的 exe **加**一个偷令牌的 js，验签照样通过。
+ *
+ * 判据与 Rust 侧 `plugin_host::install` 的 `collect_ui_files` 同源：
+ * 只收 `ui/` 前缀下的条目（POSIX 路径，`\` 归一成 `/`），跳过目录条目
+ * （zip 里的目录项以 `/` 结尾）。
+ */
+function collectUiFiles(entries) {
+  return entries
+    .filter(entry => !entry.name.endsWith('/') && entry.name.replace(/\\/g, '/').startsWith('ui/'))
+    .map(entry => [
+      entry.name.replace(/\\/g, '/'),
+      createHash('sha256').update(entry.data).digest('hex'),
+    ])
 }
 
 /* ─── 子命令 ───────────────────────────────────────────────── */
@@ -262,7 +288,8 @@ function sign(argv) {
     process.exit(1)
   }
   const binarySha256 = createHash('sha256').update(binaryEntry.data).digest('hex')
-  const payload = signingPayload(manifest, target, binarySha256)
+  const uiFiles = collectUiFiles(entries)
+  const payload = signingPayload(manifest, target, binarySha256, uiFiles)
   const signature = cryptoSign(null, Buffer.from(payload, 'utf8'), privateKeyPem)
 
   // 把签名写回 pack.json（其余条目原样保留）
@@ -283,6 +310,7 @@ function sign(argv) {
   console.log(`[sign] 平台    ${target}`)
   console.log(`[sign] 密钥    ${keyId}`)
   console.log(`[sign] 二进制  sha256=${binarySha256.slice(0, 16)}…`)
+  console.log(`[sign] UI 资源 ${uiFiles.length} 个文件`)
   console.log(`[sign] 签名    ${signature.toString('base64').slice(0, 24)}…`)
   console.log('')
   console.log('[sign] 注意：签名覆盖的是**内容**。改了 pack.json 或二进制就要重签。')

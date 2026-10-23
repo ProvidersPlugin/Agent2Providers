@@ -298,6 +298,9 @@ impl Serve {
                     needs_proxy: false,
                     refusal_finishes,
                     refusal_markers,
+                    admin_panels: meta.admin_panels,
+                    account_features: meta.account_features,
+                    checkin: meta.checkin,
                 }
             })
             .collect();

@@ -169,6 +169,26 @@ impl Provider for KukuProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：`usage` —— 余额/积分查询（`GET /bizapi/gfpro/getgfvipremain`
+            // 的 `totalPoint`，见 `balance`）。
+            //   `edition: false` —— 单一入口（粘贴 Cookie / 导入本机登录态 /
+            //     网页登录），没有国际版。
+            //   `identifier: uid` —— 账号标识存 uid（userreport 的 uk）。
+            //   `expiry` 空、**不申报 `long_lived`** —— BDUSS 是登录态 Cookie，
+            //     没有可读的到期时刻；但不能写成「长期有效」：上游随时可能让它
+            //     失效（参考实现的故障排查里「BDUSS invalid」是最常见的一条），
+            //     而且本家没有续期接口，失效只能重登。这一列对它只是「没有可
+            //     显示的事实」。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                identifier: vec!["uid".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("「免费领积分」的每日任务 · 逐个领取".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     /// 模型清单：**远程目录优先**，未拉到用静态兜底。

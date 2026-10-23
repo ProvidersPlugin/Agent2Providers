@@ -116,6 +116,23 @@ impl Provider for AtomcodeProvider {
             // 本家**没有内置兜底清单**（名单里写死的模型点一下可能是「参数错误」，
             // 见 `models.rs` 的模块头），所以默认清单为空 —— 由远程目录填。
             .with_models(Vec::new())
+            // 账号行：`usage` —— 额度是 `status-v2` 的**每窗口调用次数**
+            // （免费档实测 200 次 / 5 小时），已接 `query_usage`。
+            //   `edition: false` —— 单一入口（没有国际版）。
+            //   `identifier: userId` —— AtomGit 用户 id（落盘时写在 `userId`）。
+            //   `expiry: expiresAt` —— 令牌**不是 JWT**，过期时刻由
+            //     `createdAt + expiresIn` 推出后落盘（见 `credentials` 的模块头）。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                identifier: vec!["uid".to_string(), "userId".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("领取免费 CodingPlan（按需：套餐有效时只回读额度）".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     fn provider_id(&self) -> String {

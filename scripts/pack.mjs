@@ -78,14 +78,13 @@ function binaryName(target) {
  * 目录不存在时**不报错**：`icons` 是可选字段，写了但目录还没建只说明这一版
  * 没带图标，界面回落字母即可 —— 为一张图标让整个打包失败不值得。
  */
-function collectIcons(manifest) {
-  const dir = manifest.icons
+function collectDir(field, dir) {
   if (!dir) return []
   if (dir.startsWith('/') || dir.startsWith('\\') || /^[a-zA-Z]:/.test(dir)) {
-    throw new Error(`pack.json 的 icons 必须是相对路径（${dir}）`)
+    throw new Error(`pack.json 的 ${field} 必须是相对路径（${dir}）`)
   }
   if (dir.split(/[\\/]/).includes('..')) {
-    throw new Error(`pack.json 的 icons 不能包含 ..（${dir}）`)
+    throw new Error(`pack.json 的 ${field} 不能包含 ..（${dir}）`)
   }
   const root = join(PLUGIN_DIR, dir)
   if (!existsSync(root) || !statSync(root).isDirectory()) return []
@@ -106,6 +105,48 @@ function collectIcons(manifest) {
   }
   walk(root)
   return files.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** 图标目录（`pack.json` 的 `icons` 字段）。 */
+function collectIcons(manifest) {
+  return collectDir('icons', manifest.icons)
+}
+
+/**
+ * 收集 `pack.json` 的 `ui` 页面目录下的全部文件。
+ *
+ * ── entry 是相对 `ui/` 的，不是相对包根 ──────────────────────
+ * 网关拼页面地址用的是 `/plugins/<pack>/ui/<entry>`（见 `pack_ui_pages`），
+ * 而 `resolve_ui_file` 去掉 `/ui/` 前缀后再落到 `<包版本目录>/ui/` 下找 ——
+ * 也就是说 `entry` 的基准目录是 `ui/`。所以这里收集时要把 `ui/` 前缀补回去，
+ * 否则 `collectDir` 会去仓库根找 `checkin/`，一个文件都收不到（打包不报错，
+ * 装出来的包却打不开页面）。
+ *
+ * ── 为什么 ui 也要校验路径 ──────────────────────────────────
+ * 与 `icons` 同一理由：包内相对路径，写错了会把开发机上的任意文件打进包。
+ * 额外的判据来自网关侧：`ui` 页面的 `entry` 必须以 `.html` 结尾、不含 `..` ——
+ * 这里同步挡一遍，让「打出来的包装不上」提前到打包时暴露。
+ */
+function collectUi(manifest) {
+  const pages = Array.isArray(manifest.ui) ? manifest.ui : []
+  const files = []
+  const seen = new Set()
+  for (const page of pages) {
+    const entry = String(page.entry || '').replace(/\\/g, '/')
+    if (!entry.toLowerCase().endsWith('.html')) {
+      throw new Error(`pack.json 的 ui 页面 ${page.id} 的 entry 必须以 .html 结尾（${entry}）`)
+    }
+    if (entry.split('/').includes('..') || entry.startsWith('/')) {
+      throw new Error(`pack.json 的 ui 页面 ${page.id} 的 entry 不能是绝对路径或含 ..（${entry}）`)
+    }
+    // 页面资源目录 = entry 所在的目录（约定：一个页面一个目录），基准是 ui/
+    const dir = entry.split('/').slice(0, -1).join('/')
+    if (!dir) throw new Error(`pack.json 的 ui 页面 ${page.id} 的 entry 必须在子目录里（${entry}）`)
+    if (seen.has(dir)) continue
+    seen.add(dir)
+    files.push(...collectDir('ui', `ui/${dir}`))
+  }
+  return files
 }
 
 function parseArgs(argv) {
@@ -277,9 +318,11 @@ function main() {
 
   const binary = readFileSync(exe)
   const icons = collectIcons(manifest)
+  const ui = collectUi(manifest)
   const zip = writeZip([
     { name: 'pack.json', data: Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'), executable: false },
     ...icons,
+    ...ui,
     { name: declared, data: binary, executable: true },
   ])
   writeFileSync(zipPath, zip)
@@ -289,6 +332,8 @@ function main() {
   console.log(`[pack] 平台      ${target}${native ? '（宿主）' : '（交叉）'}`)
   console.log(`[pack] 二进制    ${binaryMb} MB`)
   console.log(`[pack] 图标      ${icons.length ? `${icons.length} 个（${manifest.icons}/）` : '无'}`)
+  const pageCount = Array.isArray(manifest.ui) ? manifest.ui.length : 0
+  console.log(`[pack] 页面      ${pageCount ? `${pageCount} 个（${ui.length} 个文件）` : '无'}`)
   console.log(`[pack] 插件包    ${zipPath}`)
   console.log(`[pack] 体积      ${zipMb} MB（store 模式，未压缩）`)
   console.log('[pack] 安装方式：网关界面 → 提供商插件 → 安装插件包，选中这个 zip')

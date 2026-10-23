@@ -131,6 +131,32 @@ impl Provider for ModelScopeProvider {
             }])
             // 本家没有内置兜底清单（清单是账号相关的，见 `models.rs`）
             .with_models(vec![])
+            // 账号行：两个站点同一份申报（账号字段、余额形态、签到链路两地
+            // 完全一致，差别只在域名）。
+            //   `usage` —— 额度是魔粒钱包（`available_balance`），外加「今日已用
+            //     调用数」一行；`credit_detail` 让余额格挂出「积分明细」
+            //     （可用 / 冻结 / 今日已用三行）。
+            //   `edition: false` —— 地区由 provider id 直接表达（两家 provider、
+            //     两个分组），不需要再渲染一个地区列。
+            //   `identifier: userId` —— 身份键存的是上游的 HavanaId。
+            //   `expiry` 空 + `long_lived: true` —— `ms-` 令牌是长期有效的 API
+            //     key（插件源码原话「session 就是 api key 本身……永不过期」，
+            //     实测也没有任何 refresh / renew 接口），没有到期时刻可算。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                identifier: vec!["userId".to_string()],
+                long_lived: true,
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some(match region {
+                Region::Cn => "无独立签到接口 · 每天替账号打一次登录信息（即当日魔粒）".to_string(),
+                Region::Intl => "与国内版同一套链路 · 站点不同、令牌不通用".to_string(),
+            }),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     fn provider_id(&self) -> String {

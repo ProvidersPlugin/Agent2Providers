@@ -101,6 +101,29 @@ impl Provider for LobsterAiProvider {
                 hint: Some("打开 LobsterAI 授权页，登录后自动回填账号".into()),
             }])
             .with_models(models::raw_list())
+            // 账号行：`usage` —— 余额是**积分**（`GET /api/user/profile-summary`）。
+            //   `credit_detail` —— 同一份 profile-summary 还带**逐份积分包**
+            //     （面额 / 已用 / 剩余 / 到期），正是 `credits[]` 那行的形状；
+            //     与 ZCode 的纯比例窗口不同，这里每份都有绝对值。⚠️ 这一位是
+            //     **承诺**：`query_usage` 不出 `credits` 时入口不挂，所以现在
+            //     开它是安全的。
+            //   `edition: false` —— 单一站点（`lobsterai.youdao.com`）。
+            //   `identifier: userId` —— 身份键取 `userId`（落账号时的口径是
+            //     `userId → uid → 令牌尾段`，账号 id 也由它拼成）。
+            //   `expiry: expiresAt` —— 落盘写的是毫秒（显式 > createdAt +
+            //     expiresIn > JWT 的 `exp`），与 atomcode 同一条教训。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                identifier: vec!["userId".to_string(), "uid".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("每日活动签到（+100 积分，已领则中性提示）".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     fn provider_id(&self) -> String {

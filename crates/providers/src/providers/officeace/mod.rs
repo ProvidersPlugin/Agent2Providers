@@ -102,6 +102,37 @@ impl Provider for OfficeAceProvider {
             })
             .with_login(Vec::new())
             .with_models(models::list())
+            // 账号行：`usage` —— 额度/积分要**控制面签名**（V11-HMAC-SHA256 打
+            // `/v1/subscription`），那条链已实现（`balance` + 适配器
+            // `query_usage`），所以余额入口与积分列都开。⚠️ 只导入网关 Basic
+            // 那一对、没有控制面凭据的账号查不到余额，后端回 400
+            // `usage_not_configured`，界面按「未配置查询」如实显示（不是报错）。
+            //   `edition: false` —— 单一入口（自助 OAuth / 粘贴网关 Basic）。
+            //   `identifier: id` —— 账号标识渲染的是**账号 id**
+            //     （`officeace-<hash>`，由网关基址 + app key 派生），不是任何
+            //     凭据本身：面板上显示 `modelAppKey` 会把网关 key 露在界面上。
+            //   `expiry: expiresAt` —— 控制面临时凭据约 2 小时到期；只导入网关
+            //     Basic 凭据时没有这个字段，界面不渲染有效期（那一半本来也不过期）。
+            //   `credit_detail` —— 逐条套餐配额 + 逐条奖励活动各一行（奖励活动含
+            //     已过期的），另加一条联网搜索（单位「次」，与文档级的「积分」不同）。
+            //   `credit_expiry` —— 上面那些行都带 `expireAt`（毫秒，`expire_ms > 0`
+            //     才写），所以「快到期优先」排序对它可用。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                credit_expiry: true,
+                identifier: vec!["id".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some(
+                "一次领当天全部奖励（每日签到 + 新人礼） · 幂等由上游保证".to_string(),
+            ),
+            modes: vec![proto::CheckinMode::Checkin],
+            onboarding: true,
+            ..Default::default()
+        })
     }
 
     /// 流内拒绝：上游把**内容审核**包装成 `HTTP 200 + finish_reason=content_filter`

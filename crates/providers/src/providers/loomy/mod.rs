@@ -82,6 +82,29 @@ impl Provider for LoomyProvider {
             }])
             // 本家没有内置兜底清单（见 `models.rs` 的模块头）
             .with_models(vec![])
+            // 账号行：`usage` 对应 `balance` —— 余额是**双账户**（永久积分 +
+            // 每日赠送积分，读 `GET /api/v2/points/records` 的摘要字段），
+            // 界面上两张卡都列。
+            //   `edition: false` —— 单一入口（手机验证码登录），没有地区概念。
+            //   `expiry: expiresAt` —— 落账号时按登录时刻 + 14 天估算（上游没有
+            //     续期接口，过期只能重新登录；这一列对它是「什么时候该重登」的
+            //     提示）。**不申报 `long_lived`**：凭证有固定寿命，只是过期后
+            //     救不回来。
+            //   `credit_detail` —— 双账户各一行（永久积分 / 每日赠送积分），
+            //     后者标 `daily` → 界面写「每日重置」而不是到期。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                identifier: vec!["uid".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("无独立签到接口 · 每天替账号打一次首次登录积分".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            onboarding: true,
+            ..Default::default()
+        })
     }
 
     // ── 数据面 ────────────────────────────────────────────────

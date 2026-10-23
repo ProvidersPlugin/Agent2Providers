@@ -104,6 +104,24 @@ impl Provider for RaccoonProvider {
                 },
             ])
             .with_models(models::raw_list())
+            // 账号行：`credit_detail` —— 四个钱包桶（每日积分 / 每月会员积分 /
+            // 奖励积分 / 充值积分）各一行：上游只给余额一个数，没有面额 / 已用 /
+            // 到期（缺的键不出），明细比读数多的只是「钱在哪个桶里」。
+            // 有效期键按两种记录形态都认：插件新落的账号写 `expiresAt`，
+            // 升级上来的存量账号由网关旧投影写 `tokenExpiresAt`。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                identifier: vec!["userId".to_string(), "uid".to_string()],
+                expiry: vec!["expiresAt".to_string(), "tokenExpiresAt".to_string()],
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some("桌面端每日积分链路".to_string()),
+            modes: vec![proto::CheckinMode::Checkin],
+            onboarding: true,
+            ..Default::default()
+        })
     }
 
     fn provider_id(&self) -> String {

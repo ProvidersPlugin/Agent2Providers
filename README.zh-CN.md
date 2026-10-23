@@ -94,7 +94,7 @@ CI 的每个平台 job 都会运行它 —— **能编译不等于能运行**。
 网关则以 **tag** 方式引用同一个仓库：
 
 ```toml
-agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.1.0" }
+agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.0" }
 ```
 
 因此协议改动只有在打新 tag 并更新网关那行引用之后，才会到达网关。只改本地

@@ -213,6 +213,33 @@ impl Provider for ZcodeProvider {
                 hint: Some("打开 ZCode 授权页，完成后自动收下账号".to_string()),
             }])
             .with_models(models::list(self.region))
+            // 活动套餐通道的人机验证令牌池：池子本体在本模块（`captcha`），
+            // 界面只负责铸令牌并推进来
+            .with_admin_panels(vec![proto::AdminPanel::CaptchaPool])
+            // 账号行：两个地区都要申报。
+            //   `usage` 对应 `balance` —— 它是一条**候选令牌链**：有套餐 JWT 时读
+            //     billing 网关的 `/zcode-plan/billing/balance`（余额桶 + 到期），
+            //     否则用 accessToken 读开放平台监控接口的窗口限额（每 N 小时 /
+            //     每周的剩余比例）。两把凭证都没有时回可识别的「未配置」，余额
+            //     列显示成中性提示而不是一片红，所以入口照样给。
+            //   `claim` 就是那颗「领套餐」：活动期是**每天一份新套餐**（plan_id
+            //     带日期段），领过之后当天显示「今日已领」、次日自动恢复。
+            //   `plan_channel` 是「使用哪个套餐」设置：编码套餐与活动套餐是两份
+            //     独立额度，「套餐已到期」这类拒绝只由其中一条给出，所以它是
+            //     设置项而不是自动探测（见 `plan` 的模块头）。
+            //   `credit_detail` —— 逐额度桶一行（总量 / 已用 / 剩余，认得出归属时
+            //     还带套餐名）；纯比例窗口只有 `remainingPercent`、三个数全缺，
+            //     整行跳过 —— 那一档和没有入口一样。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                claim: true,
+                plan_channel: true,
+                edition: true,
+                identifier: vec!["userId".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
     }
 
     /// 映射上绑定的思考等级作为**默认档**注入（客户端自己点名了就让位）。

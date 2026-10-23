@@ -70,6 +70,19 @@ impl Provider for DemoProvider {
                 json!({ "id": "demo-fast", "name": "Demo Fast", "context_length": 8192 }),
                 json!({ "id": "demo-slow", "name": "Demo Slow", "context_length": 32768 }),
             ])
+            // 账号行的渲染参数：这里给的是**最小一份**，照抄后按自己家改。
+            // 每一项的语义见协议里 `AccountFeatures` 的文档。
+            .with_account_features(proto::AccountFeatures {
+                // 有余额 / 积分查询概念 → 账号行给「余额」入口
+                usage: true,
+                // 余额明细里有逐份积分包 → 读数旁挂「积分明细」（没实现就别开）
+                credit_detail: false,
+                // 账号标识读 `account_view` 里的哪个键（按顺序取第一个有值的）
+                identifier: vec!["uid".to_string()],
+                // 有效期读哪个键；空 = 这一列没有可读的字段
+                expiry: vec!["expiresAt".to_string()],
+                ..Default::default()
+            })
     }
 
     // ── 无状态转发 ────────────────────────────────────────────

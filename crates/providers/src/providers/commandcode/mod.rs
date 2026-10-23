@@ -88,6 +88,20 @@ impl Provider for CommandCodeProvider {
             }])
             // 内置兜底清单（没有远程目录时用它）
             .with_models(models::fallback_models())
+            // 账号行：`usage: false` —— 本家**没有余额查询**：`/alpha/billing/*`
+            // 只在添加账号时用来探活（见 `adapter` 的模块头），所以如实关掉
+            // （与 `Capabilities::usage` 同一口径）。
+            //   `edition: false` —— 单一入口。
+            //   `identifier: id` —— 没有可读的用户标识：账号 id 由 key 的 SHA-256
+            //     前 12 位拼成（`commandcode-<hash>`），所以标识列显示这个 id
+            //     本身，与 officeace 同一处置。
+            //   `expiry` 空 + `long_lived: true` —— 单个静态 API Key，上游没有
+            //     refresh 接口、key 本身也没有到期时刻。
+            .with_account_features(proto::AccountFeatures {
+                identifier: vec!["id".to_string()],
+                long_lived: true,
+                ..Default::default()
+            })
     }
 
     fn provider_id(&self) -> String {

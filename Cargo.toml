@@ -19,16 +19,16 @@ members = ["crates/providers", "crates/provider-protocol", "crates/provider-sdk"
 #
 # 网关侧的引用形态（`desktop-tauri/src-tauri/server/Cargo.toml`）：
 # ```toml
-# agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.1.0" }
+# agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.0" }
 # ```
 #
 # ── 为什么不发布到 crates.io ─────────────────────────────────
-# 不需要。第三方写插件时用 git 依赖即可（`git = "...", tag = "v0.1.0"`），
+# 不需要。第三方写插件时用 git 依赖即可（`git = "...", tag = "v0.2.0"`），
 # 与 crates.io 的体验差别只是「要写 git 地址」。这样省掉账号、发布流程与
 # 版本号永久占用的约束。
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license-file = "LICENSE"

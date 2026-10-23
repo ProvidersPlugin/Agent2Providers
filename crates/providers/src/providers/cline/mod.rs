@@ -139,6 +139,23 @@ impl Provider for ClineProvider {
             ),
         }])
         .with_models(models::list(self.pool))
+        // 上游请求头的逐键覆盖编辑器：默认值与合并语义都在本模块的
+        // `headers` 里，网关只存用户改过的键
+        .with_admin_panels(vec![proto::AdminPanel::UpstreamHeaders])
+        // 账号行：两个池是同一家上游按计费通道拆成的两个 provider，账号形态
+        // 完全一样，**两边都要申报**（漏一个那一家就掉进兜底）。
+        //   `identifier` 取 `uid`：公开形态里放的是 JWT 的账号 id。
+        //   `expiry` 取 `expiresAt`：JWT 的 `exp` 换算成毫秒落在这里。
+        //   没有 `credit_detail`：余额查询只回一个可用额度，不产逐份积分包。
+        .with_account_features(proto::AccountFeatures {
+            usage: true,
+            identifier: vec!["uid".to_string(), "account".to_string()],
+            expiry: vec!["expiresAt".to_string()],
+            // 免费池的余额贴 0 / 欠费是常态，不给缺省限制规则（明确声明为空，
+            // 与「没申报」区分开）；付费池沿用通用的「余额 < 1 跳过」。
+            default_limiters: (self.pool == Pool::Free).then(Vec::new),
+            ..Default::default()
+        })
     }
 
     /// 本池的模型清单。

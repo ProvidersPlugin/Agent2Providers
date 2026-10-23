@@ -1,7 +1,7 @@
 {
   "id": "agent2api-providers",
   "name": "Agent2API 官方提供商",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
   "providers": [
     {
@@ -186,6 +186,15 @@
     }
   ],
   "icons": "assets",
+  "ui": [
+    {
+      "id": "checkin",
+      "title": "签到中心",
+      "icon": "checkin",
+      "entry": "checkin/index.html",
+      "order": 10
+    }
+  ],
   "entry": {
     "x86_64-pc-windows-msvc": "bin/agent2api-providers.exe",
     "x86_64-unknown-linux-gnu": "bin/agent2api-providers",

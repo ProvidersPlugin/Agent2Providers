@@ -96,6 +96,46 @@ impl Provider for CodeArtsProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：各位各有出处，别照着别家抄。
+            //   `usage` —— 余额是**两份账**（订阅统计 + 福利网关，见 `balance`），
+            //     界面上「读到 0」与「没读到」必须能分开，后端因此把失败的一侧
+            //     写进 `statisticsError` / `benefitError` 而不是整次失败。
+            //   `usage_detail` —— 余额列走「套餐徽标 + 点击逐项读数」的两行形态：
+            //     本家的计量表一行放不下，「可用 N 积分」是各池加总，两个权益
+            //     不同的账号在列里看不出差别。
+            //   `edition: false` —— 没有版本 / 地区概念：region 固定在 cn-north-4
+            //     且必须与 token 签发地一致，不是用户可选项；`login_type`
+            //     （WEB/IDE）也不是版本。
+            //   `expiry: expiresAt` —— 临时凭据约一小时到期，这一列对本家
+            //     **是主要信息**。
+            //   `concurrency_default: 3` —— 上游硬顶（超过直接回 HTTP 400，且是
+            //     账号级冲突、不降级换号），所以 0 解释成「按默认 3」。
+            //   `default_limiters` —— 余额读数常判不出（免费版账号的统计里没有
+            //     积分类计量表、`available` 为 null，额度全在福利 token 池），
+            //     缺省的余额规则形同虚设；按自然日 Token 消耗判定才兜得住
+            //     「别把一个账号打爆」，而「过了 0 点额度就回来」正是它的额度形态。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                usage_detail: true,
+                identifier: vec!["userId".to_string(), "uid".to_string()],
+                expiry: vec!["expiresAt".to_string()],
+                concurrency_default: Some(3),
+                default_limiters: Some(vec![proto::DefaultLimiter {
+                    kind: proto::DefaultLimiterKind::Token,
+                    threshold: 10_000_000.0,
+                    period_seconds: 0,
+                    action: proto::DefaultLimiterAction::Skip,
+                }]),
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some(
+                "每日福利 · 领取 → 确认 → 回读核实 · 按北京时间自然日重置".to_string(),
+            ),
+            modes: vec![proto::CheckinMode::Checkin],
+            onboarding: true,
+            ..Default::default()
+        })
     }
 
     /// 清单来自刷新链路落的进程内缓存（`models::list` 是同步读）。

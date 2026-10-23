@@ -126,6 +126,20 @@ impl Provider for MonkeyCodeProvider {
             },
         ])
         .with_models(models::list(self.region))
+        // 账号行：两个站点都要申报（漏一个那一家就掉进兜底）。
+        //   `usage: false` —— 本家**确实没有余额查询**：适配器的 `supports_usage`
+        //     保持默认 false，这是「上游没有这个接口」，不是「还没接」。
+        //   `edition: false` —— 地区已经由 provider id 表达（两家、两个分组），
+        //     再拼一次后缀会得到「MonkeyCode 国际版 国际版」。
+        //   `identifier: userId` —— 公开形态里有 `userId`。
+        //   `expiry: expiresAt` —— 公开形态给的是 `expiresAt`（session cookie 的
+        //     30 天硬限制），**不是** `tokenExpiresAt`。本家没有续期协议，
+        //     所以**不申报 `long_lived`**：凭证有固定寿命，只是过期后救不回来。
+        .with_account_features(proto::AccountFeatures {
+            identifier: vec!["userId".to_string()],
+            expiry: vec!["expiresAt".to_string()],
+            ..Default::default()
+        })
     }
 
     /// 模型清单来自远程目录（进程内存缓存，按地区分格）。

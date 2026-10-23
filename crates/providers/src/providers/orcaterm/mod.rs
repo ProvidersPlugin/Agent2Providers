@@ -114,6 +114,21 @@ impl Provider for OrcaTermProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：`usage` —— 有余额概念（`DescribeUserBillingStatus` 的月度
+            // AI 配额，归一成 `available` + `unit: "次"`）。
+            //   `identifier: uid` —— 公开形态给的是 `uid`。
+            //   `expiry: tokenExpireAt` —— ⚠ 与别家都不同的字段名（不是
+            //     `tokenExpiresAt`）：公开形态里就叫 `tokenExpireAt`，写错只会让
+            //     有效期列一直显示「—」。
+            //   `edition: false` —— 单一入口（桌面端登录态 / 粘贴令牌）。
+            //   没有 `credit_detail`：`query_usage` 只给 `available` 与
+            //     subscription，不出逐份 `credits[]`，挂入口会点开一个空框。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                identifier: vec!["uid".to_string()],
+                expiry: vec!["tokenExpireAt".to_string()],
+                ..Default::default()
+            })
     }
 
     // ── 数据面 ────────────────────────────────────────────────

@@ -183,6 +183,29 @@ impl Provider for AutoClawProvider {
         })
         .with_login(login_methods(region))
         .with_models(models::list(region))
+        // 账号行：两个地区能力完全一致，差别只在域名 —— 两项都必须申报，
+        // 漏了哪一项那一家就掉进兜底（症状：余额入口消失、标识列显示成空）。
+        //   `credit_detail` —— 逐钱包余额各一行，另加一条「即将过期」（上游给的是
+        //     相对时长文案，原样带出，不换算成时刻）。
+        //   `email_as_name` —— 只有国际版：国内版的账号名是手机号 / 昵称。
+        //   `expiry` 按两种记录形态都认（插件写 `expiresAt`，旧投影写
+        //     `tokenExpiresAt`）。
+        .with_account_features(proto::AccountFeatures {
+            usage: true,
+            credit_detail: true,
+            identifier: vec!["userId".to_string()],
+            expiry: vec!["expiresAt".to_string(), "tokenExpiresAt".to_string()],
+            email_as_name: region == Region::Intl,
+            ..Default::default()
+        })
+        .with_checkin(proto::CheckinInfo {
+            description: Some(match region {
+                Region::Cn => "官方客户端的每日签到任务".to_string(),
+                Region::Intl => "与国内版同一套任务接口 · 站点不同".to_string(),
+            }),
+            modes: vec![proto::CheckinMode::Checkin],
+            ..Default::default()
+        })
     }
 
     // ── 数据面 ────────────────────────────────────────────────

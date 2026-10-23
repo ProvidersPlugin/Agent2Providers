@@ -210,6 +210,37 @@ impl Provider for QoderProvider {
             },
         ])
         .with_models(models::list_for(self.region))
+        // 账号行：两个地区能力完全一致（拆家后是两家 provider，各自都要申报，
+        // 漏一个会让国际版掉进兜底）。
+        //   `credit_detail` —— 三个桶各一行（套餐额度 / 个人资源包 / 组织资源包），
+        //     桶级口径、没有时刻。
+        //   `edition` —— 两家各是单一地区，但公开形态仍带 `edition` 供徽章显示。
+        //   `email_as_name` —— 本家账号以邮箱报名字。
+        .with_account_features(proto::AccountFeatures {
+            usage: true,
+            credit_detail: true,
+            edition: true,
+            identifier: vec!["uid".to_string(), "userId".to_string()],
+            expiry: vec!["expiresAt".to_string()],
+            email_as_name: true,
+            ..Default::default()
+        })
+        .with_checkin(proto::CheckinInfo {
+            // 两个地区链路不同：中国版是活动领取（每天 10:00 刷新），国际版
+            // 要带设备风控身份领「每日 100 Credits」（UMID 组件）。
+            description: Some(match self.region {
+                Region::Cn => "活动（campaign）领取 · 每天 10:00 刷新".to_string(),
+                Region::Global => {
+                    "带设备风控身份领取「每日 100 Credits」 · 需要 UMID 组件".to_string()
+                }
+            }),
+            modes: vec![proto::CheckinMode::Checkin],
+            ui_hooks: match self.region {
+                Region::Cn => Vec::new(),
+                Region::Global => vec![proto::CheckinUiHook::UmidComponent],
+            },
+            ..Default::default()
+        })
     }
 
     fn models<'a>(

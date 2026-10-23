@@ -105,7 +105,7 @@ locally without a release.
 The gateway refers to the same repository **by tag**:
 
 ```toml
-agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.1.0" }
+agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.0" }
 ```
 
 So a contract change reaches the gateway only after a new tag and an updated

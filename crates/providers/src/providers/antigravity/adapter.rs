@@ -91,6 +91,22 @@ impl Provider for AntigravityProvider {
                 },
             ])
             .with_models(models::list())
+            // 账号行：`usage` —— 额度是**两个模型组 × 两个窗口**（5 小时 / 每周）
+            // 的剩余比例（`retrieveUserQuotaSummary`）；上游只给比例、没有绝对数，
+            // 钱包行走纯比例读数。余额列四条都画（Gemini 两条 + Claude/GPT 两条），
+            // 后者正是 issue #288 要看的那份额度。
+            //   `edition: false` —— 单一入口（Google OAuth 粘贴 / 网页登录）。
+            //   `identifier: userId` —— 身份键存的就是 email。
+            //   `expiry` 空 + `long_lived: true` —— refresh token 不过期（Google
+            //     侧没有固定寿命，只在撤销授权 / 连续 6 个月不用 / 撞上同一 client
+            //     的 100 个上限时才失效），access token 约 1 小时、由插件提前
+            //     15 分钟自动续期。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                identifier: vec!["userId".to_string()],
+                long_lived: true,
+                ..Default::default()
+            })
     }
 
     fn provider_id(&self) -> String {

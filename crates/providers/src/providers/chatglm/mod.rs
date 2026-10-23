@@ -122,6 +122,40 @@ impl Provider for ChatglmProvider {
                 },
             ])
             .with_models(models::fallback_models())
+            // 账号行：`usage` —— 余额是**会员积分**（`member-api` 的活动状态
+            // `current_score`，外加 `payment-api` 的会员档位）。⚠️ **访客账号没有
+            // 积分体系**：那些接口对访客一律 401，后端回 400
+            // `usage_not_configured`（文案说明「访客本来就没有积分」），界面按
+            // 「未配置查询」如实显示而不是报错。
+            //   `credit_detail` —— 逐份读数（会员积分 + 会员档位两行），主读数
+            //     带活动进度。
+            //   `edition: false` —— 单一站点（国际站是另一个产品 Z.AI/ZCode，
+            //     已按独立 provider 建模）。
+            //   `identifier: uid` —— JWT 的 `uid` 声明；访客也有。
+            //   `expiry` 空 + `long_lived: true` —— 登录账号的 refresh token 由
+            //     插件自动续期（`user/refresh` 实测可用），访客则由插件用**同一个
+            //     设备号**重新 `guest/access` 换发，所以「什么时候到期」对用户
+            //     没有行动价值。⚠️ 访客令牌本身有 7 天量级的寿命，换发后身份是否
+            //     延续由上游决定（设备号不变是插件能做的全部）；这里说的是
+            //     「不需要用户操心有效期」，不是「令牌永不过期」。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                credit_detail: true,
+                identifier: vec!["uid".to_string()],
+                long_lived: true,
+                ..Default::default()
+            })
+        .with_checkin(proto::CheckinInfo {
+            description: Some(
+                "每日登录积分 · 顺带领取会员活动 · 访客账号无积分体系（跳过）".to_string(),
+            ),
+            modes: vec![proto::CheckinMode::Checkin],
+            // 访客没有积分体系（相关接口一律 401）：列进签到范围只会永远显示
+            // 「待签」并把进度分母撑大，所以按账号形态排除。
+            exclude_guest: true,
+            onboarding: true,
+            ..Default::default()
+        })
     }
 
     fn provider_id(&self) -> String {

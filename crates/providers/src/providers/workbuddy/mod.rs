@@ -410,6 +410,49 @@ impl Provider for WorkBuddyProvider {
             ),
         }])
         .with_models(self.catalog_models())
+        // 面板按地区分开：两版的上游玩法完全不同。
+        //   国内版：成长任务树（任务 / 开学季 / 猫猫旅行）与签到
+        //   国际版：每日活跃保活（模型链 + 定时排程），没有普通签到接口
+        .with_admin_panels(match self.region {
+            Region::Cn => vec![proto::AdminPanel::GrowthTasks],
+            Region::Intl => vec![proto::AdminPanel::DailyKeepalive],
+        })
+        // 账号行：两地区能力一致（账号字段、余额口径、续期语义都相同）。
+        //   `credit_detail` —— `query_usage` 在既有积分简报之外还出 `credits[]`
+        //     （逐份积分包的面额 / 已用 / 剩余 / 领取 / 到期）。enterprise 账号
+        //     没有资源包、后端不挂 `credits`，界面按空数组自然退回原样。
+        //   `credit_expiry` —— 每份包的 `DeductEndTime` 写成 `credits[].expireAt`
+        //     （毫秒），所以「快到期优先」排序对它可用。
+        //   `edition` —— 只有国内版开：国际版的注册名「WorkBuddy 国际版」
+        //     自带地区，再拼一次会得到「WorkBuddy 国际版 国际版」。
+        .with_account_features(proto::AccountFeatures {
+            usage: true,
+            credit_detail: true,
+            credit_expiry: true,
+            edition: self.region == Region::Cn,
+            identifier: vec!["uid".to_string()],
+            expiry: vec!["expiresAt".to_string()],
+            ..Default::default()
+        })
+        .with_checkin(proto::CheckinInfo {
+            // 两地区共用一份申报：国内版是普通签到，国际版是「每日活跃」
+            // （保活点亮日活、领取才加积分），所以国际版多两档执行方式。
+            //   `growth` 只有国内版：国际版没有 CN 任务中心。
+            description: Some(match self.region {
+                Region::Cn => "腾讯每日签到接口 · 仅国内版".to_string(),
+                Region::Intl => "每日活跃任务 · 网页会话保活点亮日活，领取才加积分 · 两者可分开执行".to_string(),
+            }),
+            modes: match self.region {
+                Region::Cn => vec![proto::CheckinMode::Checkin],
+                Region::Intl => vec![
+                    proto::CheckinMode::Keepalive,
+                    proto::CheckinMode::Claim,
+                    proto::CheckinMode::Full,
+                ],
+            },
+            growth: self.region == Region::Cn,
+            ..Default::default()
+        })
     }
 
     /// 当前模型清单。

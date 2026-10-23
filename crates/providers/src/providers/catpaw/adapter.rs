@@ -126,6 +126,15 @@ impl Provider for CatPawProvider {
                 },
             ])
             .with_models(catalog::list())
+            // 账号行：`usage` —— `credit.catpaw.meituan.com/api/credit/balance`
+            // （见 `balance.rs`）。没有 `credit_detail`：那个接口只回一个余额数，
+            // 不产逐份积分包。`expiry` 空 —— 本家是会话 Cookie，没有可读的
+            // 到期时刻（旧投影也不给这个键），界面显示「—」而不是编一个时间。
+            .with_account_features(proto::AccountFeatures {
+                usage: true,
+                identifier: vec!["uid".to_string()],
+                ..Default::default()
+            })
     }
 
     /// 模型清单：**远程目录优先**，远程不可用时回落到 `MODELS` 静态表。

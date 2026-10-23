@@ -71,6 +71,12 @@ pub struct ProviderMeta {
     pub login_methods: Vec<proto::LoginMethod>,
     /// 内置的默认模型清单（没拉过远程目录时用它）。
     pub default_models: Vec<Value>,
+    /// 这一家在界面上拥有的管理面板（空 = 没有）。
+    pub admin_panels: Vec<proto::AdminPanel>,
+    /// 这一家的账号行怎么渲染（`None` = 不申报，界面走兜底）。
+    pub account_features: Option<proto::AccountFeatures>,
+    /// 这一家的签到能力申报（`None` = 不申报，网关走内置兜底）。
+    pub checkin: Option<proto::CheckinInfo>,
 }
 
 impl ProviderMeta {
@@ -83,6 +89,9 @@ impl ProviderMeta {
             capabilities: proto::Capabilities::default(),
             login_methods: Vec::new(),
             default_models: Vec::new(),
+            admin_panels: Vec::new(),
+            account_features: None,
+            checkin: None,
         }
     }
 
@@ -98,6 +107,63 @@ impl ProviderMeta {
 
     pub fn with_models(mut self, models: Vec<Value>) -> Self {
         self.default_models = models;
+        self
+    }
+
+    /// 声明这一家在界面上有哪些管理面板。
+    ///
+    /// ── 为什么必须申报（而不是让界面按 id 猜）─────────────────────
+    /// 面板的实现在插件里（走 `admin.action`），渲染在网关界面。界面原先
+    /// 按 provider id 写死「这家有哪些面板」，插件没装时照样显示，点进去
+    /// 是一屏「读取失败」。申报之后，没装插件就没有这个 `ProviderInfo`，
+    /// 界面也就不会画这些面板。
+    ///
+    /// ── 申报了却没实现会怎样 ────────────────────────────────────
+    /// 面板照常显示，但每次读写都拿到 `admin.action` 的「不支持」错误 ——
+    /// 与能力位同一条纪律：**只申报真的实现了的**。
+    pub fn with_admin_panels(mut self, panels: Vec<proto::AdminPanel>) -> Self {
+        self.admin_panels = panels;
+        self
+    }
+
+    /// 申报这一家的**账号行渲染参数**（标识键、有效期键、余额入口……）。
+    ///
+    /// ── 为什么这属于插件而不是网关 ──────────────────────────────
+    /// 账号表的每一列读哪个字段、要不要给余额入口、要不要拼地区后缀，
+    /// 全部取决于上游事实。网关原先有一张按 provider id 写死的常量表，
+    /// 加一家插件就得回头改网关；申报之后，网关只按字段渲染，新增一家
+    /// 不必改界面。
+    ///
+    /// ── 怎么填 ──────────────────────────────────────────────────
+    /// 以 [`proto::AccountFeatures::default()`] 起手，只打开这一家真有的事：
+    /// `usage` 表示界面上给余额入口、`credit_detail` 表示后端会产出逐份
+    /// `credits[]`、`identifier` / `expiry` 填**你自己 `account_view` 里写的
+    /// 键名**（写错不会报错，只会让那一列显示「—」）。
+    ///
+    /// 不申报（不调用本方法）时网关走兜底表，旧行为不变。
+    pub fn with_account_features(mut self, features: proto::AccountFeatures) -> Self {
+        self.account_features = Some(features);
+        self
+    }
+
+    /// 申报这一家的**签到能力**（签到中心据此分组、写链路说明、给按钮）。
+    ///
+    /// ── 为什么签到要单独申报 ────────────────────────────────────
+    /// 签到是反代提供商独有的功能（自定义 API 提供商结构上不可能有），
+    /// 而网关原先靠一张 17 项的常量表 + 一串按 id 的特判来决定「谁能签」。
+    /// 申报之后，新插件装上，签到中心的分组与说明自动出现，网关一行不用改。
+    ///
+    /// ── 怎么填 ──────────────────────────────────────────────────
+    /// 以 [`proto::CheckinInfo::default()`] 起手：
+    ///   · `description` 写**这一家的链路怎么发积分**（一句话，给用户看）；
+    ///   · `modes` 只在分档执行时才填（多数家只有 `[Checkin]`）；
+    ///   · `onboarding` / `plans` / `growth` 表示签到中心里还有没有对应的那块；
+    ///   · `ui_hooks` 只填客户端认得的钩子（见 [`proto::CheckinUiHook`]）。
+    ///
+    /// 不申报时网关走兜底：`Capabilities::checkin` 为真的家按「标准签到、
+    /// 无说明」渲染。
+    pub fn with_checkin(mut self, checkin: proto::CheckinInfo) -> Self {
+        self.checkin = Some(checkin);
         self
     }
 

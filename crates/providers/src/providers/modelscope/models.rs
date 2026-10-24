@@ -120,6 +120,7 @@ pub async fn refresh(
     region: Region,
     token: &str,
     force: bool,
+    account_proxy: Option<&agent2api_provider_protocol::WireProxy>,
     gateway_proxy: &str,
 ) -> proto::RefreshOutcome {
     let now = http::now_ms();
@@ -134,7 +135,16 @@ pub async fn refresh(
         }
     }
     let (status, payload) =
-        match client::inference_get(region, MODELS_PATH, token, "模型目录查询", gateway_proxy).await {
+        match client::inference_get(
+            region,
+            MODELS_PATH,
+            token,
+            "模型目录查询",
+            account_proxy,
+            gateway_proxy,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(error) => return proto::RefreshOutcome::failed(error),
         };

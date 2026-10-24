@@ -155,6 +155,8 @@ impl Provider for ModelScopeProvider {
                 Region::Intl => "与国内版同一套链路 · 站点不同、令牌不通用".to_string(),
             }),
             modes: vec![proto::CheckinMode::Checkin],
+            // `daily` 走 `Default`（= true，见协议 crate 的 `impl Default`）：
+            // 这是一张「每日签到」卡，与 ZCode 那种只有活动福利的家相反。
             ..Default::default()
         })
     }
@@ -304,11 +306,9 @@ impl Provider for ModelScopeProvider {
     ) -> SendFuture<'a, proto::RefreshOutcome> {
         Box::pin(async move {
             let region = self.region;
-            let token = match ctx.store_get(region.provider_id(), account).await {
-                Ok(found) => match credentials::token_of(&found.secret) {
-                    Ok(token) => token,
-                    Err(reason) => return Ok(proto::RefreshOutcome::failed(reason)),
-                },
+            // 一次读库拿全（令牌 + 账号代理），保留「空账号不是失败」那条分支
+            let record = match crate::store::record(ctx, region.provider_id(), account).await {
+                Ok(record) => record,
                 Err(_) if account.is_empty() => {
                     agent2api_provider_sdk::log_info!(
                         "[Models] ModelScope {}模型目录刷新跳过：尚未添加账号",
@@ -318,11 +318,24 @@ impl Provider for ModelScopeProvider {
                 }
                 Err(error) => {
                     return Ok(proto::RefreshOutcome::failed(format!(
-                        "读取 ModelScope 账号失败：{error}"
+                        "读取 ModelScope 账号失败：{}",
+                        error.message
                     )))
                 }
             };
-            Ok(models::refresh(region, &token, force, &ctx.env.proxy).await)
+            let token = match credentials::token_of(&record) {
+                Ok(token) => token,
+                Err(reason) => return Ok(proto::RefreshOutcome::failed(reason)),
+            };
+            let account_proxy = client::account_proxy(&record)?;
+            Ok(models::refresh(
+                region,
+                &token,
+                force,
+                account_proxy.as_ref(),
+                &ctx.env.proxy,
+            )
+            .await)
         })
     }
 
@@ -336,12 +349,15 @@ impl Provider for ModelScopeProvider {
     ) -> SendFuture<'a, proto::UsageReport> {
         Box::pin(async move {
             let region = self.region;
-            let found = ctx
-                .store_get(region.provider_id(), account)
+            // 一次读库拿全：`store::record` 把 `secret` 摊平到顶层，令牌与
+            // 账号代理（用户设过时在 `secret.proxy`）都在里面 —— 别再 `store_get`
+            // 一次、`store::record` 再一次，那是两次 RPC 往返。
+            let record = crate::store::record(ctx, region.provider_id(), account)
                 .await
-                .map_err(|error| format!("读取 ModelScope 账号失败：{error}"))?;
-            let token = credentials::token_of(&found.secret)?;
-            balance::query_usage(region, &token, &ctx.env.proxy).await
+                .map_err(|error| format!("读取 ModelScope 账号失败：{}", error.message))?;
+            let token = credentials::token_of(&record)?;
+            let account_proxy = client::account_proxy(&record)?;
+            balance::query_usage(region, &token, account_proxy.as_ref(), &ctx.env.proxy).await
         })
     }
 
@@ -353,12 +369,13 @@ impl Provider for ModelScopeProvider {
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(async move {
             let region = self.region;
-            let found = ctx
-                .store_get(region.provider_id(), account)
+            // 同上：一次读库拿全令牌与账号代理
+            let record = crate::store::record(ctx, region.provider_id(), account)
                 .await
-                .map_err(|error| format!("读取 ModelScope 账号失败：{error}"))?;
-            let token = credentials::token_of(&found.secret)?;
-            checkin::claim(region, &token, &ctx.env.proxy).await
+                .map_err(|error| format!("读取 ModelScope 账号失败：{}", error.message))?;
+            let token = credentials::token_of(&record)?;
+            let account_proxy = client::account_proxy(&record)?;
+            checkin::claim(region, &token, account_proxy.as_ref(), &ctx.env.proxy).await
         })
     }
 
@@ -405,7 +422,8 @@ impl Provider for ModelScopeProvider {
                 return Err("缺少令牌（accessToken / apiKey / token / session）".to_string());
             }
             // 探活：拿身份 + 顺带触发当日签到（见 `probe.rs` 的模块头）
-            let identity = probe::identify(region, &token, &ctx.env.proxy).await?;
+            // 新增账号时还没有账号记录，代理只能取网关级（`ctx.env.proxy`）
+            let identity = probe::identify(region, &token, None, &ctx.env.proxy).await?;
             let user_id = identity.user_id.trim().to_string();
             let id = format!("{}{user_id}", region.account_id_prefix());
             let display = input

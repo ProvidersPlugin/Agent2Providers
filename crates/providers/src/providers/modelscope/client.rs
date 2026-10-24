@@ -23,10 +23,25 @@
 //! 都要认：HTTP 401/403 → 调用方按令牌失效处置，业务位为假 → 502 并把上游
 //! 文案带出来。
 
+use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use serde_json::Value;
 
 use super::region::Region;
 use crate::http;
+use crate::proxy_util::{resolve_account_proxy, ProxyResolution};
+
+/// 账号级出口代理（解析失败按错误报，不静默直连）。
+///
+/// 与 `accio::auth::account_proxy` 同款：用户给这条账号配了出口，就必须真的走它
+/// —— 国际站对出口 IP 敏感，配了日本出口却直连，症状是「签到 / 余额全失败但转发正常」。
+/// 解析失败时明确报错，让用户知道是代理配置的问题，而不是上游不认。
+pub fn account_proxy(record: &Value) -> Result<Option<ResolvedProxy>, String> {
+    match resolve_account_proxy(record.get("proxy")) {
+        Some(ProxyResolution::Resolved(proxy)) => Ok(Some(proxy)),
+        Some(ProxyResolution::Failed(reason)) => Err(reason),
+        None => Ok(None),
+    }
+}
 
 /// 响应信封的**成功位**（大写 `Success` 与小写 `success` 都认）。
 ///
@@ -91,6 +106,7 @@ pub async fn site_get(
     path: &str,
     token: &str,
     what: &str,
+    account_proxy: Option<&ResolvedProxy>,
     gateway_proxy: &str,
 ) -> Result<(u16, Value), String> {
     if token.trim().is_empty() {
@@ -98,7 +114,7 @@ pub async fn site_get(
     }
     let url = site_url(region, path);
     let headers = vec![("Cookie".to_string(), format!("m_session_id={token}"))];
-    let client = http::client(None, gateway_proxy);
+    let client = http::client(account_proxy, gateway_proxy);
     let (status, payload) = http::get_json(&client, &url, &headers)
         .await
         .map_err(|error| {
@@ -120,6 +136,7 @@ pub async fn inference_get(
     path: &str,
     token: &str,
     what: &str,
+    account_proxy: Option<&ResolvedProxy>,
     gateway_proxy: &str,
 ) -> Result<(u16, Value), String> {
     if token.trim().is_empty() {
@@ -127,7 +144,7 @@ pub async fn inference_get(
     }
     let url = format!("{}{path}", region.inference_base_url());
     let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-    let client = http::client(None, gateway_proxy);
+    let client = http::client(account_proxy, gateway_proxy);
     http::get_json(&client, &url, &headers)
         .await
         .map_err(|error| format!("{what}失败：{error}"))

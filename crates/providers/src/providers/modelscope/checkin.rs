@@ -30,17 +30,73 @@ use super::region::Region;
 /// 登录信息路径（相对网页站）。**它就是签到**，见模块头。
 pub const LOGIN_INFO_PATH: &str = "/api/v1/users/login/info";
 
+/// 魔粒数的展示（整数不显示小数点，小数保留原样）。
+///
+/// 上游的魔粒是整数，但**别假设它永远是**：按 `f64` 收、按有无小数位格式化，
+/// 上游哪天改成小数不会让提示变成「已领取 0.30000000000000004 魔粒」。
+fn format_amount(value: Option<f64>) -> String {
+    match value {
+        Some(number) if number.fract() == 0.0 => format!("{}", number as i64),
+        Some(number) => format!("{number}"),
+        None => "—".to_string(),
+    }
+}
+
+/// 读一次魔粒余额（失败给 None）。
+///
+/// 签到前后各读一次算增量，所以这条链路上**不该**因为读不到余额就把签到判失败
+/// —— 少一个读数不等于签到没成功。
+async fn read_balance(
+    region: Region,
+    token: &str,
+    account_proxy: Option<&agent2api_provider_protocol::WireProxy>,
+    gateway_proxy: &str,
+) -> Option<f64> {
+    let (status, payload) = client::site_get(
+        region,
+        super::balance::BALANCE_PATH,
+        token,
+        "魔粒余额",
+        account_proxy,
+        gateway_proxy,
+    )
+    .await
+    .ok()?;
+    if !(200..300).contains(&status) || !client::succeeded(&payload) {
+        return None;
+    }
+    let data = client::data_of(&payload);
+    data.get("available_balance").and_then(|value| {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+    })
+}
+
 /// 每日签到。
 ///
 /// 返回六态里的 `Claimed`（本次触发）/ `Failed`（真失败）。上游给的是身份
 /// 而不是「已签到」标记，所以无法区分「今天第一次」与「今天第 N 次」——
 /// 一律按 `Claimed` 报（重复调用是安全的，见模块头）。
+///
+/// ── 为什么播报**领取增量**而不是「已触发」────────────────────────
+/// `login/info` 是幂等读接口（见模块头）：今天第一次调用发魔粒、之后每次都只回
+/// 同一份资料。所以「已触发」这句话在有 5 个账号的签到中心里等于没说 ——
+/// 用户看不出今天到底领到没有、领了多少。签到前后各读一次余额、把**差值**
+/// 播报出来，一眼就能分辨「刚领到 200」与「今天早就签过了」；再把当前余额带上，
+/// 不必再去账号页看一眼。读不到余额时逐字退回「已签到」，不编一个数字。
 pub async fn claim(
     region: Region,
     token: &str,
+    account_proxy: Option<&agent2api_provider_protocol::WireProxy>,
     gateway_proxy: &str,
 ) -> Result<proto::CheckinReport, String> {
-    let (status, payload) = client::site_get(region, LOGIN_INFO_PATH, token, "每日签到", gateway_proxy).await?;
+    // 签到前记一份余额（算增量用）。读失败不阻断签到 —— 见 `read_balance`。
+    let before = read_balance(region, token, account_proxy, gateway_proxy).await;
+
+    let (status, payload) =
+        client::site_get(region, LOGIN_INFO_PATH, token, "每日签到", account_proxy, gateway_proxy)
+            .await?;
     if status == 401 || status == 403 {
         // 令牌失效 / 打错站点：如实报（网关按 TokenExpired 处置）
         return Err(client::expired_message(region, status, true));
@@ -81,14 +137,36 @@ pub async fn claim(
         .filter(|value| !value.is_empty())
         .unwrap_or("")
         .to_string();
+    // 签到后余额（同样容错：读不到就退回「已签到」，不编数字）
+    let after = read_balance(region, token, account_proxy, gateway_proxy).await;
+    let gained = match (before, after) {
+        (Some(before), Some(after)) => Some(after - before),
+        _ => None,
+    };
+    let message = match gained {
+        Some(delta) if delta > 0.0 => format!(
+            "已领取 {} 魔粒（当前 {}）",
+            format_amount(Some(delta)),
+            format_amount(after)
+        ),
+        Some(_) if after.is_some() => format!("今天已经签到过了（当前 {}）", format_amount(after)),
+        _ => "已签到".to_string(),
+    };
+    // 显示名单独一句：增量是主读数，账号身份是补充（多账号时用来对账）
     let message = if display.is_empty() {
-        format!("魔搭{}每日签到已触发", region.label())
+        message
     } else {
-        format!("魔搭{}每日签到已触发（{display}）", region.label())
+        format!("{message}｜{display}")
+    };
+    // 领取增量作为 `credit` 上报：签到中心能据此显示「今天领到多少」
+    // （协议里 credit 是人看的字符串，与 WorkBuddy 的「+200 积分」同形）
+    let credit = match gained {
+        Some(delta) if delta > 0.0 => Some(format!("+{} 魔粒", format_amount(Some(delta)))),
+        _ => None,
     };
     Ok(proto::CheckinReport {
         outcome: proto::CheckinOutcome::Claimed,
-        credit: None,
+        credit,
         streak: None,
         message: Some(message),
     })

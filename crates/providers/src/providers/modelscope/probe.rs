@@ -79,9 +79,12 @@ pub fn parse_identity(payload: &Value) -> Identity {
 pub async fn identify(
     region: Region,
     token: &str,
+    account_proxy: Option<&agent2api_provider_protocol::WireProxy>,
     gateway_proxy: &str,
 ) -> Result<Identity, String> {
-    let (status, payload) = client::site_get(region, LOGIN_INFO_PATH, token, "令牌校验", gateway_proxy).await?;
+    let (status, payload) =
+        client::site_get(region, LOGIN_INFO_PATH, token, "令牌校验", account_proxy, gateway_proxy)
+            .await?;
     if status == 401 || status == 403 {
         return Err(client::expired_message(region, status, true));
     }

@@ -135,7 +135,7 @@ pub(super) async fn dispatch(
             Ok(daily_report(&growth_account).await)
         }
         other => Err(GatewayError::with_status(
-            400,
+            501,
             format!(
                 "WorkBuddy 不认识管理动作「{other}」（可用：{}）",
                 ACTIONS.join(" / ")

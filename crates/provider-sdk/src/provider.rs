@@ -49,6 +49,20 @@ pub fn split_local_precondition(message: &str) -> Option<&str> {
     message.strip_prefix(LOCAL_PRECONDITION_PREFIX)
 }
 
+/// `String` 错误通道里的能力缺失标记；SDK 将它还原为 `WireError::UNSUPPORTED`。
+pub const UNSUPPORTED_PREFIX: &str = "UNSUPPORTED:";
+
+pub fn unsupported(message: impl AsRef<str>) -> String {
+    format!("{UNSUPPORTED_PREFIX}{}", message.as_ref())
+}
+
+pub fn split_unsupported(message: &str) -> Option<&str> {
+    message.strip_prefix(UNSUPPORTED_PREFIX)
+}
+
+/// 可选扩展：旧 SDK 对该方法返回 `NO_METHOD`，不影响既有握手。
+pub const SCHEDULES_LIST_METHOD: &str = "schedules.list";
+
 /// 异步返回的简写。
 pub type SendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
@@ -406,6 +420,13 @@ pub trait Provider: Send + Sync + 'static {
 
     // ── 余额 / 签到 / 领取 ─────────────────────────────────────
 
+    /// 定时管理动作的申报：`[{id, enabled, times, action}]`。
+    ///
+    /// 默认值由插件提供，用户开关、时刻与执行记录由宿主持久化；未申报不调度。
+    fn schedules(&self) -> Vec<Value> {
+        Vec::new()
+    }
+
     /// 余额 / 积分查询。
     fn usage<'a>(
         &'a self,
@@ -467,7 +488,7 @@ pub trait Provider: Send + Sync + 'static {
         _payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
-            Err(format!("该提供商没有实现管理动作「{action}」"))
+            Err(unsupported(format!("该提供商没有实现管理动作「{action}」")))
         })
     }
 

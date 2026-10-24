@@ -2,14 +2,51 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Each provider here signs in to one subscription and makes its requests. The
-gateway loads the plugin as a separate process, so a fault in one provider
+**Provider Enhancement** (提供商增强) is the official provider plugin for Agent2API.
+It supplies provider-specific sign-in and account import, model requests, credential
+renewal, model catalogs, balances and check-in. Available capabilities vary by provider.
+The gateway loads the plugin as a separate process, so a fault in one provider
 takes down that process and nothing else.
 
 This repository also carries the two crates the gateway compiles against:
 `agent2api-provider-protocol` (the wire types) and `agent2api-provider-sdk`
 (the `Provider` trait and its serve loop). The gateway depends on this
 repository by tag.
+
+## Supported Providers
+
+Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supported · — not applicable). These implementations are provided by this plugin, not bundled with the gateway.
+
+| Platform | LLM requests | Token auto-refresh | Model list | Balance query | Check-in | Claims |
+| --- | :--: | :--: | :--: | :--: | :--: | :--: |
+| WorkBuddy (China) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| WorkBuddy (Global) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
+| Raccoon | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| CatPaw | ✓ | ✗ | ✓ | ✓ | ✗ | — |
+| AutoClaw (domestic / international) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Qoder | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Cline (Free / Pass) | ✓ | ✓ | ✓ | ✓ | — | — |
+| Accio (international / domestic) | ✓ | ✓ | ✓ | ✓ | — | — |
+| ZCode (domestic / international) | ✓ | ✗ | ✗ | ✓ | — | ✓ |
+| CodeArts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Trae | ✓ | ✓ | ✓ | ✓ | — | — |
+| Loomy (iFlytek) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
+| KukuAI (Baidu Wenku) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
+| MonkeyCode (Chaitin, domestic / international) | ✓ | ✗ | ✓ | — | — | — |
+| Command Code | ✓ | ✗ | ✓ | — | — | — |
+| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ | ✓ | ✓ | — | — | — |
+| OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| OrcaTerm (Tencent Cloud) | ✓ | ✓ | ✓ | ✓ | — | — |
+| Zhipu Qingyan | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
+| AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+
+Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; credential renewal, balances, check-in and claims depend on the service you configure.
+
+> Note: in Model list, ✓ means automatic online fetching is supported (some platforms also keep a built-in static table as a fallback); ZCode only has a built-in static table. ✗ in Token auto-refresh means the platform has no usable refresh flow (the account keeps working while its credentials are valid). Qoder check-in is available on the China version only.
+>
+> **Zhipu Qingyan** is the only provider here that supports a **guest mode**: no sign-in required — one click gets you a credential that works for chat right away (the free quota is issued by the upstream per device). The catch is that a guest account has no points system — the "Balance" / "Sign-in" / "Claim" columns above, plus the **task center's newbie and daily tasks**, apply only to **signed-in accounts** (paste a token or import the desktop client sign-in state); guests are skipped honestly.
 
 ## Building
 

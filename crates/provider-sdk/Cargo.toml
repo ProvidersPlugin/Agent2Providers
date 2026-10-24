@@ -1,6 +1,6 @@
 [package]
 name = "agent2api-provider-sdk"
-version = "0.2.1"
+version = "0.2.2-beta.1"
 description = "Agent2API 提供商插件 SDK：实现 Provider trait 即可被网关加载"
 authors = ["Agent2API"]
 edition = "2021"

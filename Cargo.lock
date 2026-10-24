@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-provider-sdk"
-version = "0.2.1"
+version = "0.2.2-beta.1"
 dependencies = [
  "agent2api-provider-protocol",
  "serde",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-providers"
-version = "0.2.1"
+version = "0.2.2-beta.1"
 dependencies = [
  "aes",
  "aes-gcm",

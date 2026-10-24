@@ -455,6 +455,18 @@ impl Provider for WorkBuddyProvider {
         })
     }
 
+    fn schedules(&self) -> Vec<Value> {
+        match self.region {
+            Region::Cn => vec![serde_json::json!({
+                "id": "travel",
+                "enabled": true,
+                "times": ["09:00", "21:00"],
+                "action": "growth.travel.batch",
+            })],
+            Region::Intl => Vec::new(),
+        }
+    }
+
     /// 当前模型清单。
     ///
     /// ── 与网关那份的差别（迁移时改的）──────────────────────────
@@ -941,7 +953,13 @@ impl Provider for WorkBuddyProvider {
         Box::pin(async move {
             admin::dispatch(ctx, self.region.provider_id(), account, action, payload)
                 .await
-                .map_err(crate::errors::GatewayError::into_message)
+                .map_err(|error| {
+                    if error.status_code == 501 {
+                        agent2api_provider_sdk::unsupported(error.message)
+                    } else {
+                        error.into_message()
+                    }
+                })
         })
     }
 

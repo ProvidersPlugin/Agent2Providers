@@ -336,6 +336,10 @@ impl Serve {
         let account = params.get("account").and_then(Value::as_str).unwrap_or("").to_string();
 
         let outcome: Result<Value, String> = match method {
+            crate::provider::SCHEDULES_LIST_METHOD => {
+                serde_json::to_value(provider.schedules())
+                    .map_err(|error| format!("排程申报无法序列化: {error}"))
+            }
             proto::methods::gateway::CHAT => {
                 match serde_json::from_value::<proto::ChatRequest>(params.clone()) {
                     Ok(req) => match provider.build_chat(&ctx, req).await {
@@ -486,18 +490,13 @@ impl Serve {
         match outcome {
             Ok(value) => self.reply(id, value).await,
             Err(message) => {
-                // ── 两条分类，别再合并成一档 ───────────────────────────
-                //   · 带 `LOCAL_PRECONDITION:` 前缀的：请求还没出本机就注定
-                //     发不出去，网关要据此换下一个候选家顺延（见
-                //     `provider::local_precondition`）；
-                //   · 其余一律归 INTERNAL：它们多是上游/解析失败，网关会包
-                //     一层再决定要不要给用户看。
-                let error = match crate::provider::split_local_precondition(&message) {
-                    Some(detail) => proto::WireError::with_code(
-                        detail.to_string(),
-                        proto::WireError::LOCAL_PRECONDITION,
-                    ),
-                    None => proto::WireError::with_code(message, proto::WireError::INTERNAL),
+                // 能力缺失必须与内部失败区分；普通业务错误仍归 INTERNAL。
+                let error = if let Some(detail) = crate::provider::split_local_precondition(&message) {
+                    proto::WireError::with_code(detail, proto::WireError::LOCAL_PRECONDITION)
+                } else if let Some(detail) = crate::provider::split_unsupported(&message) {
+                    proto::WireError::with_code(detail, proto::WireError::UNSUPPORTED)
+                } else {
+                    proto::WireError::with_code(message, proto::WireError::INTERNAL)
                 };
                 self.reply_err(id, error).await;
             }

@@ -565,7 +565,8 @@ function travelPanel(snapshot) {
   const times = travel.times || [];
   const fired = travel.firedToday || [];
   const saving = store.travelSaving === true;
-  const running = store.travelRunning === true;
+  const running = store.travelRunning === true || travel.running === true;
+  const paused = travel.available === false;
 
   // 草稿：null = 跟随快照（用户没在编辑）。与旧实现同一套判定 ——
   // 去掉空白后与快照相同就不算改动。
@@ -609,12 +610,13 @@ function travelPanel(snapshot) {
       el('span', { class: 'head-actions' },
         button(running ? '巡检中…' : '立即巡检全部', {
           tone: 'outline',
-          disabled: running,
+          disabled: running || saving || paused,
           onClick: () => void runTravelNowOnce(),
         }),
       ),
     ),
     el('div', { class: 'ck-panel-pad' },
+      paused ? el('div', { class: 'ck-note' }, `自动巡检已暂停：${travel.pausedReason || ''}`) : null,
       el('div', { class: 'ck-set-line' },
         el('span', { class: 'ck-set-k', text: '开关' }),
         el('span', { class: 'ck-set-v ck-set-row' },
@@ -648,10 +650,12 @@ function travelPanel(snapshot) {
         '北京时间 · 逗号分隔 · 最多 6 条 · 到点后最多晚 30 秒执行；错过时点开机后会补跑一轮。'
           + (fired.length ? ` 今天已执行：${fired.join(' / ')}` : ''),
       ),
-      last && actions.length
+      last && (actions.length || last.error)
         ? el('div', { class: 'ck-note' },
-          `上一轮（${last.at ? formatTime(Number(last.at)) : ''}）：`
+          last.error ? `巡检失败：${last.error}` :
+            `上一轮（${last.at ? formatTime(Number(last.at)) : ''}）：`
             + `${actions.length} 个动作，+${Number(last.credit) || 0} 积分`
+            + (Number(last.failed) > 0 ? ` · 失败 ${Number(last.failed)}` : '')
             + actions.slice(0, 6)
               .map(action => ` · ${action.name ?? action.accountId ?? ''}: ${action.message ?? action.outcome ?? ''}`)
               .join(''),

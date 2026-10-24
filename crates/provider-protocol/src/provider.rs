@@ -508,7 +508,7 @@ pub struct ProviderInfo {
 /// 那一位是「后端实现了签到」，这一块是「界面怎么呈现它」。绝大多数家两者
 /// 一致；分成两处是因为有的家能签但界面要额外说明（见 `description`），
 /// 有的家能签但要按账号形态排除（见 `exclude_guest`）。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckinInfo {
     /// 这一家的签到链路一句话（签到中心分组行下面的说明）。
     ///
@@ -563,6 +563,30 @@ pub struct CheckinInfo {
     /// 那和没申报一样，却让拼写错误变成静默失效。
     #[serde(default)]
     pub ui_hooks: Vec<CheckinUiHook>,
+}
+
+/// ── 为什么手写 Default 而不是 derive ────────────────────────
+/// `daily` 的 serde 缺省是 `true`（`#[serde(default = "yes")]`），但
+/// `#[derive(Default)]` 会把 `bool` 建成 `false` —— 两者对同一个字段给出
+/// 相反答案。插件侧一律用 `CheckinInfo { …, ..Default::default() }` 构造
+/// （见 `provider-sdk` 的 `with_checkin` 说明），于是**申报了签到却没写
+/// `daily` 的家全部被判成「不参与每日签到」**：签到中心一行都列不出来，
+/// 账号全落到「不参与每日签到」。2026-10 实测就是这个症状。
+///
+/// 手写一份、让 `daily` 与 serde 缺省同源，才不会再有第二种意见。
+impl Default for CheckinInfo {
+    fn default() -> Self {
+        Self {
+            description: None,
+            exclude_guest: false,
+            modes: Vec::new(),
+            onboarding: false,
+            plans: false,
+            daily: yes(),
+            growth: false,
+            ui_hooks: Vec::new(),
+        }
+    }
 }
 
 /// 签到执行的档位（界面据此决定给几颗按钮）。

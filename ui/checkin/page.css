@@ -227,6 +227,33 @@ html, body {
 .ck-main > .panel { margin-bottom: 0; }
 .ck-main > .panel + .panel { margin-top: 14px; }
 
+/* 两块地区专属面板（保活模型链 / 猫猫旅行排程）并排时的一行。
+   国内版与国际版默认都启用，所以这两块通常会同时出现；各自独占整行时，
+   卡片有一半宽度是空的（模型链只有一列清单，旅行排程只有两行设置项）。
+
+   ── 为什么用 auto-fit 而不是定死两列 ──────────────────────
+   iframe 的宽度随宿主窗口与侧栏状态变化，用视口断点判断不准。`auto-fit` +
+   最小 420px 让「放得下两列就两列、放不下就一列」由**容器的真实宽度**决定。
+   420 是这两张卡的舒适下限：再窄「时刻框 + 保存」「输入框 + 添加模型」会
+   开始互相挤压。`min()` 兜住比 420px 还窄的极端窗口，避免撑出横向滚动。
+   两侧面板各自 `min-width: 0`（见下）—— 否则模型名的等宽长串会按内容宽度
+   把列顶宽。
+
+   `.panel` 自带 `margin-bottom: 14px`，在 `.ck-main` 里由上面那条归零；
+   它们现在是这层的子节点，得在这里再归零一次，间距交给 grid 的 gap。 */
+.ck-region-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  /* 两张卡各按自己的内容高度，不互相拉伸：模型链的条数随用户增删变化，
+     拉伸后短的那张（旅行排程）会拖着大片空白停在同一高度。 */
+  align-items: start;
+  gap: 14px;
+  margin-top: 14px;
+  /* 它是 `.ck-main` 的 grid 项，同样要放开内容最小宽度 */
+  min-width: 0;
+}
+.ck-region-row > .panel { margin-bottom: 0; min-width: 0; }
+
 /* 卡内说明块（保活模型链底部那段）：下沉一档的底 + 小字，与 `.ck-fold-note`
    的差别是它**在**正文里（有圆角与上边距），不是贴在卡片下缘的条带。 */
 .ck-note {
@@ -547,8 +574,11 @@ html, body {
    变成「拖走一行」。 */
 
 /* 面板本身收成半幅：里面只有一列短清单，拉满整行时那排灰条会长得没有内容。
-   再给个上限 —— 2K / 4K 上「半幅」又够宽到把清单拉回一条长带，白收。 */
+   再给个上限 —— 2K / 4K 上「半幅」又够宽到把清单拉回一条长带，白收。
+   并排时（`.ck-region-row` 里）列宽已由网格定好，这两个值要归位，
+   否则会在这个格子里再乘一次 50%。 */
 .ck-chain-panel { width: 50%; max-width: 640px; }
+.ck-region-row > .ck-chain-panel { width: auto; max-width: none; }
 
 .ck-chain { display: flex; flex-direction: column; gap: 4px; }
 .ck-chain-row {

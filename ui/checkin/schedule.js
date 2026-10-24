@@ -721,8 +721,17 @@ export function renderSchedule(container) {
   const children = [
     el('section', { class: 'panel' }, head, el('div', { class: 'ck-panel-pad' }, masterLine), list),
   ];
-  // 两块地区专属面板：由插件申报的 admin_panels 决定
-  if (snapshot && panels.has('daily_keepalive')) children.push(keepalivePanel(snapshot));
-  if (snapshot && panels.has('growth_tasks')) children.push(travelPanel(snapshot));
+  // 两块地区专属面板：由插件申报的 admin_panels 决定。
+  // 国内版与国际版默认都启用，所以两块**会同时出现** —— 那种情况收进同一行分栏
+  // （左保活模型链 / 右猫猫旅行排程）。各自独占整行时每张卡的下半截都是空的。
+  // 只有一块时不套容器：单块仍按原来的形态（模型链半幅、旅行排程整行）。
+  const regions = [];
+  if (snapshot && panels.has('daily_keepalive')) regions.push(keepalivePanel(snapshot));
+  if (snapshot && panels.has('growth_tasks')) regions.push(travelPanel(snapshot));
+  if (regions.length > 1) {
+    children.push(el('div', { class: 'ck-region-row' }, ...regions));
+  } else {
+    children.push(...regions);
+  }
   fill(container, el('div', { class: 'ck-main' }, ...children));
 }

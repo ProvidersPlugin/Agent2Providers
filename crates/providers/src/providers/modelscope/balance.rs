@@ -124,7 +124,8 @@ pub async fn query_usage(
     }
     let wallet = client::data_of(&balance_payload);
     let available = pick_number(&wallet, "available_balance").unwrap_or(0.0);
-    let total = pick_number(&wallet, "total_balance");
+    // `total_balance` 有意**不读**：它是「可用 + 冻结」的钱包总额，前端会把它
+    // 误当成额度总量（见下面构造 `wallets` 那段）。原始报文仍留在 `raw.balance`。
     let frozen = pick_number(&wallet, "frozen_amount").unwrap_or(0.0);
 
     // ── 附加读数：今日发放 / 到期时刻（失败只降级，见模块头）────────
@@ -166,11 +167,17 @@ pub async fn query_usage(
         "displayName": "魔粒余额",
         "balance": available,
     })];
-    if let Some(total) = total {
-        if let Some(object) = wallets.first_mut().and_then(Value::as_object_mut) {
-            object.insert("total".to_string(), Value::from(total));
-        }
-    }
+    // ── 为什么 **不带** `total` 键 ──────────────────────────────
+    // 前端 `usagePool()` 把「任一 wallet 的 `total > 0`」当成「这家有主额度桶」，
+    // 命中就用 `.usage-meter` 那套渲染（纯数字 + 细线，**不拼单位**）。而魔粒的
+    // `total_balance` 是「可用 + 冻结」的钱包总额，不是「一次发放了多少额度」——
+    // 它几乎恒等于可用额，于是每一行都被误判成额度桶，余额格显示成一串没有
+    // 单位的裸数字，与旁边 OfficeAce 的「可用 997 积分」完全不是一套。
+    // 魔粒只有「还剩多少」这一个语义（1 天有效期、先到期先作废），没有总量概念，
+    // 所以这里如实不给 `total`：`usagePool` 因此返回 null，落到与 OfficeAce
+    // 同一条 `usage-sum` 路径，读数由 `usageSummary` 拼成「可用 N 魔粒」。
+    // 冻结额仍以 `frozen` 留在 wallet 上、与可用额逐行进 `credits`；两者的原始
+    // 读数（含 `total_balance`）在 `raw.balance` 里对排障完整可见。
     if let Some(object) = wallets.first_mut().and_then(Value::as_object_mut) {
         object.insert("frozen".to_string(), Value::from(frozen));
     }

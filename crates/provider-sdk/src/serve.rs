@@ -495,6 +495,8 @@ impl Serve {
                     proto::WireError::with_code(detail, proto::WireError::LOCAL_PRECONDITION)
                 } else if let Some(detail) = crate::provider::split_unsupported(&message) {
                     proto::WireError::with_code(detail, proto::WireError::UNSUPPORTED)
+                } else if let Some(error) = crate::errors::split_control_error(&message) {
+                    error
                 } else {
                     proto::WireError::with_code(message, proto::WireError::INTERNAL)
                 };

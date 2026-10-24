@@ -29,6 +29,9 @@ use serde_json::Value;
 /// 控制面请求的超时（目录 / 余额 / 签到这类小请求）。
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 
+// 计费接口在缺少 User-Agent 时会返回 403 / code=10085；请求级头可覆盖此默认值。
+const DEFAULT_USER_AGENT: &str = "undici";
+
 /// 客户端缓存（键 = 代理 URL，空串 = 直连）。
 fn cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
     static CACHE: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
@@ -67,7 +70,8 @@ fn build(proxy_url: &str) -> reqwest::Client {
         // 与网关同一条栈：rustls，不依赖系统 openssl
         .use_rustls_tls()
         // 控制面的默认超时；流式请求由调用方用 `.timeout()` 覆盖
-        .timeout(CONTROL_TIMEOUT);
+        .timeout(CONTROL_TIMEOUT)
+        .user_agent(DEFAULT_USER_AGENT);
     let trimmed = proxy_url.trim();
     if trimmed.is_empty() || trimmed == "direct" {
         // ── `no_proxy()` 为什么必须显式调 ──────────────────────────
@@ -112,6 +116,7 @@ pub fn client_system_proxy() -> reqwest::Client {
             reqwest::Client::builder()
                 .use_rustls_tls()
                 .timeout(CONTROL_TIMEOUT)
+                .user_agent(DEFAULT_USER_AGENT)
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new())
         })

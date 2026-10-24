@@ -45,6 +45,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! 本 crate 编译期禁止 unwrap/expect/panic（见 `main.rs` 的 deny）。
 
+mod admin;
 pub mod activation;
 pub mod anthropic_outbound;
 pub mod anthropic_shared;
@@ -63,6 +64,8 @@ pub mod oauth;
 pub mod plan;
 pub mod reasoning;
 pub mod region;
+mod request_context;
+mod system_prompt;
 
 use std::collections::BTreeMap;
 
@@ -118,31 +121,8 @@ pub fn plan_label(plan: &str) -> &'static str {
     }
 }
 
-/// 「这家有一段**网关自带**的提示词」的说明（设置页逐家提示词那张表用它）。
-///
-/// ── 这段说明为什么在插件里 ──────────────────────────────────
-/// 它讲的是**上游为什么要求那段提示词**（按结构认身份、实测记录），属于上游
-/// 协议知识 —— 与正文一起搬到插件。网关通过 `admin.action` 的
-/// `prompt.info` 拿到它并显示在设置页（见 `api::prompt`）。
-///
-/// 事实依据是 2026-09-28 对上游的实测（五条对照只差 system 的形态）：
-///
-/// | system 形态 | 上游 |
-/// |---|---|
-/// | 官方三段各自成块 | 200 |
-/// | 官方三段各自成块、去掉 `cache_control` | 200 |
-/// | 官方三段的文本**并成一块** | 405 `3012 request has been blocked` |
-/// | 客户端自带的 ZCode 提示词（单块） | 405 `3012` |
-/// | 官方三段 + 客户端自带（接在后面） | 200 |
-///
-/// 也就是说：上游按**结构**（那三段必须各自成块、排在最前）认身份，不认文本、
-/// 也不认 `cache_control`；且客户端自己的提示词替代不了它。**默认**因此是
-/// 「装上」—— 那是存量行为、也是当前能跑通的那条路。
-///
-/// 但它是**可关的**（`SETTING_PROMPT_ENABLED`）：上游的口径是它自己的实现
-/// 细节，哪天真放开了、或者用户有别的路子，这个开关就是出口。所以这段文字
-/// 写的是「关掉会发生什么 + 依据来自哪次实测」，而不是「不许关」。
-pub const OFFICIAL_PROMPT_NOTE: &str = "这段是**网关自己装上去**的，不来自客户端、也不受「模式 / 提示词文件」影响：套餐池（Start Plan）通道按**结构**校验身份 —— 实测（2026-09-28）官方三段各自成块才过（并成一段、或换成客户端自带的 ZCode 提示词，都是 405/3012）。所以默认装上；关掉后上游认不认，取决于它当前的口径，需要重新实测才知道。";
+/// 套餐池请求的网关提示词开关说明；默认提示词与自定义正文采用不同分块。
+pub const OFFICIAL_PROMPT_NOTE: &str = "这段由网关按当前 ZCode 客户端的请求形态装配：没有客户端系统提示词时使用默认三块；有客户端自定义正文时只保留身份块与自定义块，并同步会话类型。客户端正文不再追加为第四块。这里的稳定段、动态段覆盖只用于默认三块路径；关闭开关会停止装配，是否被上游接受由其当前规则决定。3012 也可能是账号风控，不等于套餐额度耗尽。";
 
 // ── 「插件读网关用户配置」的两个约定键（`settings.get` 的 `key`）──────────
 // ZCode 的官方三段提示词（正文 + 说明）全在本 crate 里，但「装不装」
@@ -333,6 +313,7 @@ impl Provider for ZcodeProvider {
         req: proto::ChatRequest,
     ) -> SendFuture<'a, ChatPlan> {
         Box::pin(async move {
+            claim::refresh_app_version_override(ctx).await;
             let account = crate::store::record(ctx, self.region.provider_id(), &req.account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -452,6 +433,7 @@ impl Provider for ZcodeProvider {
     /// 取可用令牌：只读账号里的 `accessToken`，**不续期**（见模块头）。
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
+            claim::refresh_app_version_override(ctx).await;
             let token = session_access_token(ctx, self.region, account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -755,6 +737,11 @@ impl Provider for ZcodeProvider {
         payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
+            claim::refresh_app_version_override(ctx).await;
+            if let Some(outcome) = admin::machine_action(action, payload) {
+                config_sync::maybe_sync(ctx).await;
+                return outcome;
+            }
             let record = crate::store::record(ctx, self.region.provider_id(), account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -769,14 +756,16 @@ impl Provider for ZcodeProvider {
                 {
                     // `enabled: false` 或配置不全 → 前端不弹滑块
                     Ok(None) => Ok(serde_json::json!({ "enabled": false })),
-                    Ok(Some(config)) => Ok(serde_json::json!({
-                        "enabled": config.enabled,
-                        "prefix": config.prefix,
-                        "sceneId": config.scene_id,
-                        "region": config.region,
-                        // 推理侧那一格单独给：它与 `enabled` 是两件事
-                        "skipModelRequest": config.skip_model_request,
-                    })),
+                    Ok(Some(config)) => {
+                        captcha::apply_config(&config);
+                        Ok(serde_json::json!({
+                            "enabled": config.enabled,
+                            "prefix": config.prefix,
+                            "sceneId": config.scene_id,
+                            "region": config.region,
+                            "skipModelRequest": config.skip_model_request,
+                        }))
+                    }
                     Err(error) => Err(GatewayError::into_message(error)),
                 },
                 "claim.preview" => {
@@ -806,54 +795,9 @@ impl Provider for ZcodeProvider {
                     )
                     .await
                 }
-                // ── 人机验证令牌池（网关的 `api::zcode_captcha` 转过来）──────
-                // 池子在本进程里：令牌由桌面端 WebView 的阿里云 SDK 铸造后
-                // 经网关推过来，转发时按请求取一枚。网关不解析令牌形态，
-                // 只把条目原样转交并读回 `accepted`。
-                "captcha.push" => {
-                    let items = payload
-                        .get("tokens")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut accepted = 0u64;
-                    for item in &items {
-                        let param = item
-                            .get("param")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .unwrap_or("");
-                        if param.is_empty() {
-                            continue;
-                        }
-                        let region = item.get("region").and_then(Value::as_str).unwrap_or("");
-                        captcha::push(param, region);
-                        accepted += 1;
-                    }
-                    Ok(serde_json::json!({ "accepted": accepted }))
-                }
-                "captcha.stats" => Ok(captcha::stats()),
-                // ── 设置页「系统提示词 → 按提供商」那一行的三个只读值 ──────
-                // 形状是网关 `api::prompt::provider_options` 读的键名
-                // （`gatewayNote` / `gatewayChars` / `gatewayBlocks`），
-                // 一变界面就白屏，所以逐字复刻。
-                "prompt.info" => Ok(serde_json::json!({
-                    "gatewayNote": OFFICIAL_PROMPT_NOTE,
-                    "gatewayChars": plan::official_prompt_approx_chars(),
-                    "gatewayBlocks": plan::official_blocks_template().map(|blocks| {
-                        let mut map = serde_json::Map::new();
-                        for field in plan::GatewayBlocks::FIELDS {
-                            map.insert(
-                                field.to_string(),
-                                Value::String(blocks.get(field).to_string()),
-                            );
-                        }
-                        Value::Object(map)
-                    }),
-                })),
                 other => Err(format!(
                     "ZCode 不认识管理动作「{other}」（可用：claim.preview / \
-                     claim.captcha-config / claim.claim / captcha.push / captcha.stats）"
+                     claim.captcha-config / claim.claim / captcha.push / captcha.stats / prompt.info）"
                 )),
             }
         })
@@ -1294,11 +1238,14 @@ async fn session_access_token(
             "没有可用的 ZCode 账号，请先在「账号」页添加",
         ));
     }
-    let token = crate::store::pick(&record, &["accessToken", "access_token"]);
+    let token = match plan_of(&record) {
+        PLAN_START => crate::store::pick(&record, &["jwt"]),
+        _ => crate::store::pick(&record, &["accessToken", "access_token"]),
+    };
     if token.is_empty() {
         return Err(GatewayError::with_status(
             401,
-            "ZCode 账号缺少推理凭证，请重新登录",
+            "ZCode 账号缺少当前套餐通道的推理凭证，请重新登录",
         ));
     }
     Ok(token)

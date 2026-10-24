@@ -202,15 +202,16 @@ pub fn note_challenge_and_require_token() {
     set_required(true);
 }
 
-// ── 「此刻到底要不要一枚令牌」这个结论长在哪 ───────────────────
-//
-// 判据来自上游自己的配置（`configs.captcha.skip_model_request`，见
-// [`super::claim::CaptchaConfig`]），由 [`super::config_sync`] 每 5 分钟同步一次；
-// 3007 会当场把它翻回「要码」（[`note_challenge_and_require_token`]）。
-//
-// 默认值 = **要码**。这不是保守主义：headless 部署上「要码」的后果只是这个模型名
-// 由别家承载（见 `core::providers::readiness` 那条顺延路），而「免码」判错的后果是
-// 每条请求都白撞一次 3007、逐次消耗账号行为分。两边代价不对称。
+/// 上游配置同步到本进程：只按 `enabled` 决定要不要令牌。
+///
+/// `skip_model_request` **不再参与**这个结论。它的原意是「官方客户端在推理请求上
+/// 不附验证头」，而这一格上游长期回 `true`；照它停铸会让令牌池永远空着，
+/// 请求转而去走免码头，实测会间歇 502。获取配置失败时保持现值不动 ——
+/// 真有免码失效，3007 会立刻把它翻回要码。
+pub fn apply_config(config: &super::claim::CaptchaConfig) {
+    note_synced();
+    set_required(config.enabled);
+}
 
 /// 结论本体（`true` = 每条模型请求都要一枚令牌）
 static TOKEN_REQUIRED: AtomicBool = AtomicBool::new(true);
@@ -262,8 +263,7 @@ pub fn set_required(required: bool) -> bool {
     } else {
         logging::console_line(
             "[ZCode]",
-            "🔓 上游配置说模型请求不必再附验证码令牌（skip_model_request）：\
-             套餐池（Start Plan）通道改为免码直发，桌面端停止铸造令牌",
+            "🔓 上游已关闭验证码：套餐池（Start Plan）通道停止取用与铸造令牌",
         );
         ungate();
     }

@@ -93,7 +93,7 @@ function writeZip(entries) {
 
     const central = Buffer.alloc(46)
     central.writeUInt32LE(0x02014b50, 0)
-    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE((3 << 8) | 20, 4)
     central.writeUInt16LE(20, 6)
     central.writeUInt16LE(0x0800, 8)
     central.writeUInt16LE(0, 10)

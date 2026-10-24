@@ -11,16 +11,14 @@
 //! 只是不带 `thiserror` / HTTP 响应那些只属于网关的配套。
 //!
 //! ── 过线时怎么处理 ──────────────────────────────────────────
-//! 协议只传 `String`（`Result<T, String>`）。所以 `Provider` trait 的边界上
-//! 调 [`GatewayError::into_message`] —— 它把状态码丢掉、只留文案。这是**有意**
-//! 的：插件的错误分类结果（`classify`）才是编排层认的判据，`status_code` 在
-//! 那条路上没有消费方。真正需要状态码的地方（`normalize` 的 401 / 400）由
-//! 网关按「插件报错 = 该账号操作失败」统一呈现。
+//! `Provider` 回调的错误通道是 `String`。控制面用 [`GatewayError::into_control_message`]
+//! 携带 HTTP 状态及业务码，SDK 将其还原为 RPC 错误分类；其它路径的
+//! [`GatewayError::into_message`] 只留文案，转发错误另走 `classify`。
 
 /// 一次带状态的失败。
 ///
-/// `code` 与 `upstream_code` 在插件内部用于分支（`usage_not_configured` 那类
-/// 机器标记），过线后一并丢弃 —— 协议的 `Result<T, String>` 只留文案。
+/// `code` 与 `upstream_code` 在插件内部用于分支；控制面通过
+/// [`GatewayError::into_control_message`] 将它们一并传回网关。
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct GatewayError {
@@ -78,6 +76,15 @@ impl GatewayError {
     /// 过线形态（协议只传文案）。
     pub fn into_message(self) -> String {
         self.message
+    }
+
+    pub fn into_control_message(self) -> String {
+        agent2api_provider_sdk::control_error(
+            self.status_code,
+            self.message,
+            self.code,
+            self.upstream_code,
+        )
     }
 
     /// 只借文案（不消费）。

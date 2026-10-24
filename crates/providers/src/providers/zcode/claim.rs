@@ -149,11 +149,11 @@ pub struct CaptchaConfig {
     /// 3.14.0 / 3.14.4 × platform darwin-arm64 / linux-x64）返回**逐字相同**，
     /// 也就是说这一格与客户端版本无关，是服务端下发的开关。
     ///
-    /// `enabled` 与它是**两件事**：前者管领取/登录这类交互流程还要不要滑块，
-    /// 后者只管 `…/anthropic/v1/messages` 那条推理路。因此不能拿 `enabled`
-    /// 推断推理免码 —— 那样会在上游把这一格翻回 `false` 时继续白铸令牌。
+    /// **这一格只用于展示与排障，不再决定要不要令牌**：它长期回 `true`，
+    /// 照它停铸会让令牌池永远空着，请求转去走免码头实测会间歇 502。
+    /// 令牌要不要由 `captcha::apply_config` 按 `enabled` 决定（见那里的说明）。
     ///
-    /// 缺这一格按 `false` 收（照旧要码）：本家此前的全部行为都建立在「每条
+    /// 缺这一格按 `false` 收：本家此前的全部行为都建立在「每条
     /// 请求都要一枚令牌」上，把「没下发」读成「免码」等于让一次配置缺失误开门。
     pub skip_model_request: bool,
 }
@@ -873,8 +873,7 @@ pub(super) fn urlencode(value: &str) -> String {
 mod captcha_config_vectors {
     //! `configs.captcha` 的解析，钉在**抓下来的真实响应**上。
     //!
-    //! 这一格现在是整套免码判定的唯一依据（`skip_model_request`），而它的形状
-    //! 只有上游能告诉我们 —— 手写一份"想象中的响应"等于把猜测当证据。
+    //! 这几格的形状只有上游能告诉我们 —— 手写一份"想象中的响应"等于把猜测当证据。
     //! 载荷出处：2026-10-01 16:44 UTC 从 `https://zcode.z.ai/api/v1/client/configs`
     //! 抓的 captcha 段，四个组合（app_version 3.14.0/3.14.4 × platform
     //! darwin-arm64/linux-x64）返回逐字相同，所以这里只需一份。
@@ -896,22 +895,21 @@ mod captcha_config_vectors {
         .expect("这份响应是上游真实给过的");
         assert!(
             config.enabled,
-            "领取那条路仍然要滑块 —— 它和推理免码是两件事"
+            "领取那条路仍然要滑块 —— 它和推理通道是两件事"
         );
         assert_eq!("no8xfe", config.prefix);
         assert_eq!("11xygtvd", config.scene_id);
         assert_eq!("cn", config.region, "站点地区上游给了就别自己兜底成 ga");
         assert!(
             config.skip_model_request,
-            "这一格是免码上线的全部依据，不能被解析成 false"
+            "这一格要如实解析出来（展示与排障用），不能被解析成 false"
         );
     }
 
     #[test]
-    fn an_absent_skip_flag_still_requires_a_token() {
-        // 缺 `skip_model_request`（上游还没下发这一格）= 照旧要码。
-        // 判反了的代价不对称：免码判错每条请求撞一次 3007（烧账号行为分），
-        // 要码判错只是白铸一枚令牌。
+    fn an_absent_skip_flag_parses_as_false() {
+        // 缺 `skip_model_request`（上游还没下发这一格）按 false 收：这一格现在只
+        // 用于展示与排障，但「没下发」读成 true 会让面板把结论说反。
         let config = parse_captcha_config(&json!({
             "data": {"configs": {"captcha": {
                 "enabled": true, "prefix": "no8xfe", "sceneId": "11xygtvd"

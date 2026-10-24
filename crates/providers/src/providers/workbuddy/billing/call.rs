@@ -6,8 +6,7 @@
 //! 那几项**都**有调用方了，但默认值仍是「只查积分」那一套 —— 查积分的调用点
 //! 因此不必写一堆 `..Default::default()`。
 //!
-//! 判定顺序与文案**逐字保留**（401/403 一档、非 2xx 一档、业务码一档）——
-//! 那是用户看到的错误原文，改了就是行为漂移。
+//! 判定顺序：401 身份失效、其它非 2xx、业务码失败；403 保留上游拒绝原因。
 //!
 //! ── 头集合为什么不复用转发那套 ──────────────────────────────
 //! 计费版的 `build_headers` 与转发版的 `build_auth_headers` **不能互相替换**：
@@ -178,7 +177,7 @@ pub(super) async fn call(
         .and_then(|value| value.get("requestId"))
         .cloned();
 
-    if response.status == 401 || response.status == 403 {
+    if response.status == 401 {
         return Err(GatewayError::with_status(
             401,
             "登录态已过期或被拒绝，无法调用计费接口",

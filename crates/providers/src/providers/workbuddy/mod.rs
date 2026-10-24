@@ -58,6 +58,7 @@ mod auth;
 mod billing;
 mod builtin;
 mod catalog;
+mod catalog_state;
 mod growth;
 mod keepalive;
 mod login;
@@ -115,69 +116,6 @@ impl WorkBuddyProvider {
     /// 构造某个地区的适配器（`const`：两个实例都是静态量）
     pub const fn new(region: Region) -> Self {
         Self { region }
-    }
-
-    /// 进程内模型清单的槽位（两个地区各一份）。
-    ///
-    /// ── 与网关那份的差别（迁移时改的）──────────────────────────
-    /// 网关的目录是 `core::models::global_catalog(region)` —— 一个由启动流程、
-    /// `/v3/config` 刷新、后台任务共同维护的进程级句柄。插件没有那个句柄，
-    /// 所以这里用一个极小的本地槽：`refresh_models` 拉到的清单存进来，
-    /// `models` 读它。重启后清单为空，由下一轮刷新填（与网关启动时同一条路径）。
-    fn catalog_slot(&self) -> &'static std::sync::Mutex<Option<CatalogState>> {
-        static CN: std::sync::OnceLock<std::sync::Mutex<Option<CatalogState>>> =
-            std::sync::OnceLock::new();
-        static INTL: std::sync::OnceLock<std::sync::Mutex<Option<CatalogState>>> =
-            std::sync::OnceLock::new();
-        match self.region {
-            Region::Cn => CN.get_or_init(|| std::sync::Mutex::new(None)),
-            Region::Intl => INTL.get_or_init(|| std::sync::Mutex::new(None)),
-        }
-    }
-
-    /// 当前清单；**没刷过时给内置兜底**（与网关 `initial_state` 同口径）。
-    ///
-    /// ── 为什么不是空清单 ────────────────────────────────────────
-    /// 插件刚起来时槽是空的，而网关的目录刷新要等一个排期周期。空清单会让
-    /// `/v1/models` 在这段时间里「这家没有模型」，客户端据此可能把请求判成
-    /// 未知模型 —— 而内置清单本来就是网关在没有远程清单时的既有答案。
-    fn catalog_models(&self) -> Vec<Value> {
-        let stored = self
-            .catalog_slot()
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|state| state.models.clone()));
-        match stored {
-            Some(models) if !models.is_empty() => models,
-            _ => builtin::builtin_filtered(),
-        }
-    }
-
-    /// 清单是否来自一次成功的远程刷新。
-    fn catalog_loaded(&self) -> bool {
-        self.catalog_slot()
-            .lock()
-            .map(|guard| guard.as_ref().is_some_and(|state| !state.models.is_empty()))
-            .unwrap_or(false)
-    }
-
-    /// 最近一次刷新的时刻（毫秒；没刷过为 0）。
-    fn catalog_refreshed_at(&self) -> i64 {
-        self.catalog_slot()
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|state| state.fetched_at))
-            .unwrap_or(0)
-    }
-
-    /// 存一份新清单（刷新成功后调用）。
-    fn store_catalog(&self, models: Vec<Value>) {
-        if let Ok(mut guard) = self.catalog_slot().lock() {
-            *guard = Some(CatalogState {
-                models,
-                fetched_at: crate::logging::now_ms(),
-            });
-        }
     }
 
     /// 取一条账号的**会话形态**（`auth` / `account` 两个子对象 + `endpoint`）。
@@ -308,12 +246,6 @@ impl WorkBuddyProvider {
     pub const INTL: Self = Self::new(Region::Intl);
 }
 
-/// 进程内的模型清单（与网关 `ModelCatalog` 的最小等价物）。
-struct CatalogState {
-    models: Vec<Value>,
-    fetched_at: i64,
-}
-
 /// 扁平 secret → 会话形态（网关 `session_from_record` 的插件侧同义物）。
 ///
 /// ── 折叠规则 ────────────────────────────────────────────────
@@ -409,7 +341,7 @@ impl Provider for WorkBuddyProvider {
                 "在打开的页面里登录 WorkBuddy 账号，完成后本页会自动继续".to_string(),
             ),
         }])
-        .with_models(self.catalog_models())
+        .with_models(catalog_state::list(self.region).models)
         // 面板按地区分开：两版的上游玩法完全不同。
         //   国内版：成长任务树（任务 / 开学季 / 猫猫旅行）与签到
         //   国际版：每日活跃保活（模型链 + 定时排程），没有普通签到接口
@@ -467,30 +399,12 @@ impl Provider for WorkBuddyProvider {
         }
     }
 
-    /// 当前模型清单。
-    ///
-    /// ── 与网关那份的差别（迁移时改的）──────────────────────────
-    /// 网关读 `core::models::global_catalog(region)` —— 那个进程级句柄由启动时
-    /// 的 `/v3/config` 拉取与后台刷新共同维护。插件没有那份目录缓存（它是网关
-    /// 的状态），所以这里读本模块自己的进程内清单（见 [`Self::catalog_models`]），
-    /// 由 `refresh_models` 填充。
-    ///
-    /// 没刷过时返回空清单：网关的目录刷新会在启动后很快跑一轮，而空清单不会
-    /// 让客户端崩溃（它会自己带模型名）。
     fn models<'a>(
         &'a self,
-        _ctx: &'a PluginCtx,
+        ctx: &'a PluginCtx,
         _account: &'a str,
     ) -> SendFuture<'a, proto::ModelList> {
-        Box::pin(async move {
-            Ok(proto::ModelList {
-                models: self.catalog_models(),
-                meta: proto::CatalogMeta {
-                    remote: self.catalog_loaded(),
-                    refreshed_at: self.catalog_refreshed_at(),
-                },
-            })
-        })
+        Box::pin(async move { Ok(catalog_state::current(ctx, self.region).await) })
     }
 
     /// 构造 `POST {endpoint}/v2/chat/completions` 的请求（头集合与 URL 逐字沿用
@@ -700,7 +614,7 @@ impl Provider for WorkBuddyProvider {
             let session = session_of_record(&record, self.region);
             self.refresh_account(ctx, account, &record, &session)
                 .await
-                .map_err(GatewayError::into_message)
+                .map_err(GatewayError::into_control_message)
         })
     }
 
@@ -725,7 +639,7 @@ impl Provider for WorkBuddyProvider {
         Box::pin(async move {
             let outcome = catalog::refresh(ctx, self.region, account).await;
             if outcome.refreshed {
-                self.store_catalog(outcome.models.clone());
+                catalog_state::store(self.region, outcome.models.clone());
             }
             Ok(if outcome.refreshed {
                 proto::RefreshOutcome::refreshed(outcome.count())
@@ -854,7 +768,7 @@ impl Provider for WorkBuddyProvider {
         Box::pin(async move {
             let record = crate::store::record(ctx, self.region.provider_id(), account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             if record.is_null() {
                 return Err("该账号没有可用凭证，无法查询积分".to_string());
             }
@@ -864,7 +778,7 @@ impl Provider for WorkBuddyProvider {
                 .and_then(|value| serde_json::from_value(value.clone()).ok());
             let usage = billing::query_usage(&session, proxy.as_ref(), None)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             let mut document = billing::credits_summary_from(&usage);
             let Some(object) = document.as_object_mut() else {
                 return Ok(document);

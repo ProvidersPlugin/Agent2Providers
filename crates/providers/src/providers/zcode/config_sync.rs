@@ -3,8 +3,8 @@
 //!   2. 端点映射（`agent/configs` 的 `proxyEndpoint.mapping`）→ [`super::endpoint_mapping`]。
 //!
 //! ── 为什么需要一个循环 ─────────────────────────────────────
-//! 活动套餐通道原先按「每条请求都要一枚阿里云验证码令牌」实现（2026-09-28 实测
-//! 缺头必回 3007）。而上游自己下发了一个开关：
+//! 活动套餐通道按「每条请求都要一枚阿里云验证码令牌」实现（2026-09-28 实测
+//! 缺头必回 3007）。上游自己下发了一份风控配置：
 //!
 //! ```text
 //!   GET https://zcode.z.ai/api/v1/client/configs?app_version=…&platform=…
@@ -12,11 +12,12 @@
 //!                             "sceneId":"11xygtvd","skip_model_request":true}
 //! ```
 //!
-//! `skip_model_request: true` = 官方客户端在**推理**请求上不附那两个头（2026-10-01
-//! 实测；四个组合 —— app_version 3.14.0/3.14.4 × platform darwin-arm64/linux-x64 ——
-//! 返回逐字相同，所以它与客户端版本无关，是服务端口径）。这一格是**会变的**：
-//! 上游今天放开、明天收回去，都不需要提前发版。所以它必须被周期性读回来，而不是
-//! 编译期写死。
+//! 其中的 `enabled` 是**会变的**：上游今天关掉验证、明天打开，都不需要提前发版。
+//! 所以它必须被周期性读回来，而不是编译期写死。
+//!
+//! `skip_model_request` 曾经被当成「推理请求免码」的判据，现已不参与结论
+//! （长期回 `true`，照它停铸会让池子永远是空的，免码头实测会间歇 502；
+//! 见 [`captcha::apply_config`]）。这一格仍随配置解析出来，只用于展示与排障。
 //!
 //! 端点映射（第 2 份）是同一类东西：上游通过它把推理端点在平面间迁移
 //! （`open.bigmodel.cn` → `zcode.z.ai`，见 `endpoint_mapping` 的模块头），表随
@@ -149,13 +150,7 @@ async fn run_job(job: SyncJob) {
     match job {
         SyncJob::Captcha { region, proxy } => {
             match claim::captcha_config(region, proxy.as_ref()).await {
-                // 上游给了 captcha 段：结论就是 `!skip_model_request`
-                Ok(Some(config)) => {
-                    captcha::note_synced();
-                    captcha::set_required(!config.skip_model_request);
-                }
-                // 没给 captcha 段（或字段不全）：按「要码」收 —— 这一档与「问不到」
-                // 不同，我们**是**拿到了响应，只是那份响应里没有推理侧的开关
+                Ok(Some(config)) => captcha::apply_config(&config),
                 Ok(None) => {
                     captcha::note_synced();
                     captcha::set_required(true);
@@ -355,8 +350,9 @@ mod sync_rules {
 
     #[test]
     fn skipping_the_token_header_is_the_inverse_of_requiring_it() {
-        // `sync_once` 落的结论只有一个表达式（`!skip_model_request`）。这里钉的是
-        // 两侧都有明确落点：翻到免码 ⇒ `plan.rs` 不再取令牌；翻回要码 ⇒ 又取。
+        // 结论的写入口只有 `captcha::set_required` 一个（`apply_config` 与 3007
+        // 两处都经它）。这里钉的是两侧都有明确落点：翻到免码 ⇒ `plan.rs` 不再
+        // 取令牌；翻回要码 ⇒ 又取。
         // 环境变量按下时本用例的前提不成立，直接如实失败（而不是静默通过）。
         let _slot = crate::readiness::lock_for_tests();
         assert!(

@@ -35,11 +35,36 @@ pub struct TaskSpec {
     pub reason: &'static str,
     /// 是否需要 `X-Client-Platform: miniprogram`（小程序限定任务）
     pub mp: bool,
+    /// 固定对象 id（空 = 从市场实时拉）。用于「体验指定专家」这类写死了对象的任务。
+    pub fixed: &'static str,
 }
 
 impl TaskSpec {
     const fn new(kind: &'static str, target: i64, src: &'static str, needs_object: bool) -> Self {
-        Self { kind, target, src, needs_object, unforgeable: false, reason: "", mp: false }
+        Self {
+            kind,
+            target,
+            src,
+            needs_object,
+            unforgeable: false,
+            reason: "",
+            mp: false,
+            fixed: "",
+        }
+    }
+
+    /// 对象写死的任务（专家 id 由任务跳转链接给定）。
+    const fn fixed(kind: &'static str, object_id: &'static str, src: &'static str) -> Self {
+        Self {
+            kind,
+            target: 1,
+            src,
+            needs_object: true,
+            unforgeable: false,
+            reason: "",
+            mp: false,
+            fixed: object_id,
+        }
     }
 
     const fn unforgeable(reason: &'static str) -> Self {
@@ -51,6 +76,7 @@ impl TaskSpec {
             unforgeable: true,
             reason,
             mp: false,
+            fixed: "",
         }
     }
 }
@@ -94,8 +120,17 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
             TaskSpec::new("miniglmchat", 1, "小程序 GLM5.2 对话", false).with_mp()
         }
         "school_season" => TaskSpec::new("schoolseason", 1, "校园日活动（mini chat+activityId）", false).with_mp(),
+        // ── 体验指定专家（expertId 由任务的 jump_url 给定）──
+        "expert_use_maidehao" => TaskSpec::fixed("expert", "ex_GDl31WahyIH0", "指定专家：中国电商运营专家"),
+        "expert_use_douyinyin" => TaskSpec::fixed("expert", "ex_FbY5nlWTqDod", "指定专家：抖音策略师"),
+        "expert_use_shangjia_xuanchuan" => {
+            TaskSpec::fixed("expert", "ex_Weo3x2EZuSDm", "指定专家：商家宣传页与海报设计师")
+        }
+        "expert_use_bowangwang" => TaskSpec::fixed("expert", "ex_WZY136wV5aMt", "指定专家：直播电商教练"),
+        "WorkBuddy_Valorant" => TaskSpec::fixed("expert", "ex_xQHHD1u5Jkua", "指定专家：无畏契约拼豆专家"),
         // ── 需本人操作 ──
         "Expert_Philanthropy" => TaskSpec::unforgeable("真实捐款动作"),
+        "wb_wechat_oa_subscribe_task" => TaskSpec::unforgeable("需真实关注公众号"),
         _ => return None,
     };
     Some(spec)
@@ -124,6 +159,7 @@ pub async fn ids_for(
     account: &GrowthAccount,
     need: usize,
     offset: usize,
+    fixed: &str,
 ) -> Result<Vec<ObjectId>, String> {
     if need == 0 {
         return Ok(Vec::new());
@@ -151,7 +187,14 @@ pub async fn ids_for(
                 .collect())
         }
         "template" => Ok(slice(fetch_scenes(account).await)),
-        "expert" => Ok(slice(fetch_market_experts(account, false, None).await)),
+        "expert" => {
+            // 写死了对象的任务（「体验指定专家」）不能拿市场列表顶替：上游按 id 归账。
+            if fixed.is_empty() {
+                Ok(slice(fetch_market_experts(account, false, None).await))
+            } else {
+                Ok(vec![fetch_expert_by_id(account, fixed).await])
+            }
+        }
         "team" => Ok(slice(fetch_market_experts(account, true, None).await)),
         "lighthouse" => Ok(slice(fetch_lighthouse(account).await)),
         "skill" => Ok(slice(fetch_skills(account).await)),
@@ -212,6 +255,62 @@ workbuddy/expert-marketplace/expert_center.json";
 const PLAYBOOK_BASE: &str = "https://static.workbuddy.cn/workbuddy/playbook";
 
 // ─── 实时拉取（只读）────────────────────────────────────────
+
+/// 按 id 取单个专家（`get-by-ids`）。
+///
+/// 「体验指定专家」类任务的 expertId 由 jump_url 写死，上游按 id 归账 —— 拿市场
+/// 列表里的任意专家顶替点不亮。详情拉不到时只带 id（事件里 name 回落成 id），
+/// 不因为详情接口抖动就整条放弃。
+async fn fetch_expert_by_id(account: &GrowthAccount, expert_id: &str) -> ObjectId {
+    let fallback = ObjectId {
+        id: expert_id.to_string(),
+        meta: json!({
+            "name": "", "category": "", "expertType": "agent", "version": "", "agent_name": "",
+        }),
+    };
+    let body = json!({ "expert_ids": [expert_id], "include_invisible": true });
+    let call = chat_call(
+        account,
+        "POST",
+        "/v2/operation-platform/market/expert/get-by-ids",
+        Some(&body),
+        &[],
+    )
+    .await;
+    let Ok(call) = call else { return fallback };
+    if !call.ok() {
+        return fallback;
+    }
+    let data = call.data();
+    let Some(expert) = data.get("experts").and_then(Value::as_array).and_then(|items| items.first())
+    else {
+        return fallback;
+    };
+    ObjectId {
+        id: expert
+            .get("expert_id")
+            .or_else(|| expert.get("source_id"))
+            .and_then(Value::as_str)
+            .unwrap_or(expert_id)
+            .to_string(),
+        meta: json!({
+            "name": expert
+                .get("display_name_zh")
+                .or_else(|| expert.get("profession_zh"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            "category": expert
+                .get("categories")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            "expertType": expert.get("expert_type").and_then(Value::as_str).unwrap_or("agent"),
+            "version": expert.get("version").and_then(Value::as_str).unwrap_or(""),
+            "agent_name": expert.get("agent_name").and_then(Value::as_str).unwrap_or(""),
+        }),
+    }
+}
 
 /// 场景清单（GET /console/as/support/scenes）。
 async fn fetch_scenes(account: &GrowthAccount) -> Vec<ObjectId> {

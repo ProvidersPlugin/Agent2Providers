@@ -629,7 +629,7 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
 
     // 对象 id 来源（scenes / 专家 / 技能 / 案例 / 主题；无对象类返回空占位）
     let objects: Vec<ObjectId> = if need > 0 {
-        match ids_for(&spec.kind, account, need as usize, cur.max(0) as usize).await {
+        match ids_for(&spec.kind, account, need as usize, cur.max(0) as usize, spec.fixed).await {
             Ok(list) => list,
             Err(error) => {
                 return TaskReport {

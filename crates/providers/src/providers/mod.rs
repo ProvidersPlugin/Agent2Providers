@@ -28,8 +28,6 @@ pub mod atomcode;
 pub mod autoclaw;
 #[cfg(feature = "catpaw")]
 pub mod catpaw;
-#[cfg(feature = "chatglm")]
-pub mod chatglm;
 #[cfg(feature = "cline")]
 pub mod cline;
 #[cfg(feature = "commandcode")]
@@ -123,9 +121,6 @@ pub fn registry() -> Vec<BoxProvider> {
 
     #[cfg(feature = "atomcode")]
     list.push(Box::new(atomcode::AtomcodeProvider));
-
-    #[cfg(feature = "chatglm")]
-    list.push(Box::new(chatglm::ChatglmProvider));
 
     // AutoClaw 的两个地区是两个 provider、两个实例（同一份实现按地区参数化）
     #[cfg(feature = "autoclaw")]

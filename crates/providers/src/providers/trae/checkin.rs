@@ -325,6 +325,11 @@ pub async fn claim_daily_checkin(
     if !needs_reauth(&first) {
         return Ok(first);
     }
+    if !credential.can_refresh() {
+        return Ok(first);
+    }
+    let record = read_record(ctx, account_id).await?;
+    let credential = Credential::from_payload(&record).map_err(GatewayError::new)?;
     let renewed = match renew_forced(ctx, &record, &credential, proxy.as_ref()).await {
         Ok(renewed) => renewed,
         Err(error) => {
@@ -344,7 +349,9 @@ pub async fn claim_daily_checkin(
             return Ok(row);
         }
     };
-    let mut row = run(&renewed, proxy.as_ref(), UG_HOST).await?;
+    let mut row = run(&renewed, proxy.as_ref(), UG_HOST).await.map_err(|error| {
+        if error.status_code == 401 { error.with_code("checkin_auth_retry_exhausted") } else { error }
+    })?;
     if let Some(map) = row.as_object_mut() {
         map.insert("reauthAttempted".to_string(), json!(true));
     }

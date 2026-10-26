@@ -21,7 +21,7 @@ Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supporte
 | --- | :--: | :--: | :--: | :--: | :--: | :--: |
 | WorkBuddy (China) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | WorkBuddy (Global) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
-| Raccoon | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Raccoon | ✓ (chat / images) | ✓ | ✓ | ✓ | ✓ | — |
 | CatPaw | ✓ | ✗ | ✓ | ✓ | ✗ | — |
 | AutoClaw (domestic / international) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Qoder | ✓ | ✓ | ✓ | ✓ | ✓ | — |
@@ -30,14 +30,13 @@ Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supporte
 | ZCode (domestic / international) | ✓ | ✗ | ✗ | ✓ | — | ✓ |
 | CodeArts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Trae | ✓ | ✓ | ✓ | ✓ | — | — |
-| Loomy (iFlytek) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
+| Loomy (iFlytek) | ✓ (chat / image generation / reference editing) | ✗ | ✓ | ✓ | ✓ | — |
 | KukuAI (Baidu Wenku) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | MonkeyCode (Chaitin, domestic / international) | ✓ | ✗ | ✓ | — | — | — |
 | Command Code | ✓ | ✗ | ✓ | — | — | — |
-| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ | ✓ | ✓ | — | — | — |
+| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | — | — | — |
 | OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | OrcaTerm (Tencent Cloud) | ✓ | ✓ | ✓ | ✓ | — | — |
-| Zhipu Qingyan | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
@@ -45,8 +44,8 @@ Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supporte
 Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; credential renewal, balances, check-in and claims depend on the service you configure.
 
 > Note: in Model list, ✓ means automatic online fetching is supported (some platforms also keep a built-in static table as a fallback); ZCode only has a built-in static table. ✗ in Token auto-refresh means the platform has no usable refresh flow (the account keeps working while its credentials are valid). Qoder check-in is available on the China version only.
->
-> **Zhipu Qingyan** is the only provider here that supports a **guest mode**: no sign-in required — one click gets you a credential that works for chat right away (the free quota is issued by the upstream per device). The catch is that a guest account has no points system — the "Balance" / "Sign-in" / "Claim" columns above, plus the **task center's newbie and daily tasks**, apply only to **signed-in accounts** (paste a token or import the desktop client sign-in state); guests are skipped honestly.
+
+Zhipu Qingyan is provided by the separate Web Providers plugin, not by this package.
 
 ## Building
 

@@ -1,0 +1,227 @@
+{
+  "schema": 1,
+  "description": {
+    "zh-CN": "提供商实现由本插件提供。具体支持情况随插件版本更新，国内版、国际版和额度池分别列出。",
+    "zh-Hant": "提供商實作由本外掛提供。具體支援情況隨外掛版本更新，國內版、國際版和額度池分別列出。",
+    "en": "Provider integrations are supplied by this plugin. Capabilities follow the installed plugin version; regions and quota pools are listed separately.",
+    "ja": "プロバイダー連携はこのプラグインが提供します。対応状況はインストール済みのバージョンに従い、地域とクォータプールを個別に表示します。",
+    "ko": "제공업체 연동은 이 플러그인이 제공합니다. 기능은 설치된 플러그인 버전을 따르며 지역과 할당량 풀을 별도로 표시합니다.",
+    "pt-BR": "As integrações são fornecidas por este plugin. As capacidades acompanham a versão instalada; regiões e pools de cota são listados separadamente."
+  },
+  "providers": {
+    "demo": { "hidden": true },
+    "commandcode": {
+      "capabilities": {
+        "refresh": { "status": "not_applicable" },
+        "usage": { "status": "undeclared" },
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "使用静态 API Key，没有 Token 续期概念。当前未提供余额读数。",
+        "zh-Hant": "使用靜態 API Key，沒有 Token 續期概念。目前未提供餘額讀數。",
+        "en": "Uses a static API Key, so token renewal does not apply. Balance readings are not currently provided.",
+        "ja": "固定の API Key を使用するため、トークン更新は対象外です。残高データは現在提供されていません。",
+        "ko": "고정 API Key를 사용하므로 토큰 갱신은 해당하지 않습니다. 현재 잔액 데이터는 제공하지 않습니다.",
+        "pt-BR": "Usa uma API Key estática; a renovação de token não se aplica. Leituras de saldo não são fornecidas atualmente."
+      }]
+    },
+    "modelscope": {
+      "capabilities": {
+        "refresh": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "modelscope-intl": {
+      "capabilities": {
+        "refresh": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "orcaterm": {
+      "capabilities": {
+        "model_refresh": { "status": "unsupported" },
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "模型目录来自客户端静态清单；在线目录接口对普通账号返回空表。",
+        "zh-Hant": "模型目錄來自用戶端靜態清單；線上目錄介面對一般帳號回傳空表。",
+        "en": "The model catalog comes from the client's static list; the online catalog endpoint returns an empty list for regular accounts.",
+        "ja": "モデル一覧はクライアントの固定リストです。オンライン一覧 API は一般アカウントに空のリストを返します。",
+        "ko": "모델 목록은 클라이언트의 정적 목록을 사용합니다. 온라인 목록 API는 일반 계정에 빈 목록을 반환합니다.",
+        "pt-BR": "O catálogo usa a lista estática do cliente; o endpoint online retorna uma lista vazia para contas comuns."
+      }]
+    },
+    "loomy": {
+      "capabilities": { "refresh": { "status": "unsupported" } },
+      "notes": [{
+        "zh-CN": "没有可用的凭证续期接口；凭证失效后需重新登录，不根据估算时间判定过期。",
+        "zh-Hant": "沒有可用的憑證續期介面；憑證失效後需重新登入，不根據估算時間判定過期。",
+        "en": "No credential renewal endpoint is available. Sign in again when credentials become invalid; expiry is not inferred from an estimated lifetime.",
+        "ja": "認証情報の更新 API はありません。無効になった場合は再ログインが必要です。有効期限は推定しません。",
+        "ko": "인증 정보 갱신 API가 없습니다. 인증 정보가 무효화되면 다시 로그인해야 하며 추정 수명으로 만료를 판단하지 않습니다.",
+        "pt-BR": "Não há endpoint de renovação de credenciais. Entre novamente quando forem invalidadas; a validade não é inferida por estimativa."
+      }]
+    },
+    "lobsterai": {
+      "capabilities": { "claims": { "status": "not_applicable" } }
+    },
+    "atomcode": {
+      "capabilities": { "claims": { "status": "supported" } },
+      "notes": [{
+        "zh-CN": "签到链按需领取免费 CodingPlan；已有有效套餐时仅回读额度，不重复领取。",
+        "zh-Hant": "簽到鏈按需領取免費 CodingPlan；已有有效套餐時僅讀回額度，不重複領取。",
+        "en": "The check-in workflow claims a free CodingPlan only when needed. With a valid plan, it reads the quota without claiming again.",
+        "ja": "チェックイン処理は必要時のみ無料 CodingPlan を取得します。有効なプランがある場合はクォータの確認のみ行います。",
+        "ko": "체크인 과정은 필요할 때만 무료 CodingPlan을 받습니다. 유효한 요금제가 있으면 중복 수령 없이 할당량만 확인합니다.",
+        "pt-BR": "O fluxo de check-in resgata um CodingPlan gratuito apenas quando necessário. Com um plano válido, consulta a cota sem resgatar novamente."
+      }]
+    },
+    "autoclaw": {
+      "capabilities": { "claims": { "status": "not_applicable" } }
+    },
+    "autoclaw-intl": {
+      "capabilities": { "claims": { "status": "not_applicable" } }
+    },
+    "zcode": {
+      "capabilities": {
+        "refresh": { "status": "unsupported" },
+        "model_refresh": { "status": "unsupported" },
+        "checkin": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "仅有静态模型清单，没有凭证续期接口。活动套餐领取与每日签到是不同能力。",
+        "zh-Hant": "僅有靜態模型清單，沒有憑證續期介面。活動套餐領取與每日簽到是不同能力。",
+        "en": "Only a static model list is available, with no credential renewal endpoint. Promotional plan claims are separate from daily check-in.",
+        "ja": "モデル一覧は固定で、認証情報の更新 API はありません。キャンペーンプランの取得は毎日のチェックインとは別機能です。",
+        "ko": "정적 모델 목록만 있으며 인증 정보 갱신 API가 없습니다. 이벤트 요금제 수령은 일일 체크인과 별개 기능입니다.",
+        "pt-BR": "Há apenas uma lista estática de modelos, sem endpoint de renovação de credenciais. Resgates de planos promocionais são separados do check-in diário."
+      }]
+    },
+    "zcode-intl": {
+      "capabilities": {
+        "refresh": { "status": "unsupported" },
+        "model_refresh": { "status": "unsupported" },
+        "checkin": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "仅有静态模型清单，没有凭证续期接口。活动套餐领取与每日签到是不同能力。",
+        "zh-Hant": "僅有靜態模型清單，沒有憑證續期介面。活動套餐領取與每日簽到是不同能力。",
+        "en": "Only a static model list is available, with no credential renewal endpoint. Promotional plan claims are separate from daily check-in.",
+        "ja": "モデル一覧は固定で、認証情報の更新 API はありません。キャンペーンプランの取得は毎日のチェックインとは別機能です。",
+        "ko": "정적 모델 목록만 있으며 인증 정보 갱신 API가 없습니다. 이벤트 요금제 수령은 일일 체크인과 별개 기능입니다.",
+        "pt-BR": "Há apenas uma lista estática de modelos, sem endpoint de renovação de credenciais. Resgates de planos promocionais são separados do check-in diário."
+      }]
+    },
+    "workbuddy": {},
+    "workbuddy-intl": {
+      "notes": [{
+        "zh-CN": "每日活跃任务包含网页会话保活与领取积分，可分别执行；不是国内版的普通签到接口。",
+        "zh-Hant": "每日活躍任務包含網頁工作階段保活與領取積分，可分別執行；不是國內版的一般簽到介面。",
+        "en": "Daily activity combines web-session keepalive and point claims, which can run separately. It is not the domestic version's standard check-in endpoint.",
+        "ja": "毎日のアクティビティは Web セッション維持とポイント取得を個別に実行できます。国内版の通常チェックインとは異なります。",
+        "ko": "일일 활동은 웹 세션 유지와 포인트 수령을 각각 실행할 수 있습니다. 중국 내 버전의 일반 체크인 API와는 다릅니다.",
+        "pt-BR": "A atividade diária combina manutenção da sessão web e resgate de pontos, executáveis separadamente. Não é o endpoint de check-in padrão da versão chinesa."
+      }]
+    },
+    "cline-free": {
+      "capabilities": {
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "cline-pass": {
+      "capabilities": {
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "kuku": {
+      "capabilities": {
+        "refresh": { "status": "unsupported" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "monkeycode": {
+      "capabilities": { "refresh": { "status": "unsupported" } },
+      "notes": [{
+        "zh-CN": "会话没有续期接口。余额、签到和领取尚未确认可用，未开启能力位不代表已确认上游不存在。",
+        "zh-Hant": "工作階段沒有續期介面。餘額、簽到和領取尚未確認可用，未開啟能力位不代表已確認上游不存在。",
+        "en": "Sessions have no renewal endpoint. Balance, check-in and rewards are not confirmed available; disabled capability flags do not prove their absence upstream.",
+        "ja": "セッション更新 API はありません。残高、チェックイン、報酬は利用可能と確認されていません。無効な機能フラグは上流での不在を意味しません。",
+        "ko": "세션 갱신 API가 없습니다. 잔액, 체크인, 보상의 사용 가능 여부는 확인되지 않았으며 비활성 기능 플래그가 상위 서비스의 부재를 뜻하지는 않습니다.",
+        "pt-BR": "As sessões não têm endpoint de renovação. Saldo, check-in e recompensas não foram confirmados; flags desativadas não comprovam ausência no serviço upstream."
+      }]
+    },
+    "monkeycode-intl": {
+      "capabilities": { "refresh": { "status": "unsupported" } },
+      "notes": [{
+        "zh-CN": "会话没有续期接口。余额、签到和领取尚未确认可用，未开启能力位不代表已确认上游不存在。",
+        "zh-Hant": "工作階段沒有續期介面。餘額、簽到和領取尚未確認可用，未開啟能力位不代表已確認上游不存在。",
+        "en": "Sessions have no renewal endpoint. Balance, check-in and rewards are not confirmed available; disabled capability flags do not prove their absence upstream.",
+        "ja": "セッション更新 API はありません。残高、チェックイン、報酬は利用可能と確認されていません。無効な機能フラグは上流での不在を意味しません。",
+        "ko": "세션 갱신 API가 없습니다. 잔액, 체크인, 보상의 사용 가능 여부는 확인되지 않았으며 비활성 기능 플래그가 상위 서비스의 부재를 뜻하지는 않습니다.",
+        "pt-BR": "As sessões não têm endpoint de renovação. Saldo, check-in e recompensas não foram confirmados; flags desativadas não comprovam ausência no serviço upstream."
+      }]
+    },
+    "qoder": {
+      "capabilities": { "claims": { "status": "not_applicable" } },
+      "notes": [{
+        "zh-CN": "每日签到通过活动领取完成，活动窗口每天 10:00（UTC+8）刷新。",
+        "zh-Hant": "每日簽到透過活動領取完成，活動時段每天 10:00（UTC+8）更新。",
+        "en": "Daily check-in uses campaign claims; the campaign window refreshes at 10:00 (UTC+8).",
+        "ja": "毎日のチェックインはキャンペーン取得で行い、毎日 10:00（UTC+8）に更新されます。",
+        "ko": "일일 체크인은 캠페인 수령으로 처리하며 매일 10:00(UTC+8)에 갱신됩니다.",
+        "pt-BR": "O check-in diário usa resgates de campanha; a janela é renovada às 10:00 (UTC+8)."
+      }]
+    },
+    "qoder-intl": {
+      "capabilities": { "claims": { "status": "not_applicable" } },
+      "notes": [{
+        "zh-CN": "每日奖励领取需要 UMID 设备风控组件，按账号状态和上游活动规则执行。",
+        "zh-Hant": "每日獎勵領取需要 UMID 裝置風控元件，依帳號狀態和上游活動規則執行。",
+        "en": "Daily reward claims require the UMID device-risk component and depend on account state and upstream campaign rules.",
+        "ja": "毎日の報酬取得には UMID 端末認証コンポーネントが必要で、アカウント状態と上流のキャンペーン規則に従います。",
+        "ko": "일일 보상 수령에는 UMID 기기 위험 관리 구성 요소가 필요하며 계정 상태와 상위 캠페인 규칙을 따릅니다.",
+        "pt-BR": "Os resgates diários exigem o componente UMID de verificação do dispositivo e dependem da conta e das regras da campanha upstream."
+      }]
+    },
+    "trae": {
+      "capabilities": { "claims": { "status": "not_applicable" } }
+    },
+    "catpaw": {
+      "capabilities": {
+        "refresh": { "status": "unsupported" },
+        "checkin": { "status": "unsupported" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "accio": {
+      "capabilities": {
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "accio-cn": {
+      "capabilities": {
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      }
+    },
+    "antigravity": {
+      "capabilities": {
+        "checkin": { "status": "not_applicable" },
+        "claims": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "支持查询模型组额度窗口的剩余比例，不是现金余额。",
+        "zh-Hant": "支援查詢模型群組額度時段的剩餘比例，不是現金餘額。",
+        "en": "Reports remaining percentages for model-group quota windows, not a cash balance.",
+        "ja": "モデルグループのクォータ残量を割合で表示します。金銭の残高ではありません。",
+        "ko": "모델 그룹 할당량 기간의 잔여 비율을 표시하며 현금 잔액은 아닙니다.",
+        "pt-BR": "Exibe percentuais restantes das janelas de cota por grupo de modelos, não saldo em dinheiro."
+      }]
+    }
+  }
+}

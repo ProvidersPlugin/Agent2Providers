@@ -329,6 +329,10 @@ impl Provider for ModelScopeProvider {
     // ── 余额 / 签到 ───────────────────────────────────────────
 
     /// 查魔粒余额与今日已用调用数（见 `balance.rs`）。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(
         &'a self,
         ctx: &'a PluginCtx,

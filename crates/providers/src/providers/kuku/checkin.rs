@@ -74,6 +74,8 @@ pub async fn claim_daily_checkin(
     let mut newly: Vec<String> = Vec::new();
     let mut already_claimed = false;
     let mut total = 0i64;
+    let mut failures: Vec<String> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
     for (task_type, task_label) in DAILY_TASKS {
         let url = format!("{BASE_URL}/api/genflowpro/freepoint/taskComplete?{WEB_QUERY}");
         let value = match http::post_form_value(
@@ -91,6 +93,7 @@ pub async fn claim_daily_checkin(
                     "[Checkin]",
                     &format!("⚠️ KukuAI「{task_label}」领取失败：{}", error.message),
                 );
+                failures.push(format!("{task_label}：{}", error.message));
                 continue;
             }
         };
@@ -105,6 +108,7 @@ pub async fn claim_daily_checkin(
                 "[Checkin]",
                 &format!("⚠️ KukuAI「{task_label}」领取失败（errno={errno}：{message}）"),
             );
+            failures.push(format!("{task_label}（errno={errno}：{message}）"));
             continue;
         }
         let data = value.get("data").cloned().unwrap_or(Value::Null);
@@ -113,27 +117,38 @@ pub async fn claim_daily_checkin(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let reward = data
-            .get("reward_point")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        if status.eq_ignore_ascii_case("SUCCESS") && reward > 0 {
+        let reward = data.get("reward_point").and_then(Value::as_i64);
+        if let Some(reward) = reward.filter(|reward| *reward > 0 && status.eq_ignore_ascii_case("SUCCESS")) {
             newly.push(format!("{task_label}+{reward}"));
-            total += reward;
-        } else {
-            // SUCCESS + reward_point=0（重复领取）或非 SUCCESS（已领标记）：
-            // 都是「今天已经领过」，不算失败（幂等，与 Loomy 同一口径）。
+            total = total.saturating_add(reward);
+        } else if (status.eq_ignore_ascii_case("SUCCESS") && reward == Some(0))
+            || status.eq_ignore_ascii_case("BADGE_ALREADY_RECEIVED") {
             already_claimed = true;
+        } else {
+            unresolved.push(format!("{task_label}：上游未确认完成（{status}）"));
         }
     }
 
-    let msg = if !newly.is_empty() {
+    let success = !newly.is_empty();
+    let done = !success && already_claimed;
+    let mut msg = if success {
         format!("签到完成：{}（共 +{total}）", newly.join("、"))
-    } else if already_claimed {
+    } else if done {
         "今日积分已领过（任务接口幂等，无新增）".to_string()
+    } else if !failures.is_empty() {
+        format!("每日任务领取失败：{}", failures.join("；"))
     } else {
-        "本次没有可领取的每日任务（活动可能未开始或已结束）".to_string()
+        "本次没有已确认完成的每日任务".to_string()
     };
-    logging::log("[Checkin]", &format!("✅ {msg}"));
-    Ok(json!({ "success": true, "msg": msg }))
+    if success || done {
+        if !failures.is_empty() { msg.push_str(&format!("；部分任务失败：{}", failures.join("；"))); }
+    }
+    if !unresolved.is_empty() { msg.push_str(&format!("；{}", unresolved.join("；"))); }
+    logging::log("[Checkin]", &msg);
+    Ok(json!({
+        "success": success,
+        "alreadyCompleted": done,
+        "outcome": if success { "claimed" } else if done { "done" } else if failures.is_empty() { "inactive" } else { "failed" },
+        "msg": msg,
+    }))
 }

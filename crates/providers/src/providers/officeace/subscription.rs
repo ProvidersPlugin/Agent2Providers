@@ -32,6 +32,7 @@ use super::signer::{self, Algorithm, SignRequest};
 /// 订阅族接口总超时（余额/签到是外部 HTTP，必须设总超时：直连客户端默认 read_timeout
 /// 600 秒是给 SSE 长连接的，直接用会把一个挂住的查询拖到天荒地老）。
 const TIMEOUT_SECS: u64 = 20;
+pub(super) const CONTROL_TOKEN_EXPIRED: &str = "officeace_control_token_expired";
 
 /// 账号里存的 `https://{host}/v2` → 网关根 `https://{host}`。
 pub fn gateway_base(base_url: &str) -> String {
@@ -122,12 +123,20 @@ async fn call(
     })?;
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
-    // 401/403 = 控制面临时凭据失效（约 2 小时过期），要用户重新登录，与网络错误区分开
-    if status == 401 || status == 403 {
-        return Err(GatewayError::with_status(
+    let payload = serde_json::from_str::<Value>(&text).ok();
+    let expired = payload.as_ref().is_some_and(|payload| {
+        let code = payload.get("error_code").and_then(Value::as_str).unwrap_or("");
+        let message = payload.get("error_msg").and_then(Value::as_str).unwrap_or("");
+        // APIG.0602 是通用坏请求码，只有明确的 security token 过期文案才允许续期。
+        code == "APIG.0602" && message.to_ascii_lowercase().contains("security token has expired")
+            || code == "APIG.1002"
+    });
+    if expired || status == 401 || status == 403 {
+        let error = GatewayError::with_status(
             i32::from(status),
             "OfficeAce 控制面凭据已失效（临时 AK/SK 会过期）：请重新登录一次",
-        ));
+        );
+        return Err(if expired { error.with_code(CONTROL_TOKEN_EXPIRED) } else { error });
     }
     if status != 200 {
         return Err(GatewayError::with_status(

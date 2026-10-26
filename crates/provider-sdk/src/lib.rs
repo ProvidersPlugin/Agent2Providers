@@ -31,18 +31,24 @@
 //!
 //! 读循环只做「分类 + 投递」，一次 await 都不带业务语义。
 
+mod checkin;
 pub mod ctx;
 mod errors;
+pub mod images;
+mod log_context;
 pub mod provider;
+pub mod retry;
 pub mod serve;
 
-pub use ctx::{PluginCtx, StoreAccount, StoreError};
+pub use checkin::CheckinResult;
+pub use ctx::{PluginCtx, StoreAccount, StoreError, StoreProxy};
 pub use errors::control_error;
 pub use provider::{
     local_precondition, split_local_precondition, split_unsupported, unsupported, BoxProvider,
     ChatPlan, ConversationSink, Provider, ProviderMeta, SendFuture, LOCAL_PRECONDITION_PREFIX,
     SCHEDULES_LIST_METHOD, UNSUPPORTED_PREFIX,
 };
+pub use retry::{RetryDecision, RETRY_DECISION_METHOD};
 pub use serve::{serve, serve_blocking};
 
 /// 打一条日志到网关的运行日志页。
@@ -58,6 +64,13 @@ pub use serve::{serve, serve_blocking};
 macro_rules! log_info {
     ($($arg:tt)*) => {
         $crate::serve::emit_log("info", format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! log_debug {
+    ($($arg:tt)*) => {
+        $crate::serve::emit_log("debug", format!($($arg)*))
     };
 }
 

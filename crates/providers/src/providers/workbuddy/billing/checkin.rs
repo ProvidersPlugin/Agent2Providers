@@ -88,6 +88,10 @@ pub(crate) async fn claim(session: &Value) -> Result<Value, GatewayError> {
                 "msg".to_string(),
                 Value::String(result_msg(&result.raw).unwrap_or_else(|| "签到失败".to_string())),
             );
+            let message = failure.get("msg").and_then(Value::as_str).unwrap_or("");
+            let already = !(message.contains("可能") || message.contains("未能") || message.contains("失败"))
+                && (message.contains("已签到") || message.contains("已领取"));
+            failure.insert("alreadyCompleted".to_string(), Value::Bool(already));
             Ok(Value::Object(failure))
         }
         // 请求本身没打成（超时 / 断连 / 401 / 非 2xx）—— 这是真的失败

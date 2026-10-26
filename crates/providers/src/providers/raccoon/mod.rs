@@ -38,6 +38,7 @@
 pub mod balance;
 pub mod credentials;
 pub mod jwt;
+mod image_generation;
 pub mod models;
 pub mod oauth;
 pub mod onboarding;
@@ -160,6 +161,18 @@ impl Provider for RaccoonProvider {
                 req.body.clone(),
             ))
         })
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn build_image<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build(ctx, req))
     }
 
     /// 上游错误分类（判定依据见模块头）：
@@ -313,6 +326,10 @@ impl Provider for RaccoonProvider {
         })
     }
 
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, account)
@@ -330,7 +347,7 @@ impl Provider for RaccoonProvider {
         Box::pin(async move {
             let claim = balance::claim_daily_grant(ctx, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report_of(&claim))
         })
     }
@@ -630,12 +647,10 @@ fn checkin_report_of(claim: &Value) -> proto::CheckinReport {
         })
         .filter(|points| *points > 0)
         .map(|points| format!("{points} 积分"));
-    // 「今日未见积分入账（可能已领取）」是中性结果 —— 算 Done 而不是 Failed，
-    // 否则定时链会把一次正常的中性结果当成失败反复重打
     let text = message.clone().unwrap_or_default();
     let outcome = if success {
         proto::CheckinOutcome::Claimed
-    } else if text.contains("已领取") || text.contains("已签到") {
+    } else if claim.get("alreadyCompleted").and_then(Value::as_bool) == Some(true) {
         proto::CheckinOutcome::Done
     } else if text.contains("未见") || text.contains("未能核对") {
         proto::CheckinOutcome::Inactive

@@ -1,38 +1,13 @@
-//! WorkBuddy 的**账号身份与凭证**：请求头、临期判定、续期。
+//! WorkBuddy 的账号身份与凭证：请求头、临期判定、单次续期。
 //!
-//! ── 从网关搬来的三个部分 ────────────────────────────────────
-//! ```text
-//!   build_auth_headers       ← core::auth::AuthService::build_auth_headers
-//!   enterprise_headers       ← core::auth::AuthService::enterprise_headers
-//!   is_token_expiring        ← core::auth::is_token_expiring（窗口同一常量）
-//!   refresh_session          ← core::auth::AuthService::refresh_session
-//! ```
-//!
-//! ── 为什么不搬整个 `AuthService` ─────────────────────────────
-//! 网关那个服务还管「当前账号是谁」「单飞刷新表」「needsRelogin 标记落盘」
-//! 这些**库侧状态**。插件这边账号在网关的库里，读一次就是一次 RPC，所以
-//! 那部分留在网关；插件只保留「拿一份会话，构造头 / 打一次续期接口」这种
-//! 纯函数 + 单次请求。
-//!
-//! ── 续期的并发语义（与网关那份的差别）──────────────────────
-//! 网关用 `refresh_flight` 表保证「同一账号同时只有一次真实刷新」，因为
-//! refresh token 是**一次性**的（换发即消费）—— 两个并发刷新带同一个 RT 去换，
-//! 第二个必然拿到 `12153: refresh token is invalid`，而一旦把它当失败，整条
-//! RT 链就死了。
-//!
-//! 插件侧同样需要这道闸，用 [`crate::flight::Table`]（与网关同一个原语）。
-//!
-//! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
-
-use std::sync::OnceLock;
+//! 本模块不读写账号库。一次性 refresh token 的并发保护与落盘由
+//! `super::refresh` 统一负责，避免上游换发后、写回前再次使用旧凭证。
 
 use serde_json::{json, Value};
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
 use crate::errors::GatewayError;
-use crate::flight;
 use crate::http::{send_raw, ApiResponse};
 use crate::logging;
 
@@ -41,13 +16,7 @@ use crate::workbuddy_shared::endpoints::{Context, RESPONSE_CODE_OK};
 /// 临期窗口（与网关 `auth_http::REFRESH_WINDOW_MS` 同值：5 分钟）。
 pub const REFRESH_WINDOW_MS: f64 = 5.0 * 60.0 * 1000.0;
 
-/// 上游「refresh token 已失效」的业务码。
-///
-/// ── 为什么在插件里没有判据（迁移时改的）──────────────────────
-/// 网关用它做「连续 N 次才判死」的计数（`needsRelogin`），而插件没有那个
-/// 计数位置（见 `mod.rs` 的 `refresh_account`）。这个常量保留给排障对照 ——
-/// 插件把 12153 原样带在错误的 `upstream_code` 里，用户在界面上看到的是
-/// 网关侧拼的「请重新登录」。
+/// 上游「refresh token 已失效」的业务码；插件如实上报，不在这里永久禁用账号。
 #[allow(dead_code)]
 pub const CODE_REFRESH_TOKEN_INVALID: i64 = 12153;
 
@@ -306,49 +275,4 @@ pub async fn refresh_session(
         return Err(GatewayError::with_status(502, "token 刷新响应缺少 accessToken"));
     }
     Ok(next)
-}
-
-// ─── 单飞刷新表 ────────────────────────────────────────────────
-
-/// 单飞键：`账号 id + refresh token 指纹`。
-///
-/// 带上 RT 的指纹（而不是只用账号 id）的理由与网关 `refresh_flight_key` 相同：
-/// 用户重新登录换了一条 RT 之后，那次刷新不该被上一轮的键挡住。
-fn flight_key(account_id: &str, refresh_token: &str) -> String {
-    let tail: String = {
-        let chars: Vec<char> = refresh_token.chars().collect();
-        let start = chars.len().saturating_sub(12);
-        chars[start..].iter().collect()
-    };
-    format!("{account_id}|{tail}")
-}
-
-fn flight_table() -> &'static flight::Table<RefreshedAuth> {
-    static TABLE: OnceLock<flight::Table<RefreshedAuth>> = OnceLock::new();
-    TABLE.get_or_init(flight::Table::new)
-}
-
-/// 同账号同时只允许一次真实续期；后到者等这一轮的结果并复用。
-///
-/// ── 为什么必须有这道闸（issue #215 的事故链）──────────────────
-/// refresh token 是**一次性**的（换发即消费）。两个并发刷新带同一个 RT 去换，
-/// 第二个必然拿到 `12153: refresh token is invalid`，而它一旦把这个失败当成
-/// 「这次刷新失败」，整条 RT 链就死了 —— 之后无论怎么重试都救不回来，只能
-/// 重新登录。收敛成一次真实请求之后，这个竞态从源头消失。
-pub async fn refresh_once(
-    account_id: &str,
-    refresh_token: &str,
-    auth: &Value,
-    context: &Context,
-    proxy: Option<&ResolvedProxy>,
-) -> Result<RefreshedAuth, GatewayError> {
-    let key = flight_key(account_id, refresh_token);
-    match flight_table().join(&key) {
-        flight::Join::Leader(guard) => {
-            let result = refresh_session(auth, context, proxy).await;
-            guard.finish(result.clone());
-            result
-        }
-        flight::Join::Waiter(waiter) => waiter.wait().await,
-    }
 }

@@ -4,7 +4,8 @@
 //! ```text
 //!   mod.rs          Provider 实现（能力位、build_chat、classify、续期、余额）
 //!   region.rs       两个地区（provider id / 端点 / 客户端身份 / 环境变量旁路）
-//!   auth.rs         鉴权头、临期判定、续期 + 单飞
+//!   auth.rs         鉴权头、临期判定、单次续期
+//!   refresh.rs      单飞续期、凭证复查与比较再写
 //!   login.rs        浏览器登录（轮询型：auth/state → auth/token → 补资料）
 //!   catalog.rs      /v3/config 模型目录刷新
 //!   builtin.rs      内置模型清单 + 准入过滤（远程拿不到时的兜底）
@@ -20,7 +21,7 @@
 //! | `core::models::global_catalog(region)` 进程级目录 | 本模块的 `CatalogState` 槽（清单由网关的 `rpc_cache` 持久化） |
 //! | `catalog_cache` 落盘 | 网关侧负责（插件重启后由网关重放） |
 //! | `model_rules::seed_workbuddy_defaults` | 网关侧负责（模型规则是用户配置） |
-//! | `needsRelogin` 标记 / 12153 连续计数 | **不迁**：插件只如实报错，由编排层退避（见 `refresh_account`） |
+//! | `needsRelogin` 标记 / 12153 连续计数 | **不迁**：插件只如实报错，由编排层退避（见 `refresh`） |
 //! | 重试间隔读设置页 | 硬编码 10 秒（插件没有配置回调） |
 //! | `LoginService::start` 后台任务 while 轮询 | [`login`]：`login.start` 只做 ①②，`login.poll` 每次问一次 |
 //! | 每日签到 | 本家没有签到（`checkin: false`） |
@@ -64,6 +65,7 @@ mod keepalive;
 mod login;
 mod normalize;
 mod quota_reset;
+mod refresh;
 mod region;
 
 pub use region::Region;
@@ -73,12 +75,11 @@ pub use region::Region;
 use serde_json::Value;
 
 use agent2api_provider_protocol as proto;
-use agent2api_provider_protocol::WireProxy;
 use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture};
 
 use crate::errors::GatewayError;
 use crate::ids::{new_conversation_id, new_message_id, new_span_id};
-use crate::workbuddy_shared::endpoints::{normalize_endpoint, Context};
+use crate::workbuddy_shared::endpoints::normalize_endpoint;
 
 use self::quota_reset::parse_quota_reset_at;
 
@@ -89,7 +90,7 @@ use self::quota_reset::parse_quota_reset_at;
 /// 拦截会持续一小段时间，期间客户端失败自动重试会形成重试风暴并给拦截续期，
 /// 因此命中 11-128 时值得退避重试 —— 次数与间隔统一走设置页的「请求重试」
 /// （历史硬编码是 10 秒 / 25 秒各一次；间隔设得过短会拉长拦截窗口，建议 ≥10 秒）。
-const RATE_LIMIT_CODE: i64 = 11-128;
+const RATE_LIMIT_CODE: i64 = 11_128;
 
 /// 上游要求首条消息必须是 system prompt，否则返回 400
 /// （first message is not system prompt）。客户端没带 system 消息时注入一条兜底系统消息。
@@ -130,112 +131,13 @@ impl WorkBuddyProvider {
         Ok(session_of_record(&record, self.region))
     }
 
-    /// 续期并写回账号（`ensure_token` 的临期分支与 `refresh_token` 共用）。
-    ///
-    /// ── 与网关 `AuthService::refresh_account` 的差别 ─────────────
-    /// 网关那份还管三件**库侧状态**：`needsRelogin` 标记、12153 连续计数、
-    /// 刷新成功后的清理。插件这边库在网关，`store_update` 只能写 secret 本体，
-    /// 所以：
-    ///
-    ///   · **写回**：`accessToken` / `refreshToken` / `expiresAt` /
-    ///     `refreshExpiresAt` 四个键（与网关 `update_account_tokens` 同名字段）；
-    ///   · **不写 `needsRelogin`**：那个标记的语义是「别再刷了」，而插件没有
-    ///     一个可靠的计数位置。替代做法是把 12153 如实报给编排层 —— 它会退避，
-    ///     用户看到的是「请重新登录该账号」这句可执行的话；
-    ///   · **`tokenTail` 不写**：那是网关给列表页显示的截断值，插件不掌握列表
-    ///     形状。网关在收到写回后自己按新 token 重算（`store_update` 的网关侧
-    ///     会补这一格）。
-    ///
-    /// ── 单飞 ────────────────────────────────────────────────────
-    /// 走 [`auth::refresh_once`]：refresh token 是一次性的，两个并发刷新带同一
-    /// 个 RT 去换，第二个必然 12153 而整条链就死了（issue #215）。
-    ///
-    /// ── 写回失败不阻断 ──────────────────────────────────────────
-    /// `store_update` 返回 `false` = 另一个刷新先落盘了（值已变）。那不是错误：
-    /// 我们手里这份 token 仍然可用，如实返回它即可。
     async fn refresh_account(
         &self,
         ctx: &PluginCtx,
         account: &str,
         record: &Value,
-        session: &Value,
     ) -> Result<String, GatewayError> {
-        let auth_value = session.get("auth").cloned().unwrap_or(Value::Null);
-        let refresh_token = auth_value
-            .get("refreshToken")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if refresh_token.is_empty() {
-            return Err(GatewayError::with_status(
-                400,
-                "缺少 refreshToken，无法续期，请重新登录".to_string(),
-            ));
-        }
-        // 按账号自己的端点 / 前缀 / 平台续期（国内版与国际版不同站点）
-        let context = Context::make(
-            record.get("endpoint").and_then(Value::as_str),
-            record.get("prefixPath").and_then(Value::as_str),
-            record.get("platform").and_then(Value::as_str),
-            Some(self.region.edition_id()),
-        );
-        let proxy: Option<WireProxy> = record
-            .get("proxy")
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
-        let next = auth::refresh_once(
-            account,
-            &refresh_token,
-            &auth_value,
-            &context,
-            proxy.as_ref(),
-        )
-        .await?;
-        if next.access_token.is_empty() {
-            return Err(GatewayError::with_status(
-                502,
-                "token 刷新响应缺少 accessToken".to_string(),
-            ));
-        }
-        // ── 写回（比较再写）────────────────────────────────────
-        // `expect` 必须是**读到时的那份 secret**（不是记录形态）—— 见
-        // `store::secret_view` 的说明：记录形态多了 id/provider/name 三个键，
-        // 直接拿去比永远不等，于是"比较再写"退化成"永远不写"。
-        let expect = crate::store::secret_view(record);
-        let mut next_secret = expect.clone();
-        if let Some(object) = next_secret.as_object_mut() {
-            object.insert(
-                "accessToken".to_string(),
-                Value::String(next.access_token.clone()),
-            );
-            if let Some(token) = next.refresh_token.as_ref().filter(|text| !text.is_empty()) {
-                object.insert("refreshToken".to_string(), Value::String(token.clone()));
-            }
-            if let Some(value) = next.expires_at.filter(|value| *value > 0.0) {
-                object.insert("expiresAt".to_string(), serde_json::json!(value));
-            }
-            if let Some(value) = next.refresh_expires_at.filter(|value| *value > 0.0) {
-                object.insert("refreshExpiresAt".to_string(), serde_json::json!(value));
-            }
-        }
-        match crate::store::save(ctx, account, &expect, &next_secret).await {
-            Ok(true) => crate::logging::log(
-                "[Accounts]",
-                &format!(
-                    "✅ {} 账号 token 已刷新（{account}）",
-                    self.region.label()
-                ),
-            ),
-            // 值已变 = 另一个刷新先落盘了（不是错误，见函数头）
-            Ok(false) => crate::logging::verbose(
-                "[Accounts]",
-                &format!("账号 {account} 的凭证已被另一路刷新写过，本次不覆盖"),
-            ),
-            Err(error) => crate::logging::verbose(
-                "[Accounts]",
-                &format!("账号 {account} 的 token 写回失败：{}", error.message),
-            ),
-        }
-        Ok(next.access_token)
+        refresh::refresh_account(ctx, self.region, account, record).await
     }
 }
 
@@ -535,7 +437,7 @@ impl Provider for WorkBuddyProvider {
     /// ── 与网关那份的差别（迁移时改的）──────────────────────────
     /// 网关调 `AuthService::refresh_account`（那个服务还管 needsRelogin 标记、
     /// 12153 连续计数等**库侧状态**）。插件这边库在网关，所以只做「读记录 →
-    /// 临期判 → 单飞续期 → 写回」这一条链，见 [`auth::refresh_once`]。
+    /// 临期判 → 单飞续期 → 写回」这一条链，见 [`refresh::refresh_account`]。
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
             if account.is_empty() {
@@ -563,7 +465,7 @@ impl Provider for WorkBuddyProvider {
                     "[Auth]",
                     &format!("token 临期，自动刷新（账号 {account}）…"),
                 );
-                match self.refresh_account(ctx, account, &record, &session).await {
+                match self.refresh_account(ctx, account, &record).await {
                     Ok(token) => return Ok(token),
                     // 续期失败不阻断转发：拿现有的 token 试一次（编排层会在
                     // 401 时走 refresh_token 那条强制刷新）
@@ -611,8 +513,7 @@ impl Provider for WorkBuddyProvider {
             if record.is_null() {
                 return Err(format!("账号 {account} 不存在"));
             }
-            let session = session_of_record(&record, self.region);
-            self.refresh_account(ctx, account, &record, &session)
+            self.refresh_account(ctx, account, &record)
                 .await
                 .map_err(GatewayError::into_control_message)
         })
@@ -764,6 +665,10 @@ impl Provider for WorkBuddyProvider {
     ///
     /// 必须传**指定账号**的会话：批量查询是逐账号并发的，用「当前账号」会让
     /// 所有账号都查成同一个人。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             let record = crate::store::record(ctx, self.region.provider_id(), account)
@@ -824,7 +729,7 @@ impl Provider for WorkBuddyProvider {
             let session = session_of_record(&record, self.region);
             let claim = billing::checkin::claim(&session)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(billing::checkin::report_of(&claim))
         })
     }
@@ -865,15 +770,21 @@ impl Provider for WorkBuddyProvider {
         payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
-            admin::dispatch(ctx, self.region.provider_id(), account, action, payload)
-                .await
-                .map_err(|error| {
-                    if error.status_code == 501 {
-                        agent2api_provider_sdk::unsupported(error.message)
-                    } else {
-                        error.into_message()
-                    }
-                })
+            if action == "activity.run" && self.region == Region::Intl {
+                self.ensure_token(ctx, account).await?;
+            }
+            let mut result = admin::dispatch(ctx, self.region.provider_id(), account, action, payload).await;
+            if action == "activity.run" && result.as_ref().err().is_some_and(|error| error.status_code == 401) {
+                self.refresh_token(ctx, account).await?;
+                result = admin::dispatch(ctx, self.region.provider_id(), account, action, payload).await;
+            }
+            result.map_err(|error| {
+                if error.status_code == 501 {
+                    agent2api_provider_sdk::unsupported(error.message)
+                } else {
+                    error.into_control_message()
+                }
+            })
         })
     }
 

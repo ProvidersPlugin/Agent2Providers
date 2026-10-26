@@ -26,7 +26,7 @@ pub(super) struct RequestContext {
 }
 
 impl RequestContext {
-    pub fn new(headers: &BTreeMap<String, String>, body: &Value, custom_system: bool) -> Self {
+    pub fn new(headers: &BTreeMap<String, String>, body: &Value) -> Self {
         let metadata = body.get("metadata");
         let user_id = metadata
             .and_then(|value| value.get("user_id"))
@@ -36,21 +36,6 @@ impl RequestContext {
             .or_else(|| field(metadata, &["sessionId", "session_id", "conversationId", "conversation_id"]))
             .or_else(|| field(user_id.as_ref(), &["session_id"]))
             .or_else(credentials::new_uuid);
-        // 自定义 system 对应 ContextBuilder 的子代理路径，不能与 main 身份混用。
-        let session_type = if custom_system {
-            "subagent"
-        } else {
-            match header(headers, &["x-zcode-session-type"]).as_deref() {
-                Some("subagent") => "subagent",
-                Some("side_chat") => "side_chat",
-                Some("other") => "other",
-                Some("main") => "main",
-                _ if session_id.as_deref().is_some_and(|id| id.starts_with("subagent_agent_")) => {
-                    "subagent"
-                }
-                _ => "main",
-            }
-        };
         Self {
             request_id: header(headers, &["x-request-id", "x-client-request-id"])
                 .or_else(|| field(metadata, &["requestId", "request_id"]))
@@ -62,7 +47,8 @@ impl RequestContext {
                 .or_else(|| field(metadata, &["queryId", "query_id"]))
                 .map(|id| strip_prefixes(&id, &["query_"]).to_string()),
             session_id: session_id.map(|id| strip_prefixes(&id, &SESSION_PREFIXES).to_string()),
-            session_type,
+            // 本通道装配主会话提示词，不能沿用客户端的子代理会话类型。
+            session_type: "main",
         }
     }
 

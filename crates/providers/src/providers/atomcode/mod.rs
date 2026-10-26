@@ -272,7 +272,7 @@ impl Provider for AtomcodeProvider {
                 return Ok(false);
             };
             Ok(credentials::from_record(Some(&record))
-                .map(|credentials| credentials.expiring())
+                .map(|credentials| !credentials.refresh_token.is_empty() && credentials.expiring())
                 .unwrap_or(false))
         })
     }
@@ -320,6 +320,10 @@ impl Provider for AtomcodeProvider {
 
     /// 查额度：`GET {codingplan}/coding-plan/status-v2` 的窗口归一。
     /// 401 由调用方走统一的「刷新后重试」链路。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             usage::query_usage(ctx, account)
@@ -342,7 +346,7 @@ impl Provider for AtomcodeProvider {
         Box::pin(async move {
             let claim = checkin::claim_plan_if_needed(ctx, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report_of(&claim))
         })
     }

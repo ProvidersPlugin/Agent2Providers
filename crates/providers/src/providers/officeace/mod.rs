@@ -45,6 +45,7 @@
 pub mod balance;
 pub mod chat;
 pub mod checkin;
+mod control;
 pub mod credentials;
 pub mod models;
 pub mod oauth;
@@ -86,8 +87,7 @@ impl Provider for OfficeAceProvider {
                 checkin: true,
                 // 新手任务与签到是**同一个上游动作**（一次 claim 全领）
                 claims: true,
-                // 自助 OAuth 要开浏览器窗口（PKCE + DPoP），留在网关
-                web_login: false,
+                web_login: true,
                 // 上游回自己的模型名（不改写也无害，与内置版同一结论）
                 sse_model_rewrite: false,
                 sse_strip_newline_chunks: false,
@@ -100,7 +100,10 @@ impl Provider for OfficeAceProvider {
                 // 本家有没有环境变量 / 默认登录态旁路（协议新增位）
                 env_credentials: false,
             })
-            .with_login(Vec::new())
+            .with_login(vec![proto::LoginMethod::Browser {
+                button: "网页登录".to_string(),
+                hint: Some("完成华为云授权后，网关会自动轮询取回登录凭据".to_string()),
+            }])
             .with_models(models::list())
             // 账号行：`usage` —— 额度/积分要**控制面签名**（V11-HMAC-SHA256 打
             // `/v1/subscription`），那条链已实现（`balance` + 适配器
@@ -174,9 +177,8 @@ impl Provider for OfficeAceProvider {
     ///     上游给这条带的是 HTTP 429，不先判掉就会被下面的限额档吞掉
     ///   - `81111` / `81112` / `81114` / `0308` / `TPM` / `rate limit` / `too many
     ///     requests` / HTTP 429 → `QuotaLimited`（冷却「该凭据 + 该模型」）
-    ///   - `81004`（这个模型没权限）/ `81009`（名字不认）→ `Fatal`。⚠️ `Fatal`
-    ///     **什么都不冷却** —— 承担「这个模型不可用」的是 `probe` 的可用性收窄：
-    ///     这两个码被探到就把该模型隐藏，客户端点不到它。
+    ///   - `81004`（这个模型没权限）/ `81009`（名字不认）→ `Fatal`，不冷却账号。
+    ///     探测对权限拒绝收窄清单，对 `81009` 保留并标记推理端未部署。
     ///   - `APIG.1009` / `APIG.1001` / `APIG.1002` / 401 / 403 → `Fatal`
     ///     （凭据失效，用户需重新登录/导入；不自动冷却账号池）
     ///   - 其余 → `Fatal`
@@ -245,62 +247,13 @@ impl Provider for OfficeAceProvider {
     /// 细节** —— 它留在网关，主仓库就仍然携带「怎么以官方客户端形态换凭据」的
     /// 知识，而那正是这次拆分要消掉的东西。
     ///
-    /// 一次性 refresh token **每轮轮换**：写回走「比较再写」，两个并发刷新
-    /// 只有一个能落盘（见 `crate::store::save`）。
+    /// 一次性 refresh token **每轮轮换**：同账号刷新串行执行并回读凭据，
+    /// 写回仍走「比较再写」。
     fn refresh_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
-            let record = crate::store::record(ctx, ID, account).await?;
-            let secret = crate::store::secret_view(&record);
-            let refresh = crate::store::pick(&secret, &["refreshToken", "refresh_token"]);
-            if refresh.is_empty() {
-                return Err(
-                    "OfficeAce 账号没有 refresh token（手工只导入了网关凭据）：\
-                     控制面凭据无法续期，额度/签到需要重新登录一次"
-                        .to_string(),
-                );
-            }
-            let dpop = secret
-                .get("dpopKeyPair")
-                .filter(|value| value.is_object())
-                .cloned()
-                .ok_or_else(|| {
-                    "OfficeAce 账号缺少 DPoP 私钥上下文，无法续期：请重新登录一次".to_string()
-                })?;
-            let (credential, expires_at, _user_name, next_refresh) =
-                oauth::refresh(&dpop, &refresh)
-                    .await
-                    .map_err(|reason| format!("OfficeAce 续期失败：{reason}"))?;
-            let next = crate::store::with_fields(
-                &secret,
-                &[
-                    ("accessKeyId", Value::String(credential.access_key_id.clone())),
-                    (
-                        "secretAccessKey",
-                        Value::String(credential.secret_access_key.clone()),
-                    ),
-                    (
-                        "securityToken",
-                        Value::String(credential.security_token.clone()),
-                    ),
-                    ("projectId", Value::String(credential.project_id.clone())),
-                    ("expiresAt", Value::from(expires_at)),
-                    ("refreshToken", Value::String(next_refresh)),
-                ],
-            );
-            // ── 显示名为什么不在这里自愈 ────────────────────────────
-            // 网关那版每次续期都拿上游显示名覆盖账号名（存量记录的名字停在
-            // 十六进制上时能追回来）。插件这边**写不到公开视图**：`store.update`
-            // 只动 secret，而界面读的是 `pluginPublic` —— 只改 secret 里的名字
-            // 会变成「库里改了、界面上没变」的假成功。
-            //
-            // 名字在登录那一刻已经取全了（见 `account_of` 的优先级链），
-            // 手工导入的那条是用户自己打的。所以这里如实不做，而不是做一半。
-            match crate::store::save(ctx, account, &secret, &next).await {
-                Ok(true) => {}
-                // 期望值已变 = 另一个刷新先落盘了，它的结果同样有效
-                Ok(false) => {}
-                Err(error) => return Err(error.message),
-            }
+            let credential = control::refresh(ctx, account, None)
+                .await
+                .map_err(GatewayError::into_message)?;
             Ok(credential.access_key_id)
         })
     }
@@ -318,37 +271,21 @@ impl Provider for OfficeAceProvider {
             let Ok(record) = crate::store::record(ctx, ID, account).await else {
                 return Ok(false);
             };
-            Ok(credentials::from_record(Some(&record))
-                .map(|credential| credential.control_plane_expiring())
-                .unwrap_or(false))
+            Ok(control::credentials_expiring(&record))
         })
     }
 
     // ── 目录 ──────────────────────────────────────────────────
 
-    /// 当前模型清单，**已按可用性探测收窄**。
-    ///
-    /// ── 为什么收窄发生在这里（迁到插件后改的一处）──────────────
-    /// 网关那份实现覆写 `advertise_models`，但插件协议里没有这个钩子：网关拿到
-    /// `models.list` 就直接对外广告。所以「藏掉这个号打不通的模型」这道门禁
-    /// **只能**在插件这一侧做，否则收窄等于没做。
-    ///
-    /// 判据与取舍见 `probe` 模块头：只藏上游**明确**说「这个模型不行」的
-    /// （81004 / 81009 / 81010 / 81016 等），没探过时一个都不藏。
+    /// 当前模型清单：权限拒绝隐藏，推理端未部署的条目保留并标记。
     fn models<'a>(
         &'a self,
         _ctx: &'a PluginCtx,
         _account: &'a str,
     ) -> SendFuture<'a, proto::ModelList> {
         Box::pin(async move {
-            let hidden = probe::hidden_ids();
             let mut list = models::list();
-            if !hidden.is_empty() {
-                list.retain(|item| {
-                    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
-                    !probe::is_hidden(&hidden, id)
-                });
-            }
+            probe::apply(&mut list);
             Ok(proto::ModelList {
                 models: list,
                 meta: proto::CatalogMeta {
@@ -383,7 +320,7 @@ impl Provider for OfficeAceProvider {
                     "指定的账号不存在或不可用，请重新选择",
                 ));
             }
-            Ok(models::refresh_from_record(record.as_ref(), force).await)
+            Ok(models::refresh_from_record(ctx, record.as_ref(), force).await)
         })
     }
 
@@ -393,6 +330,10 @@ impl Provider for OfficeAceProvider {
     ///
     /// 控制面凭据缺失时回 `usage_not_configured`（400 + 中性标记）—— 手工只导入
     /// 网关 Basic 凭据的账号会走到这条，前端显示成「未配置查询」而不是失败。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, account)

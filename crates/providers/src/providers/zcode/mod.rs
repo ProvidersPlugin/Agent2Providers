@@ -121,8 +121,8 @@ pub fn plan_label(plan: &str) -> &'static str {
     }
 }
 
-/// 套餐池请求的网关提示词开关说明；默认提示词与自定义正文采用不同分块。
-pub const OFFICIAL_PROMPT_NOTE: &str = "这段由网关按当前 ZCode 客户端的请求形态装配：没有客户端系统提示词时使用默认三块；有客户端自定义正文时只保留身份块与自定义块，并同步会话类型。客户端正文不再追加为第四块。这里的稳定段、动态段覆盖只用于默认三块路径；关闭开关会停止装配，是否被上游接受由其当前规则决定。3012 也可能是账号风控，不等于套餐额度耗尽。";
+/// 套餐池请求的网关提示词开关说明。
+pub const OFFICIAL_PROMPT_NOTE: &str = "套餐池默认按三块装配：身份句、稳定段、动态段；客户端系统正文合入第三块，不新增第四块，也不会因此改成子代理。手动编辑的段优先于默认模板，未编辑的段随插件更新。关闭开关后只发送客户端正文，能否被接受取决于上游规则。3012 不等于额度耗尽，可能与请求兼容性或账号风控有关。";
 
 // ── 「插件读网关用户配置」的两个约定键（`settings.get` 的 `key`）──────────
 // ZCode 的官方三段提示词（正文 + 说明）全在本 crate 里，但「装不装」
@@ -411,6 +411,13 @@ impl Provider for ZcodeProvider {
             Some(hint) => format!("上游返回 {status}: {raw}（{hint}）"),
             None => format!("上游返回 {status}: {raw}"),
         };
+        if code == Some(3012) {
+            return proto::ErrorClass::Fatal {
+                status: if (200..300).contains(&status) { 502 } else { status },
+                message,
+                upstream_code: code,
+            };
+        }
         if status == 401 {
             return proto::ErrorClass::TokenExpired { message };
         }
@@ -426,6 +433,21 @@ impl Provider for ZcodeProvider {
         // message 中，未知业务码不猜测为凭证失效或额度用尽。
         let status = if (200..300).contains(&status) { 502 } else { status };
         crate::content_block::classify_or_fatal(status, body, message, code)
+    }
+
+    fn retry_decision(
+        &self,
+        _status: u16,
+        body: &Value,
+        _attempt: usize,
+        _budget: usize,
+    ) -> agent2api_provider_sdk::RetryDecision {
+        if body.get("code").and_then(Value::as_i64) == Some(3012) {
+            return agent2api_provider_sdk::RetryDecision::Stop {
+                reason: "上游风控拒绝（3012），停止本次请求，不再原地重发或换账号".to_string(),
+            };
+        }
+        agent2api_provider_sdk::RetryDecision::Default
     }
 
     // ── 凭证 ──────────────────────────────────────────────────
@@ -483,6 +505,10 @@ impl Provider for ZcodeProvider {
     ///
     /// 缺 JWT 且缺 API Key 时回 `usage_not_configured`（400 + 中性标记）——
     /// 前端显示成「未配置查询」而不是失败。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, self.region, account)

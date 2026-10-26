@@ -71,6 +71,7 @@ pub fn emit_log(level: &str, message: String) {
     };
     let host = host.clone();
     let level = level.to_string();
+    let context = crate::log_context::current();
     // 不等待：日志是旁路，阻塞业务不值得。写失败也无所谓。
     tokio::spawn(async move {
         let frame = proto::Frame {
@@ -78,6 +79,7 @@ pub fn emit_log(level: &str, message: String) {
             event: Some("log".into()),
             level: Some(level),
             message: Some(message),
+            params: Some(context),
             ..Default::default()
         };
         host.write(frame).await.ok();
@@ -236,8 +238,9 @@ impl Serve {
             return;
         }
 
+        let context = crate::log_context::capture(id, &method, &params);
         tokio::spawn(async move {
-            host.handle(id, &method, params).await;
+            crate::log_context::scope(context, host.handle(id, &method, params)).await;
         });
     }
 
@@ -332,7 +335,7 @@ impl Serve {
             .await;
             return;
         };
-        let ctx = self.ctx();
+        let ctx = self.ctx(&provider.provider_id());
         let account = params.get("account").and_then(Value::as_str).unwrap_or("").to_string();
 
         let outcome: Result<Value, String> = match method {
@@ -354,6 +357,28 @@ impl Serve {
                     Err(e) => Err(format!("chat 参数无法解析: {e}")),
                 }
             }
+            crate::images::CAPABILITIES_METHOD => {
+                Ok(serde_json::json!({
+                    "generation": provider.supports_image_generation(),
+                    "editing": provider.supports_image_editing(),
+                }))
+            }
+            crate::images::GENERATE_METHOD | crate::images::EDIT_METHOD => {
+                match serde_json::from_value::<crate::images::ImageRequest>(params.clone()) {
+                    Ok(req) => {
+                        let result = if method == crate::images::EDIT_METHOD {
+                            provider.build_image_edit(&ctx, req).await
+                        } else {
+                            provider.build_image(&ctx, req).await
+                        };
+                        result.and_then(|plan| serde_json::to_value(plan)
+                            .map_err(|error| format!("图片请求计划无法序列化: {error}")))
+                    }
+                    Err(error) => Err(crate::control_error(
+                        400, format!("图片请求参数无法解析: {error}"), None, None,
+                    )),
+                }
+            }
             proto::methods::gateway::CLASSIFY => {
                 let status = params.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
                 let body = params.get("body").cloned().unwrap_or(Value::Null);
@@ -371,6 +396,14 @@ impl Serve {
             proto::methods::gateway::REFUSAL_MARKERS => {
                 let (finishes, markers) = provider.refusal_markers();
                 Ok(serde_json::json!({ "finishes": finishes, "markers": markers }))
+            }
+            crate::retry::RETRY_DECISION_METHOD => {
+                let status = params.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
+                let body = params.get("body").cloned().unwrap_or(Value::Null);
+                let attempt = params.get("attempt").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let budget = params.get("budget").and_then(Value::as_u64).unwrap_or(0) as usize;
+                serde_json::to_value(provider.retry_decision(status, &body, attempt, budget))
+                    .map_err(|error| format!("重试决定无法序列化: {error}"))
             }
             proto::methods::gateway::RETRY_ADVICE => {
                 let body = params.get("body").cloned().unwrap_or(Value::Null);
@@ -412,10 +445,19 @@ impl Serve {
                     serde_json::to_value(outcome).map_err(|e| format!("刷新结果无法序列化: {e}"))
                 })
             }
-            proto::methods::gateway::USAGE_QUERY => provider.usage(&ctx, &account).await,
-            proto::methods::gateway::CHECKIN_CLAIM => provider.checkin(&ctx, &account).await.and_then(
-                |report| serde_json::to_value(report).map_err(|e| format!("签到结果无法序列化: {e}")),
-            ),
+            proto::methods::gateway::USAGE_QUERY => provider.usage(&ctx, &account).await.map(|mut report| {
+                let sources = provider.quota_sources(&report);
+                if let Some(object) = report.as_object_mut() {
+                    object.insert("quotaSources".to_string(), Value::Array(sources));
+                }
+                report
+            }),
+            proto::methods::gateway::CHECKIN_CLAIM => {
+                let manual = params.get("manual").and_then(Value::as_bool).unwrap_or(false);
+                crate::checkin::run(provider.as_ref(), &ctx, &account, manual).await.and_then(
+                    |report| serde_json::to_value(report).map_err(|e| format!("签到结果无法序列化: {e}")),
+                )
+            }
             proto::methods::gateway::CLAIM => {
                 let claim = params.get("claim").and_then(Value::as_str).unwrap_or("");
                 provider.claim(&ctx, &account, claim).await
@@ -540,7 +582,7 @@ impl Serve {
             .await
             .insert(id, Running { cancel: cancel.clone(), credit: credit.clone() });
 
-        let ctx = self.ctx();
+        let ctx = self.ctx(&provider.provider_id());
         let mut sink = StreamSink {
             host: self.clone(),
             id,
@@ -579,7 +621,7 @@ impl Serve {
         self.providers.iter().find(|p| p.provider_id() == id).cloned()
     }
 
-    fn ctx(self: &Arc<Self>) -> PluginCtx {
+    fn ctx(self: &Arc<Self>, provider: &str) -> PluginCtx {
         let env = self.env.try_read().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| {
             proto::HostEnv {
                 data_dir: String::new(),
@@ -590,7 +632,7 @@ impl Serve {
                 loopback_port: 0,
             }
         });
-        PluginCtx { env, call: Arc::new(CallHandle { host: Some(self.clone()) }) }
+        PluginCtx { env, call: Arc::new(CallHandle { host: Some(self.clone()), provider: provider.to_string() }) }
     }
 
     /// 收下一条回调应答。
@@ -609,13 +651,14 @@ impl Serve {
 /// 回调发送端：`PluginCtx` 用它把请求发给网关并等应答。
 struct CallHandle {
     host: Option<Arc<Serve>>,
+    provider: String,
 }
 
 impl CallGateway for CallHandle {
     fn call<'a>(
         &'a self,
         method: &'a str,
-        params: Value,
+        mut params: Value,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Value, StoreError>> + Send + 'a>,
     > {
@@ -623,6 +666,16 @@ impl CallGateway for CallHandle {
             let Some(host) = &self.host else {
                 return Err(StoreError::Unavailable("插件宿主尚未启动".into()));
             };
+            if method == proto::methods::plugin::STORE_UPDATE {
+                let next = params.get("secret").cloned().unwrap_or(Value::Null);
+                if let Some(adapter) = host.provider_of(&serde_json::json!({ "provider": self.provider })) {
+                    if let Ok(public) = adapter.account_view(&next) {
+                        if let Some(fields) = params.as_object_mut() {
+                            fields.insert("public".to_string(), public);
+                        }
+                    }
+                }
+            }
             let id = host.next_id.fetch_add(1, Ordering::Relaxed);
             let (tx, rx) = oneshot::channel();
             host.pending.lock().await.insert(id, tx);

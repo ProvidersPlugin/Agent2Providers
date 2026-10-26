@@ -82,10 +82,7 @@ pub(super) fn build_request(
         body.get(super::reasoning::EFFORT_FIELD).and_then(Value::as_str),
         client_max_tokens(body),
     );
-    // 会话类型只看「客户端有没有自带 system 正文」：那是上游用来区分
-    // main / subagent 的那一格，与网关是否装配官方提示词无关。
-    let custom_system = system_prompt::has_custom_system(payload.get("system"));
-    let request_context = RequestContext::new(client_headers, body, custom_system);
+    let request_context = RequestContext::new(client_headers, body);
     system_prompt::apply_start_plan(
         &mut payload,
         model,

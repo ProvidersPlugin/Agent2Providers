@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use agent2api_provider_protocol as proto;
-use agent2api_provider_sdk::{PluginCtx, StoreError};
+use agent2api_provider_sdk::{PluginCtx, StoreAccount, StoreError};
 use serde_json::{json, Value};
 
 use super::http::{self, HttpFailure};
@@ -182,7 +182,8 @@ pub fn read_desktop_credentials() -> Result<Credentials, String> {
                 .to_string(),
         );
     }
-    let file_expires = data.get("oauth_expires_at").and_then(Value::as_i64).unwrap_or(0) / 1000;
+    let file_expires = data.get("oauth_expires_at").and_then(Value::as_i64)
+        .map(expiry_seconds).unwrap_or(0);
     let (user_id, jwt_exp) = claims_of(&token);
     let expires_at = if jwt_exp > 0 { jwt_exp } else { file_expires };
     // `auth_identity` 是一段内嵌 JSON 字符串（`{"nickName":"…"}`）
@@ -291,6 +292,10 @@ pub async fn fetch_user_info(
 
 // ─── 账号快照 ───────────────────────────────────────────────
 
+fn expiry_seconds(raw: i64) -> i64 {
+    if raw >= 100_000_000_000 { raw / 1000 } else { raw }
+}
+
 /// 从账号 `secret` 解析凭证。
 pub fn credentials_of(secret: &Value) -> Result<Credentials, String> {
     let token = normalize_token(secret.get(SECRET_TOKEN).and_then(Value::as_str).unwrap_or(""));
@@ -306,6 +311,7 @@ pub fn credentials_of(secret: &Value) -> Result<Credentials, String> {
             .get(SECRET_EXPIRES_AT)
             .and_then(Value::as_i64)
             .filter(|value| *value > 0)
+            .map(expiry_seconds)
             .unwrap_or(jwt_exp),
         user_id: secret
             .get(SECRET_UID)
@@ -352,25 +358,25 @@ pub async fn refresh(
     if !force && !credentials.is_expiring() {
         return Ok(credentials.clone());
     }
-    // key 只含账号 id：同一账号的并发刷新串行，不同账号互不影响。
-    // 不放 token 本体 —— 那会把凭证写进可能被日志打印的字符串。
-    let key = format!("{ID}:{account}");
+    let account_id = ctx.store_get(ID, account).await
+        .map_err(|error| describe_store_error(&error))?.id;
+    let key = format!("{ID}:{account_id}");
     flight::run(&key, || async {
-        // 拿到锁之后重读一次账号：前一个可能刚刷新并回写，这一轮就不必再打上游。
-        let current = match snapshot(ctx, account).await {
-            Ok(current) => current,
-            // 读不到就沿用调用方给的那份（刷新本身仍可能成功）
-            Err(_) => credentials.clone(),
-        };
-        if !force && !current.is_expiring() && current.access_token != credentials.access_token {
+        let record = ctx.store_get(ID, &account_id).await
+            .map_err(|error| describe_store_error(&error))?;
+        let current = credentials_of(&record.secret)?;
+        if !current.is_expiring()
+            && (current.access_token != credentials.access_token || !force)
+        {
             return Ok(current);
         }
-        call_refresh_api(ctx, &current).await
+        let next = call_refresh_api(ctx, &current).await?;
+        write_back(ctx, &record, &next).await
     })
     .await
 }
 
-/// 调 `OAuthRefreshToken` 换新 token，并回写账号记录。
+/// 调 `OAuthRefreshToken` 换新 token。
 async fn call_refresh_api(ctx: &PluginCtx, credentials: &Credentials) -> Result<Credentials, String> {
     let client = crate::http::client(None, &ctx.env.proxy);
     let response = cgi_action(
@@ -393,17 +399,23 @@ async fn call_refresh_api(ctx: &PluginCtx, credentials: &Credentials) -> Result<
         return Err("OrcaTerm 续期响应缺少 AccessToken".to_string());
     }
     let (user_id, expires_at) = claims_of(&token);
-    let next = Credentials {
+    let expires_at = if expires_at > 0 {
+        expires_at
+    } else {
+        response.get("ExpiresIn").and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+            .map(|seconds| (crate::http::now_ms() / 1000).saturating_add(seconds))
+            .unwrap_or(0)
+    };
+    Ok(Credentials {
         access_token: token,
         expires_at,
         user_id: if user_id.is_empty() { credentials.user_id.clone() } else { user_id },
         nickname: credentials.nickname.clone(),
-    };
-    write_back(ctx, secret_of(&next), account_hint(credentials)).await;
-    Ok(next)
+    })
 }
 
-/// 回写用的 `secret` 形状。
+/// 回写用的 `secret` 形状（`tokenExpireAt` 统一为 Unix 秒）。
 pub fn secret_of(credentials: &Credentials) -> Value {
     json!({
         SECRET_TOKEN: credentials.access_token,
@@ -413,21 +425,45 @@ pub fn secret_of(credentials: &Credentials) -> Value {
     })
 }
 
-/// 回写时用的账号 id 提示（调用方没给 id 时按 uid 找）。
-fn account_hint(credentials: &Credentials) -> String {
-    credentials.user_id.clone()
-}
-
-/// 条件回写账号记录。
-///
-/// ── 为什么失败只记日志 ──────────────────────────────────────
-/// 回写失败意味着「这次拿到的新 token 没存住」—— 下一次请求会再刷一次。
-/// 让整条请求因此失败是错的：用户这次能正常用，只是多打一次刷新接口。
-async fn write_back(ctx: &PluginCtx, secret: Value, account: String) {
-    let Ok(record) = ctx.store_get(ID, &account).await else {
-        return;
-    };
-    let _ = ctx.store_update(&record.id, &record.secret, &secret).await;
+/// 条件回写账号记录，成功只返回已落盘的凭证。
+async fn write_back(
+    ctx: &PluginCtx,
+    record: &StoreAccount,
+    credentials: &Credentials,
+) -> Result<Credentials, String> {
+    let next = crate::store::with_fields(&record.secret, &[
+        (SECRET_TOKEN, Value::String(credentials.access_token.clone())),
+        (SECRET_EXPIRES_AT, Value::from(credentials.expires_at)),
+        (SECRET_UID, Value::String(credentials.user_id.clone())),
+        (SECRET_NAME, Value::String(credentials.nickname.clone())),
+    ]);
+    match ctx.store_update(&record.id, &record.secret, &next).await {
+        Ok(true) => Ok(credentials.clone()),
+        Ok(false) => {
+            let latest = ctx.store_get(ID, &record.id).await.map_err(|error| {
+                let message = format!("OrcaTerm 续期回写冲突后读取账号 {} 失败：{error}", record.id);
+                agent2api_provider_sdk::log_warn!("{message}");
+                message
+            })?;
+            let current = credentials_of(&latest.secret)?;
+            if current.access_token == credentials.access_token
+                && current.expires_at == credentials.expires_at
+                || !current.is_expiring()
+                    && current.access_token != normalize_token(record.secret.get(SECRET_TOKEN)
+                        .and_then(Value::as_str).unwrap_or(""))
+            {
+                return Ok(current);
+            }
+            let message = format!("OrcaTerm 账号 {} 的续期结果未能落盘，请稍后重试", record.id);
+            agent2api_provider_sdk::log_warn!("{message}");
+            Err(message)
+        }
+        Err(error) => {
+            let message = format!("OrcaTerm 账号 {} 的续期结果写回失败：{error}", record.id);
+            agent2api_provider_sdk::log_warn!("{message}");
+            Err(message)
+        }
+    }
 }
 
 // ─── 账号规范化 / 视图 ──────────────────────────────────────

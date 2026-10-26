@@ -127,16 +127,13 @@ pub(super) fn account_of(
     }
 }
 
-/// 账号公开视图（界面账号页读的那几个键，与网关
-/// `to_accio_public_account` 逐键对应）。
+/// Accio 专属的公开字段；账号 id 与 provider 由网关注入。
 pub(super) fn account_view(secret: &Value) -> Value {
     let region = Region::from_payload(secret).ok();
     let access_token = crate::store::pick(secret, &["accessToken", "access_token", "token"]);
     let user_id = crate::store::pick(secret, &["userId", "user_id", "uid"]);
     let can_refresh = !crate::store::pick(secret, &["refreshToken", "refresh_token"]).is_empty();
     let mut view = serde_json::json!({
-        "id": crate::store::pick(secret, &["id"]),
-        "provider": crate::store::pick(secret, &["provider"]),
         "name": crate::store::pick(secret, &["name"]),
         "userId": user_id,
         "email": crate::store::pick(secret, &["email"]),

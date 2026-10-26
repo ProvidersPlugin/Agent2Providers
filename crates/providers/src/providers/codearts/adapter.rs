@@ -31,7 +31,6 @@ use agent2api_provider_sdk::{ConversationSink, PluginCtx, Provider, ProviderMeta
 use crate::errors::GatewayError;
 use crate::logging;
 use crate::proxy_util::{resolve_account_proxy, ProxyResolution};
-use crate::telemetry::RequestTelemetry;
 
 use super::chat;
 use super::credentials::Credential;
@@ -298,7 +297,7 @@ impl Provider for CodeArtsProvider {
                     }
                 }
             };
-            let mut request = crate::http::client(req.proxy.as_ref(), "direct").post(&url);
+            let mut request = crate::http::stream_client(req.proxy.as_ref(), "direct").post(&url);
             for (name, value) in headers {
                 request = request.header(name.as_str(), value.as_str());
             }
@@ -332,12 +331,13 @@ impl Provider for CodeArtsProvider {
                 note_size_gate(size_reason, wire_bytes);
                 session.stop().await;
                 drop(permit);
-                let error = chat::upstream_http_error(status, &error_body, &credential, truncated);
+                let error =
+                    chat::upstream_http_error(status, &error_body, &credential, truncated, &upstream_model);
                 return Err(error.message);
             }
 
             // ⑦ 首包门：一个字节都没下发之前就决定"交出去"还是"换账号"
-            let (prefetched, rest) = match chat::prefetch_head(response).await {
+            let (prefetched, rest) = match chat::prefetch_head(response, &upstream_model).await {
                 Ok(head) => head,
                 Err(error) => {
                     note_size_gate(
@@ -356,13 +356,13 @@ impl Provider for CodeArtsProvider {
                 wire_bytes,
             );
 
+            let mut response_stream = super::response_stream::restore(prefetched, rest, restorer);
             if !req.stream {
                 // 非流式：把剩下的读完再折叠（上游只有流式）
                 use futures::StreamExt;
-                let mut all = prefetched;
-                let mut rest = rest;
+                let mut all = Vec::new();
                 let read_error = loop {
-                    match rest.next().await {
+                    match response_stream.next().await {
                         None => break None,
                         Some(Err(error)) => break Some(error),
                         Some(Ok(chunk)) => all.extend_from_slice(&chunk),
@@ -377,11 +377,8 @@ impl Provider for CodeArtsProvider {
                     chat::size_rejection_any(0, &String::from_utf8_lossy(&all), wire_bytes),
                     wire_bytes,
                 );
-                let mut completion = chat::aggregate_sse(&all, &upstream_model)
+                let completion = chat::aggregate_sse(&all, &upstream_model)
                     .map_err(GatewayError::into_message)?;
-                if let Some(restorer) = restorer.as_ref() {
-                    restorer.apply_completion(&mut completion);
-                }
                 let payload = serde_json::to_string(&completion).map_err(|error| {
                     format!("CodeArts 聚合结果序列化失败：{error}")
                 })?;
@@ -411,60 +408,18 @@ impl Provider for CodeArtsProvider {
             .await
             .map_err(|error| format!("客户端已断开：{error}"))?;
             use futures::StreamExt;
-            // 改过函数名才需要还原响应里的名字；没改过时这个 fixer 全程 idle，
-            // 一个字节都不碰，走的还是原样透传。
-            let mut fixer = super::tool_names::StreamFixer::new(restorer);
-            let mut sniffer = chat::UsageSniffer::default();
-            let sniff_telemetry = std::sync::Arc::new(RequestTelemetry::new());
-            if !prefetched.is_empty() {
-                sniffer.feed(&prefetched, &sniff_telemetry);
-                let head = if fixer.idle() {
-                    prefetched.clone()
-                } else {
-                    fixer.push(&prefetched).into_owned()
-                };
-                if sink.send(&head).await.is_err() {
-                    session.stop().await;
-                    drop(permit);
-                    return Ok(());
-                }
-            }
-            let mut rest = rest;
-            while let Some(item) = rest.next().await {
-                if let Ok(bytes) = item.as_ref() {
-                    sniffer.feed(bytes, &sniff_telemetry);
-                }
-                let to_send = if fixer.idle() {
-                    match item {
-                        Ok(bytes) => bytes.to_vec(),
-                        Err(error) => {
-                            // 上游流断了：先收摊，再把错误如实交给调用方
-                            session.stop().await;
-                            drop(permit);
-                            return Err(format!("CodeArts 上游流中断：{error}"));
-                        }
+            while let Some(item) = response_stream.next().await {
+                match item {
+                    Ok(bytes) => {
+                        if sink.send(&bytes).await.is_err() { break; }
                     }
-                } else {
-                    match item {
-                        Ok(bytes) => fixer.push(&bytes).into_owned(),
-                        Err(error) => {
-                            session.stop().await;
-                            drop(permit);
-                            return Err(format!("CodeArts 上游流中断：{error}"));
-                        }
+                    Err(error) => {
+                        session.stop().await;
+                        drop(permit);
+                        return Err(format!("CodeArts 上游流中断：{error}"));
                     }
-                };
-                if sink.send(&to_send).await.is_err() {
-                    // 客户端断开：idle 必须发，否则上游槽位悬着
-                    break;
                 }
             }
-            // 流结束时把成帧缓冲里剩下的一段交出去（半条事件还原不了也照原样放行）
-            let tail = fixer.finish();
-            if !tail.is_empty() {
-                let _ = sink.send(&tail).await;
-            }
-            sniffer.finish(&sniff_telemetry);
             session.stop().await;
             drop(permit);
             Ok(())
@@ -567,6 +522,10 @@ impl Provider for CodeArtsProvider {
     }
 
     /// 余额可查（两份账，见 `balance.rs` 模块头：订阅统计 + 福利网关）。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move { query_usage(ctx, account).await.map_err(GatewayError::into_message) })
     }
@@ -633,23 +592,28 @@ impl Provider for CodeArtsProvider {
 
     /// 每日签到 = 本家的「每日登录送积分」那一组 ops 福利（`welfare.rs`）。
     ///
-    /// `manual` 那个维度插件协议里没有：`checkin.claim` 只在「用户点了签到」与
-    /// 「定时任务」两条路上被调，而后者在本家**本来就不接**（见网关
-    /// `auto_checkin::CHECKIN_PROVIDERS` 与本家 `welfare` 的模块头）。所以这里
-    /// 按 `manual = true` 走 —— 本地限流闸（每天 ≤6 次写 / 间隔 ≥10 分钟）
-    /// 保护的是无人值守的重试，不是用户点击。
+    /// 未携带触发来源的旧调用按自动路径处理，避免绕过无人值守的写请求限制。
     fn checkin<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, proto::CheckinReport> {
+        Box::pin(async move { self.checkin_with_options(ctx, account, false).await.map(|result| result.report) })
+    }
+
+    fn checkin_with_options<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        manual: bool,
+    ) -> SendFuture<'a, agent2api_provider_sdk::CheckinResult> {
         Box::pin(async move {
-            let outcome = welfare::claim_account(
-                ctx,
-                account,
-                models::DEFAULT_BASE_URL,
-                logging::now_ms(),
-                true,
-            )
-            .await
-            .map_err(GatewayError::into_message)?;
-            Ok(welfare_report(outcome))
+            let now = logging::now_ms();
+            let outcome = welfare::claim_account(ctx, account, models::DEFAULT_BASE_URL, now, manual)
+                .await.map_err(GatewayError::into_control_message)?;
+            let retry_at = match outcome {
+                welfare::Outcome::NotEligible => Some(now + 10 * 60_000),
+                welfare::Outcome::Skipped => welfare::retry_at(ctx, account, now).await
+                    .map_err(GatewayError::into_control_message)?,
+                _ => None,
+            };
+            Ok(agent2api_provider_sdk::CheckinResult { report: welfare_report(outcome), retry_at })
         })
     }
 
@@ -891,6 +855,9 @@ async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gateway
     }
     let benefit_value = benefit.as_ref().ok().and_then(|value| value.as_ref());
     let mut document = balance::usage_document(statistics.as_ref().ok(), benefit_value);
+    let benefit_models: Vec<String> = models::cached_catalog().map(|catalog| catalog.models.into_iter()
+        .filter(|model| model.source == models::ModelSource::Benefit).map(|model| model.id).collect()).unwrap_or_default();
+    document["quotaBenefitModels"] = serde_json::json!(benefit_models);
     match &benefit {
         // 上游明说没有该账号的福利数据：落一个**中性**标记而不是错误
         Ok(None) => {

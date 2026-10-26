@@ -339,6 +339,15 @@ fn wallets_of(payload: &Value) -> (Vec<Value>, Vec<Value>, String) {
                 // 中文短名，否则英文界面里会冒出一串汉字（与 `zcode::plan_state`
                 // 「状态键由后端给、文案只在前端拼」同一条纪律）
                 let mut row = Map::new();
+                let group_models: Vec<String> = super::models::list().iter().filter_map(|model| {
+                    let id = model.get("id").and_then(Value::as_str)?;
+                    let lower = id.to_ascii_lowercase();
+                    let group = group_name.to_ascii_lowercase();
+                    ((group.contains("gemini") && lower.contains("gemini"))
+                        || (group.contains("claude") && (lower.contains("claude") || lower.contains("gpt"))))
+                        .then(|| id.to_string())
+                }).collect();
+                row.insert("models".to_string(), json!(group_models));
                 row.insert("key".to_string(), Value::String(bucket_key(bucket)));
                 row.insert("label".to_string(), Value::String(display_name.clone()));
                 row.insert("group".to_string(), Value::String(group_name.clone()));

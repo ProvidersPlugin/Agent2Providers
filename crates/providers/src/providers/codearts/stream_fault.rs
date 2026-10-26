@@ -31,6 +31,22 @@ use crate::errors::GatewayError;
 /// SSE 的结束哨兵；它出现在 `text` 字段里时不算答案。
 pub const DONE_SENTINEL: &str = "[DONE]";
 
+/// 「这个模型不吃图片」的上游码片段（`InferHub.001001020.406`）。
+///
+/// 2026-10-24 实测（本机网关，`glm-5.3` / `kimi-k3` / `openpangu-2.0-flash`
+/// 三个纯文本模型各发一发带 `image_url` 的请求）：全是 HTTP 200 的流内信封
+/// `{"error_code":"InferHub.001001020.406","error_msg":"The request model is not
+/// multimodal"}`，由首包门折成 502。同一份 body 去掉图片就正常回答 —— 所以这
+/// 是**请求内容**的问题，不是账号 / 额度 / 网关的问题，换账号也不会好。
+///
+/// 判据取码的**中段**（`001001020`）而不是整串：末段的 `.406` 是 HTTP 语义
+/// 后缀，这套信封里同一个错误码在不同出口上后缀会变（对照 `.4291.200` 那条
+/// 额度信封）。
+pub const NOT_MULTIMODAL_CODE: &str = "001001020";
+
+/// 这句英文是上游给「模型不是多模态」的固定话术（大小写不敏感）。
+const NOT_MULTIMODAL_MARKER: &str = "is not multimodal";
+
 /// 这套信封里的「成功」码（大小写不敏感）。
 fn is_success_code(code: &str) -> bool {
     matches!(code.to_ascii_lowercase().as_str(), "0" | "0000" | "success")
@@ -92,6 +108,63 @@ pub struct StreamFault {
     pub message: String,
     /// 映射后的 HTTP 状态：403 额度 / 429 限流 / 502 其它
     pub status: u16,
+}
+
+/// 这段文案说的是不是「当前模型不支持多模态输入」。
+///
+/// ── 为什么判据要单独一个函数 ────────────────────────────────
+/// 同一个错误有三个来路，翻译只该有一份判据：
+///   1. 流内信封（[`stream_frame_fault`]，HTTP 200 的 SSE 体里 —— 实测的主路径）；
+///   2. 非 2xx 的诊断体（`chat::upstream_http_error`，上游偶尔直接回 400）；
+///   3. 上面两条折成 `GatewayError` 之后（`prefetch_head` / `aggregate_sse`）。
+/// 只在其中一处翻译，另外两处就照旧把英文原样漏给用户。
+///
+/// 两条判据取「或」：码是主判据（实测三个模型逐字都是
+/// `InferHub.001001020.406`），英文话术是兜底（上游换过码的写法时仍然认得出）。
+pub fn is_not_multimodal(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    lowered.contains(NOT_MULTIMODAL_CODE) || lowered.contains(NOT_MULTIMODAL_MARKER)
+}
+
+/// 把「模型不吃图片」这条错误换成一句**用户能照着做**的话；其余错误原样返回。
+///
+/// ── 为什么值得翻译，而不是让上游英文透传 ────────────────────
+/// 原始文案 `The request model is not multimodal` 缺两样东西：不说「是谁」
+/// 不支持（用户第一反应是账号或网关坏了 —— 实测有人先去重登账号），也不说
+/// 「怎么办」（换掉图片或换个模型就行）。而这两样恰好是客户端把它弹给用户
+/// 时唯一有用的信息。
+///
+/// ── 为什么保留上游原文 ──────────────────────────────────────
+/// 上游码是排障与提工单的唯一凭据（`InferHub.001001020.406` 在本仓之外没有
+/// 公开文档）。翻译只加一句人话，**不删**原文 —— 删了就把可核查性弄丢了。
+///
+/// ── 为什么提示里不点名具体模型 ──────────────────────────────
+/// 「该换哪个」取决于账号：目录是三个源合并的账号级清单（见 `models.rs`），
+/// 各账号可见的支持图片模型并不相同。写死一个名字会在没有它的账号上变成
+/// 新的误导。改成指向 `/v1/models` 的 `supports_images` 那一列。
+///
+/// ── 为什么不在本地提前拦（明明目录里有 `supports_images`）────
+/// 那个位不可信：福利源（`models::parse_benefit`）对**所有**条目都写
+/// `supports_images: false`，按它拦会把真能看图的福利模型一起挡在门外；
+/// 反过来 agent 源缺这个字段时也按 false 处理。凭一份会误报的数据拒发请求，
+/// 比让上游判一次更糟 —— 与 `provider-adaptation` 那条「判不出来就当没有、
+/// 不要凭猜测打上游」是同一取舍的反面：这里宁可**发出去再翻译**。
+pub fn humanize_fault_message(message: String, model: &str) -> String {
+    if !is_not_multimodal(&message) {
+        return message;
+    }
+    let model = model.trim();
+    // 主语自带分隔：中英混排时「模型 glm-5.3不支持」少一个空格，读起来像
+    // 名字的一部分
+    let subject = if model.is_empty() {
+        "当前模型".to_string()
+    } else {
+        format!("模型 {model} ")
+    };
+    format!(
+        "{subject}不支持图片输入：请去掉消息里的图片改用纯文本，\
+         或在模型列表里换一个支持图片的模型（上游原文：{message}）"
+    )
 }
 
 /// 判一帧（已去掉 `data:` 前缀并解成 JSON 的载荷）是不是故障帧。
@@ -289,6 +362,67 @@ mod tests {
         )
         .expect("应当判成故障");
         assert_eq!("上游报告 E1：boom", only_decorations.message);
+    }
+
+    /// 2026-10-24 从真实上游响应里抓到的「模型不吃图片」信封（HTTP 200 的 SSE
+    /// 体），一字未改：`glm-5.3` / `kimi-k3` / `openpangu-2.0-flash` 三个纯文本
+    /// 模型各发一发带 `image_url` 的请求，逐字都是这一帧。
+    const NOT_MULTIMODAL_FRAME: &str = r#"{"error_code":"InferHub.001001020.406","error_msg":"The request model is not multimodal"}"#;
+
+    /// 这条错误要翻成人话，且**分类不变**（502 / Fatal）：它不是账号问题，
+    /// 换账号或冷却账号都是错的。
+    #[test]
+    fn a_not_multimodal_fault_becomes_an_actionable_message() {
+        let fault = stream_frame_fault(NOT_MULTIMODAL_FRAME).expect("这应当被认成故障帧");
+        assert_eq!("InferHub.001001020.406", fault.code);
+        assert_eq!(502, fault.status, "不是额度也不是限流：换账号解决不了");
+        assert!(is_not_multimodal(&fault.message), "判据要认得出来：{}", fault.message);
+
+        let humanized = humanize_fault_message(fault.message.clone(), "glm-5.3");
+        assert!(humanized.contains("glm-5.3"), "要说是哪个模型：{humanized}");
+        assert!(humanized.contains("图片"), "要说是图片的问题：{humanized}");
+        assert!(
+            humanized.contains("换一个支持图片的模型"),
+            "要说怎么办：{humanized}"
+        );
+        // 原文不能丢：上游码在本仓之外没有公开文档，是提工单的唯一凭据
+        assert!(humanized.contains("InferHub.001001020.406"), "要留得住上游原文：{humanized}");
+    }
+
+    /// 模型名取不到时退成「当前模型」，不能拼出一句缺主语的病句。
+    #[test]
+    fn an_unknown_model_name_still_reads_as_a_sentence() {
+        let humanized = humanize_fault_message("上游报告 InferHub.001001020.406：x".to_string(), "  ");
+        assert!(humanized.starts_with("当前模型不支持图片输入"), "{humanized}");
+    }
+
+    /// 反面对照：别的错误**逐字**透传，一个字都不许改。
+    ///
+    /// 这条是「翻译只在认得出时动手」的全部价值 —— 顺手给所有错误套一层
+    /// 「请稍后重试」会把额度、鉴权、体积这些各有处置的错误混成一句废话。
+    #[test]
+    fn unrelated_faults_pass_through_byte_for_byte() {
+        for original in [
+            "上游报告 InferHub.4291.200：insufficient quota",
+            "上游报告 InferHub.001001005.400：The request param is invalid, Please check it",
+            "CodeArts 上游返回 HTTP 413：{\"error_msg\":\"Request entity too large\"}",
+            "CodeArts 上游流正常结束但没有返回任何内容",
+        ] {
+            assert!(!is_not_multimodal(original), "{original} 不该被当成多模态错误");
+            assert_eq!(
+                original,
+                humanize_fault_message(original.to_string(), "glm-5.3"),
+                "认不出的错误必须原样透传"
+            );
+        }
+    }
+
+    /// 判据的第二个来路：上游偶尔直接把这条回成非 2xx 诊断体，判据也要认。
+    #[test]
+    fn the_marker_alone_is_enough_without_the_upstream_code() {
+        assert!(is_not_multimodal(
+            "CodeArts 上游返回 HTTP 400：{\"error_msg\":\"The request model is not multimodal\"}"
+        ));
     }
 
     #[test]

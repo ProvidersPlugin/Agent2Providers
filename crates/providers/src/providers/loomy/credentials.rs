@@ -8,25 +8,30 @@
 //!     没有 `auth.json` 那种稳定可读的文件形态 —— 因此不提供「导入桌面端
 //!     登录态」入口（与 Accio / ZCode 同一处境）。
 //!
-//! 临期判定用**登录时间 + 14 天**估算（上游不返回明确过期时刻），提前 1 天报临期。
+//! ── 到期时刻：**不估算，只认上游的拒绝** ─────────────────────
+//! 登录响应只有 `{session, userid, phone}`，没有到期时刻。曾经按「登录时刻 +
+//! 14 天」估一个 `expiresAt` 写进记录，界面上当成有效期展示 —— 结果是账号用满
+//! 两周就红着写「已过期」，而上游照常放行（实测：估算到期后仍能签到、能转发）。
+//! 估算值不是事实，所以现在**不再写、也不再展示**它。
+//!
+//! 真正的失效判据只有一个：上游回 `020002` / `100002`（或 HTTP 401/403）。
+//! 那时网关会把该账号标记成「需要重新登录」（`needsRelogin`），用户重新登录
+//! 成功后标记自动清掉。在此之前，session 一律按「可用」对待。
 //!
 //! ── 插件形态下的凭证 ────────────────────────────────────────
 //! 凭证不再是账号记录的顶层字段，而是 `ctx.store_get` 拿到的**不透明 JSON**
 //! （`secret`）：
 //! ```json
-//! { "session": "…", "userId": "…", "phone": "…", "expiresAt": 1760000000000 }
+//! { "session": "…", "userId": "…", "phone": "…", "addedAt": 1760000000000 }
 //! ```
 //! 形状由本模块自己定义、自己解释，网关不解析。
+//!
+//! 老记录上可能还留着历史估算的 `expiresAt`：本模块**读它但不据此判失效**
+//! （见 [`Credentials::from_secret`] 的说明），界面也不再展示它。
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{PluginCtx, StoreAccount};
 use serde_json::{json, Value};
-
-/// 会话有效期（登录请求里的 `expire`，单位秒 → 毫秒）
-pub const SESSION_TTL_MS: i64 = 14 * 24 * 3600 * 1000;
-
-/// 临期窗口：到期前 1 天提示重新登录（上游无续期，只能重登）
-pub const EXPIRY_MARGIN_MS: i64 = 24 * 3600 * 1000;
 
 /// 一条 Loomy 登录态。
 #[derive(Clone, Debug)]
@@ -41,15 +46,6 @@ pub struct Credentials {
     /// 手机号（同上）
     #[allow(dead_code)]
     pub phone: String,
-    /// 估算的过期时刻（毫秒；来自 `secret.expiresAt`，缺失时用 `addedAt + 14 天`）
-    pub expires_at: i64,
-}
-
-impl Credentials {
-    /// 是否已过期或进入临期窗口（上游无续期手段，这个判定只用于提示重登）
-    pub fn expiring(&self) -> bool {
-        self.expires_at > 0 && self.expires_at - EXPIRY_MARGIN_MS <= crate::http::now_ms()
-    }
 }
 
 /// 从一条取值链里挑第一个非空字符串（凭证可能被手工编辑过，宽容读取）
@@ -70,6 +66,10 @@ fn pick<'a>(record: &'a Value, keys: &[&str]) -> String {
 /// 从 `secret` 解析凭证（**唯一入口**）。
 ///
 /// 字段兼容：`session`（本插件落盘名）/ `accessToken` / `token`（粘贴形态）。
+///
+/// 记录上的 `expiresAt` **一律不读**：老记录里那份是历史估算值（登录时刻 +
+/// 14 天），不是上游给的事实，按它判失效会误杀仍然可用的账号。失效只认上游
+/// 的 `020002` / `100002`（见模块头）。
 pub fn from_secret(account: &StoreAccount) -> Result<Credentials, String> {
     let secret = &account.secret;
     let session = pick(secret, &["session", "accessToken", "token"]);
@@ -78,21 +78,11 @@ pub fn from_secret(account: &StoreAccount) -> Result<Credentials, String> {
     }
     let userid = pick(secret, &["userId", "userid", "user_id"]);
     let phone = pick(secret, &["phone"]);
-    let explicit_expiry = secret.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
-    let added_at = secret.get("addedAt").and_then(Value::as_i64).unwrap_or(0);
-    let expires_at = if explicit_expiry > 0 {
-        explicit_expiry
-    } else if added_at > 0 {
-        added_at + SESSION_TTL_MS
-    } else {
-        0
-    };
     Ok(Credentials {
         id: account.id.clone(),
         session,
         userid,
         phone,
-        expires_at,
     })
 }
 
@@ -210,7 +200,7 @@ pub async fn normalize(
             "session": session,
             "userId": user_id,
             "phone": phone,
-            "expiresAt": crate::http::now_ms() + SESSION_TTL_MS,
+            // 不写 `expiresAt`：上游不给到期时刻，估算值不是事实（见模块头）
             "addedAt": crate::http::now_ms(),
         }),
         public: json!({
@@ -250,6 +240,10 @@ pub fn identity_of(secret: &Value) -> String {
 }
 
 /// 账号的公开视图（凭证更新后刷新界面用）。
+///
+/// 不输出 `expiresAt`：老记录里那份是历史估算值（登录时刻 + 14 天），拿它当
+/// 有效期展示会让仍然可用的账号红着写「已过期」。失效由网关的 `needsRelogin`
+/// 表达（上游回 `020002` / `100002` 时才落，见模块头）。
 pub fn account_view(secret: &Value) -> Result<Value, String> {
     let session = pick(secret, &["session", "accessToken", "token"]);
     if session.is_empty() {
@@ -262,6 +256,5 @@ pub fn account_view(secret: &Value) -> Result<Value, String> {
         "uid": user_id,
         "phone": phone,
         "tokenTail": session_tail(&session),
-        "expiresAt": secret.get("expiresAt").cloned().unwrap_or(Value::Null),
     }))
 }

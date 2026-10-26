@@ -51,11 +51,29 @@ pub struct StoreAccount {
     pub secret: Value,
     /// 公开视图。
     pub public: Value,
+    /// 网关解析的账号代理；旧网关未提供时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<StoreProxy>,
+}
+
+/// 账号代理的运行时状态，不属于凭证快照。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum StoreProxy {
+    /// 账号未配置代理，保留提供商的默认出口语义。
+    Unset,
+    /// 网关已解析出的实际出口。
+    Resolved { proxy: proto::WireProxy },
+    /// 存量静态地址配置，由插件兼容解析。
+    Static { config: Value },
+    /// 账号配置了代理，但当前不可用。
+    Failed { message: String },
 }
 
 /// 插件侧的回调入口。
 ///
 /// 由 `serve()` 构造并传给每个方法；作者不应自己构造它。
+#[derive(Clone)]
 pub struct PluginCtx {
     /// 网关给的运行环境（`init` 时拿到）。
     pub env: proto::HostEnv,
@@ -161,6 +179,15 @@ impl PluginCtx {
     ) -> Result<(), StoreError> {
         let params = serde_json::json!({ "provider": provider, "key": key, "value": value });
         self.call.call(proto::methods::plugin::SETTINGS_SET, params).await?;
+        Ok(())
+    }
+
+    /// 通知网关重新同步该提供商的模型清单，不重新请求上游。
+    pub async fn notify_models_changed(&self, provider: &str, account: &str) -> Result<(), StoreError> {
+        self.call.call(proto::methods::plugin::NOTIFY, serde_json::json!({
+            "kind": "models_changed",
+            "payload": { "provider": provider, "account": account },
+        })).await?;
         Ok(())
     }
 

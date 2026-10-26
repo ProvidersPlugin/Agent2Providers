@@ -21,6 +21,7 @@
 
 use serde_json::{json, Value};
 
+#[cfg(any())]
 use crate::telemetry::RequestTelemetry;
 use crate::errors::GatewayError;
 
@@ -467,29 +468,49 @@ impl Aggregated {
     }
 }
 
+/// 流内故障 → 网关错误，顺带把「模型不吃图片」这类上游话术翻成人话。
+///
+/// ── 为什么包装一层而不是直接调 `fault_to_error` ──────────────
+/// 状态码与 `code` 的映射（403 额度 / 429 限流）属于 `stream_fault` 的既有
+/// 口径，不该在这里重复；这里只补**文案**那一层，且只在认得出「不支持多模态」
+/// 时动手（其余错误逐字透传，见 [`stream_fault::humanize_fault_message`]）。
+///
+/// `model` 是本次发出去的上游真名（取不到就传空串，文案里退成「当前模型」）。
+pub(super) fn fault_error(fault: &StreamFault, model: &str) -> GatewayError {
+    let error = stream_fault::fault_to_error(fault);
+    // 认不出这一类就整条原样返回：`with_status` 之外还挂着 `code`（额度/限流
+    // 那两张表），重建会把它们弄丢
+    if !stream_fault::is_not_multimodal(&error.message) {
+        return error;
+    }
+    let message = stream_fault::humanize_fault_message(error.message.clone(), model);
+    GatewayError { message, ..error }
+}
+
 /// 把一整段上游 SSE 体折叠成一条回答；同时把流内错误信封挖出来。
 ///
 /// 返回 `Err` 的两种情形都要与"成功但空"区分开：
 ///   * 流里带了错误信封 → 那个错误（**这是换账号的唯一触发点**）
 ///   * 流干净结束但一个字都没有 → `upstream_empty_response`（502）
 pub fn aggregate_sse(body: &[u8], fallback_model: &str) -> Result<Value, GatewayError> {
-    let text = String::from_utf8_lossy(body);
+    let mut events = crate::sse_events::EventDecoder::default();
     let mut aggregated = Aggregated::default();
     let mut seen_done = false;
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data == DONE_SENTINEL {
-            seen_done = true;
-            continue;
-        }
+    let mut error = None;
+    let mut consume = |data: &[u8]| {
+        if seen_done || error.is_some() { return true; }
+        if crate::sse_events::is_done(data) { seen_done = true; return true; }
+        let Ok(data) = std::str::from_utf8(data) else { return false };
         if let Some(fault) = stream_fault::stream_frame_fault(data) {
-            return Err(stream_fault::fault_to_error(&fault));
+            error = Some(fault_error(&fault, fallback_model));
+            return true;
         }
         merge_chunk(&mut aggregated, data);
-    }
+        false
+    };
+    events.feed(body, &mut consume);
+    events.finish(&mut consume);
+    if let Some(error) = error { return Err(error); }
     if !aggregated.has_content() {
         // 空回答是**失败**：不这样处理，跨账号降级链永远不会被触发
         return Err(GatewayError::with_status(
@@ -669,11 +690,16 @@ pub fn size_rejection_text(text: &str) -> Option<&'static str> {
 /// 参考实现踩过的坑：错误体不读就会让客户端只看到 `upstream returned HTTP 400:`
 /// 后面什么都没有；而读得太久又会把上游的 400 变成 502。所以读体有硬预算
 /// （8 KiB / 128 块 / 2 秒），并且**状态码用上游原值**。
+///
+/// `model` 只用于把「模型不吃图片」那条翻成人话（实测该错误走流内信封，
+/// 但上游偶尔也直接回 400 —— 两条路都要翻，见
+/// [`stream_fault::humanize_fault_message`]）。
 pub fn upstream_http_error(
     status: u16,
     body: &[u8],
     credential: &Credential,
     truncated: bool,
+    model: &str,
 ) -> GatewayError {
     let detail = redact::redact(&String::from_utf8_lossy(body), credential, truncated);
     let detail = detail.trim();
@@ -685,6 +711,7 @@ pub fn upstream_http_error(
     if truncated {
         message.push_str("（诊断体已截断）");
     }
+    message = stream_fault::humanize_fault_message(message, model);
     let error = GatewayError::with_status(i32::from(status), message);
     // 与 `stream_fault::fault_to_error` 同一张表：客户端里有一批是按 `code` 而不是
     // 状态码分支的（`insufficient_quota` 决定要不要停手重试）。参考实现也是这么分的
@@ -957,7 +984,7 @@ mod tests {
             "{{\"secret_access_key\":\"{}\",\"access_key_id\":\"{}\"}}",
             credential.secret_access_key, credential.access_key_id
         );
-        let error = upstream_http_error(400, body.as_bytes(), &credential, false);
+        let error = upstream_http_error(400, body.as_bytes(), &credential, false, "glm-5.3");
         assert_eq!(400, error.status_code, "上游的 400 不能被改成 502");
         assert!(!error.message.contains(&credential.secret_access_key), "诊断体必须脱敏");
         assert!(!error.message.contains(&credential.access_key_id));
@@ -969,7 +996,7 @@ mod tests {
 
     #[test]
     fn truncated_error_bodies_say_so() {
-        let error = upstream_http_error(500, b"{\"a\":", &credential(), true);
+        let error = upstream_http_error(500, b"{\"a\":", &credential(), true, "");
         assert!(error.message.contains("诊断体已截断"));
     }
 
@@ -1502,8 +1529,12 @@ const HEAD_BUFFER_LIMIT: usize = 64 * 1024;
 ///
 /// 上游这里已经是 OpenAI chunk 形状，所以拿到内容之后是**透传**，不做二次翻译
 /// （与 qoder/accio 不同，那两家的帧要重写）。
+///
+/// `model` 是本次发出去的上游真名，只用来把「这个模型不支持图片」这类错误
+/// 翻成人话（见 [`stream_fault::humanize_fault_message`]）—— 判定本身与它无关。
 pub async fn prefetch_head(
     response: reqwest::Response,
+    model: &str,
 ) -> Result<
     (
         Vec<u8>,
@@ -1512,56 +1543,31 @@ pub async fn prefetch_head(
     GatewayError,
 > {
     use futures::StreamExt;
-    let mut source = response.bytes_stream();
-    let mut seen: Vec<u8> = Vec::new();
-    let mut text = String::new();
+    let mut source = super::response_stream::ResponseStream::new(response);
+    let mut observer = super::response_stream::HeadObserver::default();
+    let mut seen = Vec::new();
     loop {
-        // 先看已缓冲的字节里有没有完整帧（一次 read 可能带来好几帧）
-        let frames: Vec<&str> = extract_data_lines(&text);
-        match head_verdict(frames.iter().copied()) {
-            HeadVerdict::Answered => {
-                let rest = source.map(|item| {
-                    item.map_err(|error| std::io::Error::other(crate::http::describe_chain(&error)))
-                });
-                // `seen` 里已经是"读到的全部字节"，直接交回 —— **不能再追加 text**
-                // （那样会把首包之前的内容整体重发一遍；客户端会看到重复的字）
-                return Ok((seen, Box::pin(rest)));
-            }
-            HeadVerdict::Fault(fault) => return Err(stream_fault::fault_to_error(&fault)),
-            HeadVerdict::Empty => {}
-        }
         match source.next().await {
             None => {
-                // 流结束仍没有内容：先对尾部再判一次（最后一帧可能没有换行结尾）
-                let frames: Vec<&str> = extract_data_lines(&text);
-                return match head_verdict(frames.iter().copied()) {
-                    HeadVerdict::Fault(fault) => Err(stream_fault::fault_to_error(&fault)),
-                    _ => Err(GatewayError::with_status(
-                        502,
-                        "CodeArts 上游流结束但未返回任何内容（空回答按失败处理，以便换账号重试）",
-                    )),
-                };
+                observer.finish();
+                observer.result(model)?;
+                return Ok((seen, Box::pin(source)));
             }
             Some(Err(error)) => {
-                return Err(GatewayError::with_status(
-                    502,
-                    format!("CodeArts 上游流中断：{}", crate::http::describe_chain(&error)),
-                ))
+                return Err(GatewayError::with_status(502, format!("CodeArts 上游流中断：{error}")));
             }
             Some(Ok(chunk)) => {
+                observer.feed(&chunk);
+                if !observer.ready() && seen.len().saturating_add(chunk.len()) > HEAD_BUFFER_LIMIT {
+                    return Err(GatewayError::with_status(502, format!(
+                        "CodeArts 上游在给出内容前已发送超过 {} KiB 的元数据（按失败处理，避免无界缓冲）",
+                        HEAD_BUFFER_LIMIT / 1024,
+                    )));
+                }
                 seen.extend_from_slice(&chunk);
-                text.push_str(&String::from_utf8_lossy(&chunk));
-                // 上游可以在「一个字都不答」的前提下无限发元数据（思考帧、心跳注释行、
-                // 或者干脆是坏掉的服务）。参考实现为此留了一条 64 KiB 的硬顶，
-                // 我第一版没搬 —— 于是首包门变成了一个**由上游决定大小**的缓冲区。
-                if seen.len() > HEAD_BUFFER_LIMIT {
-                    return Err(GatewayError::with_status(
-                        502,
-                        format!(
-                            "CodeArts 上游在给出内容前已发送超过 {} KiB 的元数据（按失败处理，避免无界缓冲）",
-                            HEAD_BUFFER_LIMIT / 1024
-                        ),
-                    ));
+                if observer.ready() {
+                    observer.result(model)?;
+                    return Ok((seen, Box::pin(source)));
                 }
             }
         }
@@ -1572,6 +1578,7 @@ pub async fn prefetch_head(
 ///
 /// 只认**成对换行结束**的帧，尾部没结束的那行留给下一次读 —— 否则会把半截 JSON
 /// 当成一帧，`head_verdict` 判成"无内容"从而漏发首包。
+#[cfg(any())]
 fn extract_data_lines(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for block in text.split("\n\n") {
@@ -1623,7 +1630,7 @@ mod head_gate_tests {
             "data: [DONE]\n\n",
         ));
         let url = mock_sse(body).await;
-        let (prefetched, mut rest) = match prefetch_head(open(&url).await).await {
+        let (prefetched, mut rest) = match prefetch_head(open(&url).await, "GLM-5.2").await {
             Ok(pair) => pair,
             Err(error) => panic!("有内容时应当放行，却报错：{}", error.message),
         };
@@ -1641,7 +1648,7 @@ mod head_gate_tests {
     async fn head_gate_turns_an_instream_quota_envelope_into_403() {
         let body = format!("data: {QUOTA_FRAME}\n\ndata: [DONE]\n\n");
         let url = mock_sse(body).await;
-        let error = match prefetch_head(open(&url).await).await {
+        let error = match prefetch_head(open(&url).await, "GLM-5.2").await {
             Err(error) => error,
             Ok(_) => panic!("额度信封必须判成失败，否则客户端会收到 200 空回答"),
         };
@@ -1651,7 +1658,7 @@ mod head_gate_tests {
     #[tokio::test]
     async fn head_gate_reports_a_clean_but_empty_stream_as_failure() {
         let url = mock_sse("data: [DONE]\n\n".to_string()).await;
-        let error = match prefetch_head(open(&url).await).await {
+        let error = match prefetch_head(open(&url).await, "GLM-5.2").await {
             Err(error) => error,
             Ok(_) => panic!("空回答必须当失败，否则永远不会换账号"),
         };
@@ -1778,11 +1785,13 @@ mod catalog_fixtures {
 ///     决定我们的内存占用；
 ///   · **绝不改写流**：本类型只消费副本，`push` 的返回值恒为 `()`（保留签名是为
 ///     了将来真要改写时看得出这里刻意没做）。
+#[cfg(any())]
 #[derive(Default)]
 pub struct UsageSniffer {
     pending: Vec<u8>,
 }
 
+#[cfg(any())]
 impl UsageSniffer {
     const MAX_LINE_BYTES: usize = 64 * 1024;
 
@@ -1830,6 +1839,7 @@ impl UsageSniffer {
 }
 
 /// 子串查找（手写而非引依赖：这里只找五个固定字节，`memchr` 那点收益不值得加一个 crate）。
+#[cfg(any())]
 fn contains_needle(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.len() >= needle.len()
         && haystack
@@ -1837,6 +1847,7 @@ fn contains_needle(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
+#[cfg(any())]
 fn find_byte(haystack: &[u8], byte: u8) -> Option<usize> {
     haystack.iter().position(|value| *value == byte)
 }

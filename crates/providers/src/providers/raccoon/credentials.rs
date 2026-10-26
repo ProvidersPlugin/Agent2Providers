@@ -686,8 +686,7 @@ async fn call_refresh_api(
 ///   2. 发现凭证已被换掉（用户重导入 / 换号 / 桌面端重新登录 / 另一轮刷新先落地）
 ///      → **不写**，改用当前最新快照（读不到就明确失败）—— 绝不把旧结果盖到
 ///      新凭证上，也绝不把旧结果当成这次请求的 token；
-///   3. 其它回写错误（权限、磁盘满…）→ 只记日志，仍返回刷新结果（刷新本身成功，
-///      回写失败不该让本次请求失败 —— 源实现同样只打一行 verbose）。
+///   3. 其它回写错误（权限、磁盘满…）→ 明确失败，不返回未保存的轮换令牌。
 async fn apply_refresh(
     ctx: &PluginCtx,
     previous: &RaccoonCredentials,
@@ -708,6 +707,10 @@ async fn apply_refresh(
             let Ok(record) = crate::store::record(ctx, super::ID, &next.id).await else {
                 return stale_or_latest(ctx, previous).await;
             };
+            if crate::store::pick(&record, &["accessToken"]) != previous.token
+                || crate::store::pick(&record, &["refreshToken"]) != previous.refresh_token {
+                return stale_or_latest(ctx, previous).await;
+            }
             let expect = secret_of(&record);
             let mut next_secret = crate::store::with_fields(
                 &expect,
@@ -747,11 +750,7 @@ async fn apply_refresh(
         Ok(true) => Ok(next.clone()),
         Ok(false) => stale_or_latest(ctx, previous).await,
         Err(reason) => {
-            logging::verbose(
-                "[Raccoon]",
-                &format!("账号 {} 刷新结果回写失败: {reason}", previous.id),
-            );
-            Ok(next.clone())
+            Err(GatewayError::with_status(502, format!("账号 {} 刷新结果回写失败: {reason}", previous.id)))
         }
     }
 }
@@ -768,15 +767,16 @@ async fn stale_or_latest(
             previous.id
         ),
     );
-    latest_credentials(ctx, previous).await.map_err(|error| {
+    let latest = latest_credentials(ctx, previous).await.map_err(|error| {
         GatewayError::with_status(
             error.status_code,
-            format!(
-                "{}（刷新结果已过期，且读取最新凭证失败：{}）",
-                STALE_REFRESH_MESSAGE, error.message
-            ),
+            format!("{}（刷新结果已过期，且读取最新凭证失败：{}）", STALE_REFRESH_MESSAGE, error.message),
         )
-    })
+    })?;
+    if latest.token == previous.token && latest.refresh_token == previous.refresh_token {
+        return Err(GatewayError::with_status(409, "小浣熊续期结果未能落盘，请重新登录该账号"));
+    }
+    Ok(latest)
 }
 
 /// 重新取当前凭证（比较写回判定过期后的兜底）。

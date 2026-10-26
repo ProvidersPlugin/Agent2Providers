@@ -120,14 +120,11 @@ pub(super) fn account_of(
     }
 }
 
-/// 账号公开视图（界面账号页读的那几个键，与网关
-/// `to_antigravity_public_account` 逐键对应）。
+/// Antigravity 专属的公开字段；账号 id 与 provider 由网关注入。
 pub(super) fn account_view(secret: &Value) -> Value {
     let refresh_token = crate::store::pick(secret, &["refreshToken", "refresh_token"]);
     let access_token = crate::store::pick(secret, &["accessToken", "access_token"]);
     let mut view = serde_json::json!({
-        "id": crate::store::pick(secret, &["id"]),
-        "provider": crate::store::pick(secret, &["provider"]),
         "name": crate::store::pick(secret, &["name"]),
         "userId": crate::store::pick(secret, &["userId", "email"]),
         "email": crate::store::pick(secret, &["email"]),

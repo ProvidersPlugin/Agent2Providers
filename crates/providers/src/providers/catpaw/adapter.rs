@@ -317,6 +317,10 @@ impl Provider for CatPawProvider {
     /// ── 401 之后**没有**刷新重试 ──────────────────────────────
     /// `refresh` 能力位是 false，所以网关那条「401 → 刷新重试」对本家必然不做 ——
     /// 拿一个必然失败的刷新去打上游只会把一条「凭证过期」变成两条。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             super::balance::query_usage(ctx, account)

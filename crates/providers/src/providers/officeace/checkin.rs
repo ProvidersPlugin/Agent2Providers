@@ -15,18 +15,17 @@ use agent2api_provider_sdk::PluginCtx;
 
 use crate::errors::GatewayError;
 
-use super::{credentials, subscription};
+use super::{control, subscription};
 
 /// 领今天的奖励积分（`billing::checkin_for` 的 `{success, msg}` 契约）。
 pub async fn claim_daily_checkin(
     ctx: &PluginCtx,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let record = super::record_of(ctx, account_id).await?;
-    let credential = credentials::from_record(Some(&record))?;
+    let mut credential = control::credential_of(ctx, account_id).await?;
     // 领之前记一份余额好算增量；读失败不阻断签到（只是少一个读数，不能因此判签到失败）
     let before = subscription::fetch_subscription(&credential).await.ok();
-    let after = subscription::claim_bonus(&credential).await?;
+    let after = control::claim_bonus(ctx, &mut credential).await?;
     // 签到与新手任务是同一个上游动作：签到成功即新手任务也已完成 —— 顺手把
     // 当天所有奖励记进新手任务台账，免得面板一直显示「未完成」（见 `onboarding`）。
     super::onboarding::mark_claimed(ctx, account_id, &subscription::bonuses_of(&after)).await;

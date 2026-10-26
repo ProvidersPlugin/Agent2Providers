@@ -44,6 +44,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件绝不 unwrap/expect/panic。
 
+mod accounts;
 mod balance;
 mod credentials;
 mod headers;
@@ -327,6 +328,10 @@ impl Provider for ClineProvider {
     /// 与另外几家同一分工：适配器只提供「怎么查」，401 之后的刷新重试由
     /// 网关的 `api::accounts::query_usage_inner` 统一处置（它调
     /// `token.refresh`）。本家 `refresh: true`，因此那条链路对它是有效的。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, self.provider_id(), account)
@@ -346,9 +351,8 @@ impl Provider for ClineProvider {
     ///   2. 过期时间：payload 显式给的优先，其次从 JWT 的 `exp` 推；
     ///   3. 身份 / 展示名：从 JWT 里解 email 与 `usr-…`（解不出就退到令牌摘要）。
     ///
-    /// 三种来源里只支持手填：本家没有可导入的凭证文件（文件导入要解析
-    /// `providers.json`，那条链路需要读客户端目录 —— 插件侧不做），
-    /// 也没有桌面端旁路。
+    /// 手填与文件导入共用凭证归一；文件接受 providers.json 和单账号 JSON。
+    /// 本机桌面端旁路仍不在这里启用。
     fn normalize_account<'a>(
         &'a self,
         _ctx: &'a PluginCtx,
@@ -364,12 +368,11 @@ impl Provider for ClineProvider {
                             .to_string(),
                     )
                 }
-                proto::NormalizeSource::FileText { .. }
-                | proto::NormalizeSource::FileBase64 { .. } => {
-                    return Err(
-                        "Cline 没有可导入的凭证文件，请粘贴 accessToken / refreshToken"
-                            .to_string(),
-                    )
+                proto::NormalizeSource::FileText { content, .. } => {
+                    return accounts::from_file(&content, input.name.as_deref());
+                }
+                proto::NormalizeSource::FileBase64 { .. } => {
+                    return Err("Cline 不支持二进制凭证文件，请选择 providers.json 或单账号 JSON 文件".to_string())
                 }
             };
             let access = crate::store::pick(&payload, &["accessToken", "access_token", "token"]);

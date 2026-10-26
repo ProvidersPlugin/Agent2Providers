@@ -397,7 +397,7 @@ pub async fn claim_daily_grant(
                 "toast": data.get("point_grant_toast").cloned().unwrap_or(Value::Null),
             })
         }
-        Err(error) => json!({ "popups": Value::Null, "toast": Value::Null, "error": error.message }),
+        Err(error) => return Err(error),
     };
 
     // ② 账单核对今日入账（慢接口独立超时；失败降级为 grantsError）。
@@ -447,6 +447,7 @@ pub async fn claim_daily_grant(
                 .unwrap_or_default();
             (grants, None)
         }
+        Err(error) if error.status_code == 401 => return Err(error),
         Err(error) => (Vec::new(), Some(error.message)),
     };
 
@@ -458,7 +459,7 @@ pub async fn claim_daily_grant(
         // 账单核对失败拿不到权威结果，不谎报成功
         msg_parts.push("未能核对今日入账".to_string());
     } else {
-        msg_parts.push("今日未见积分入账（可能已领取）".to_string());
+        msg_parts.push("今日未见积分入账，尚未确认领取".to_string());
     }
     if let Some(error) = grants_error.as_deref() {
         msg_parts.push(format!("账单核对失败：{error}"));

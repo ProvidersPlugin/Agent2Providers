@@ -1,23 +1,9 @@
-//! 账号级代理配置的解析（网关 `core::proxies::resolve_account_proxy` 的插件侧等价物）。
+//! 账号代理的插件侧解析：网关提供实际出口，旧网关回落到静态配置。
 //!
-//! ── 为什么需要这个 ──────────────────────────────────────────
-//! 账号记录里的 `proxy` 字段是**用户填的配置**（`{source, url}` 等形态），而
-//! 协议里的 `WireProxy` 是**已解析的出站代理**（protocol / host / port / 认证）。
-//! 搬来的家（Qoder / CodeArts）的 `account_proxy(record)` 读的是前者，因此
-//! 插件里要有一份「配置 → 出站」的翻译。
-//!
-//! ── 插件里只支持直连与静态地址（如实说明）─────────────────────
-//! 网关那份还认「跟随系统代理」「按请求轮询多条」「从代理池挑一条」这几种
-//! `source`。那几种要么需要网关的代理池状态（`proxy_rotate` 的游标），要么
-//! 需要读系统代理设置 —— 两者都是**网关的状态**，插件进程里没有。因此：
-//!   - `source` 是 `direct` / 缺省 / 空 → `None`（直连）；
-//!   - 给了可解析的 URL → `Resolved`；
-//!   - 其余（`system` / `rotate` / `pool`）→ `Failed`，文案说清「插件不支持，
-//!     请在账号上直接填代理 URL」。
-//!
-//! 这是**已知的能力差**，不是疏漏：要让插件支持轮询，得让网关把「这次该走
-//! 哪条」解析好放进请求（转发链路上它本来就在 `ConversationRequest.proxy`
-//! 里 —— 插件只是在「目录刷新 / 余额」这类旁路上自己读配置）。
+//! `store::record_of` 把网关解析结果投影到运行时 `proxy`，原始凭证与代理配置
+//! 留在快照里供条件更新。代理池 / Clash / 轮询只由网关解析，插件不读池状态。
+//! 没有网关解析结果时，兼容 URL 与协议 / 主机 / 端口两种静态形态；依赖网关
+//! 状态的来源仍如实报错。
 
 use serde_json::Value;
 
@@ -39,27 +25,85 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
     if config.is_null() {
         return None;
     }
+    if let Some(config) = config.get("config").filter(|value| value.is_object()) {
+        return resolve_account_proxy(Some(config));
+    }
     let Some(object) = config.as_object() else {
         return Some(ProxyResolution::Failed(
             "不支持的代理来源: undefined".to_string(),
         ));
     };
+    if let Some(message) = object
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(ProxyResolution::Failed(message.to_string()));
+    }
     let source = object
         .get("source")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("")
         .to_lowercase();
-    // 直连档：没有 source 或显式 direct
-    if source.is_empty() || source == "direct" {
+    if source == "direct" {
         return None;
     }
-    if matches!(source.as_str(), "system" | "rotate" | "pool") {
+    if matches!(source.as_str(), "system" | "rotate" | "pool" | "clash") {
         return Some(ProxyResolution::Failed(format!(
-            "插件不支持「{source}」代理来源（它依赖网关的代理池状态）：请在账号上直接填写代理地址"
+            "网关未提供「{source}」代理来源的实际出口，请更新网关与提供商插件"
         )));
     }
-    // 静态档：从配置里取 URL
+    if let Some(host) = object
+        .get("host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        let protocol = object
+            .get("protocol")
+            .and_then(Value::as_str)
+            .unwrap_or("http")
+            .trim()
+            .to_lowercase();
+        if !matches!(protocol.as_str(), "http" | "https" | "socks5" | "socks4") {
+            return Some(ProxyResolution::Failed(format!(
+                "不支持的代理协议: {protocol}"
+            )));
+        }
+        let port = match object.get("port") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let parsed = value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()));
+                let Some(port) = parsed
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port > 0)
+                else {
+                    return Some(ProxyResolution::Failed(
+                        "代理端口必须是 1-65535 的整数".to_string(),
+                    ));
+                };
+                Some(port)
+            }
+        };
+        return Some(ProxyResolution::Resolved(WireProxy {
+            protocol,
+            host: host.trim_matches(|ch| ch == '[' || ch == ']').to_string(),
+            port,
+            username: object
+                .get("username")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            password: object
+                .get("password")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        }));
+    }
     for key in ["url", "proxy", "address", "server"] {
         let candidate = object
             .get(key)
@@ -75,6 +119,9 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
                 "代理地址无法解析（{candidate}）：需要形如 http://host:port 或 socks5://host:port"
             ))),
         };
+    }
+    if source.is_empty() {
+        return None;
     }
     Some(ProxyResolution::Failed(format!(
         "代理配置缺少地址（source={source}）"

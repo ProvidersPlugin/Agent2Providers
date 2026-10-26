@@ -1,5 +1,5 @@
 //! Start Plan 的系统提示词、缓存断点和上下文前缀。
-//! 默认提示词分为三块；自定义正文替换默认体系，不能追加为第四块。
+//! 装配开启时固定三块，客户端系统正文合入第三块；关闭时保留客户端正文。
 
 use std::sync::OnceLock;
 
@@ -59,10 +59,6 @@ pub fn official_blocks_template() -> Option<GatewayBlocks> {
         stable: stable_joined(data),
         dynamic: [dynamic_before(data), environment_template(data), dynamic_after(data)].join("\n\n"),
     })
-}
-
-pub(super) fn has_custom_system(existing: Option<&Value>) -> bool {
-    custom_system_text(existing).is_some()
 }
 
 pub(super) fn apply_start_plan(
@@ -186,16 +182,15 @@ fn substitute(text: &str, values: &[(&'static str, String)]) -> String {
 
 fn system_blocks(texts: &GatewayBlocks, existing: Option<&Value>) -> Vec<Value> {
     let ephemeral = json!({ "type": "ephemeral" });
+    let mut dynamic = format!("\n\n{}", texts.dynamic);
     if let Some(custom) = custom_system_text(existing) {
-        return vec![
-            text_block(texts.identity.clone(), None),
-            text_block(format!("\n{custom}"), Some(ephemeral)),
-        ];
+        dynamic.push_str("\n\n");
+        dynamic.push_str(&custom);
     }
     vec![
-        text_block(texts.identity.clone(), None),
+        text_block(texts.identity.clone(), Some(ephemeral.clone())),
         text_block(texts.stable.clone(), Some(ephemeral.clone())),
-        text_block(format!("\n\n{}", texts.dynamic), Some(ephemeral)),
+        text_block(dynamic, Some(ephemeral)),
     ]
 }
 
@@ -212,7 +207,7 @@ fn user_system_blocks(existing: Option<&Value>) -> Vec<Value> {
         Value::String(text) => return if text.trim().is_empty() {
             Vec::new()
         } else {
-            vec![text_block(text.trim().to_string(), None)]
+            vec![text_block(text.clone(), None)]
         },
         Value::Array(items) => items,
         _ => return Vec::new(),
@@ -221,8 +216,8 @@ fn user_system_blocks(existing: Option<&Value>) -> Vec<Value> {
         let text = item.as_str().or_else(|| {
             (item.get("type").and_then(Value::as_str) == Some("text"))
                 .then(|| item.get("text").and_then(Value::as_str)).flatten()
-        })?.trim();
-        (!text.is_empty()).then(|| text_block(text.to_string(), None))
+        })?;
+        (!text.trim().is_empty()).then(|| text_block(text.to_string(), None))
     }).collect()
 }
 

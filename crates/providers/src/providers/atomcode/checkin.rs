@@ -102,9 +102,7 @@ pub fn classify_tier_response(payload: &Value) -> TierVerdict {
 
 /// 当前套餐是否**已经有效、不需要领取**。
 ///
-/// 判据与额度读数同源（`usage.rs` 的 `plan_of`）：`codingplan_free` 存在
-/// 且 `expires_at` 非空 —— 上游用「`expires_at` 为空」表达**待激活**，
-/// 那正是需要去领的状态。`remaining_days` 作为第二信号（同样由到期推出）。
+/// 到期时间可解析时以它为准；缺失或不可解析时只接受剩余天数大于零。
 pub fn active_plan_of(status: &Value) -> Option<(String, String, i64)> {
     let plan = status.get("codingplan_free")?;
     let name = plan
@@ -123,10 +121,14 @@ pub fn active_plan_of(status: &Value) -> Option<(String, String, i64)> {
         .get("remaining_days")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    if expires_at.is_empty() && remaining <= 0 {
-        return None;
-    }
-    Some((name, expires_at, remaining))
+    let expiry = chrono::DateTime::parse_from_rfc3339(&expires_at).ok()
+        .map(|time| time.timestamp_millis())
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(&expires_at, "%Y-%m-%d %H:%M:%S").ok()
+            .and_then(|time| chrono::FixedOffset::east_opt(8 * 3600)
+                .and_then(|zone| time.and_local_timezone(zone).single()))
+            .map(|time| time.timestamp_millis()));
+    let active = expiry.map(|expiry| expiry > crate::http::now_ms()).unwrap_or(remaining > 0);
+    active.then_some((name, expires_at, remaining))
 }
 
 /// 首个展示窗口的读数文案（`已用/上限 次，N 小时后重置`）。

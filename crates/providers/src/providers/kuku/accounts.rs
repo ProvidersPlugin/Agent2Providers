@@ -5,7 +5,7 @@
 //!   Manual{payload}     粘贴 Cookie（Cookie 头 / Cookie 编辑器 JSON / {BDUSS,STOKEN} 对象）
 //!   Desktop             实时读本机客户端 Cookies（%APPDATA%\baidugenflowpro\Network\Cookies）
 //!   FileBase64{content} 用户手选的 Cookies SQLite（另一台机器 / 备份），读完即删
-//!   FileText            不支持 —— Cookies 是二进制，明确回绝并指路 FileBase64
+//!   FileText            单账号 JSON 凭证快照；原生 Cookies 数据库仍走 FileBase64
 //! ```
 //! 三条路径的收尾一致：解析 → `enrich_identity` 真实校验（userreport 换会话
 //! 三件套 + `uk`）→ 落账号。**验证失败是错误**（添加时就要「现在真的能用」，
@@ -97,13 +97,15 @@ fn parse_source(source: proto::NormalizeSource) -> Result<Parsed, String> {
                 desktop: false,
             })
         }
-        proto::NormalizeSource::FileText { file_name, .. } => Err(format!(
-            "KukuAI 的桌面凭证是二进制的 Cookies 数据库，不能用文本导入{}（请用「文件导入」选 Cookies 文件）",
-            match file_name.as_deref().map(str::trim) {
-                Some(name) if !name.is_empty() => format!("（{name}）"),
-                _ => String::new(),
-            }
-        )),
+        proto::NormalizeSource::FileText { content, file_name } => {
+            let payload: Value = serde_json::from_str(&content).map_err(|_| with_file_name(
+                "KukuAI 凭证文件不是合法 JSON，请选择 Cookies 数据库或单账号 JSON 文件".to_string(),
+                file_name.as_deref(),
+            ))?;
+            let credential_payload = payload.get("accessToken").unwrap_or(&payload);
+            let credentials = credentials::credentials_from_payload(credential_payload)?;
+            Ok(Parsed { credentials, source: "file", desktop: false })
+        }
     }
 }
 

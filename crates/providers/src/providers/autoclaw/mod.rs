@@ -328,8 +328,7 @@ impl Provider for AutoClawProvider {
             let refreshed = refresh::ensure_fresh(&previous)
                 .await
                 .map_err(GatewayError::into_message)?;
-            persist_refresh(ctx, &previous, &refreshed).await;
-            Ok(refreshed.token)
+            persist_refresh(ctx, &previous, &refreshed).await.map_err(GatewayError::into_control_message)
         })
     }
 
@@ -345,8 +344,7 @@ impl Provider for AutoClawProvider {
             let refreshed = refresh::refresh(&previous, true)
                 .await
                 .map_err(GatewayError::into_message)?;
-            persist_refresh(ctx, &previous, &refreshed).await;
-            Ok(refreshed.token)
+            persist_refresh(ctx, &previous, &refreshed).await.map_err(GatewayError::into_control_message)
         })
     }
 
@@ -428,6 +426,10 @@ impl Provider for AutoClawProvider {
     ///
     /// 两条链路都在 userapi 域、都带那套 `X-Auth-Sign` 签名头 + Bearer，且源
     /// 实现是裸 fetch（不走账号代理）—— 与刷新接口同一取舍。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(self.region, ctx, account)
@@ -445,7 +447,7 @@ impl Provider for AutoClawProvider {
         Box::pin(async move {
             let claim = checkin::claim_daily_signin(ctx, self.region, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report_of(&claim))
         })
     }
@@ -648,27 +650,21 @@ async fn persist_refresh(
     ctx: &PluginCtx,
     previous: &AutoClawCredentials,
     refreshed: &AutoClawCredentials,
-) {
-    if refreshed.origin != CredentialOrigin::AccountStore {
-        return;
-    }
-    if refreshed.token == previous.token && refreshed.refresh_token == previous.refresh_token {
-        return;
+) -> Result<String, GatewayError> {
+    if refreshed.origin != CredentialOrigin::AccountStore
+        || (refreshed.token == previous.token && refreshed.refresh_token == previous.refresh_token) {
+        return Ok(refreshed.token.clone());
     }
     let account_id = refreshed.id.as_str();
-    let Ok(record) = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await
-    else {
-        return;
-    };
+    let record = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
     // 记录里必须仍是刷新前那份凭证，否则说明别处已经换过（不回写）
     let current_token = crate::store::pick(&record, &["token", "accessToken"]);
     let current_refresh = crate::store::pick(&record, &["refreshToken"]);
     if current_token != previous.token || current_refresh != previous.refresh_token {
-        logging::verbose(
-            "[AutoClaw]",
-            &format!("账号 {account_id} 的刷新结果已过期（凭证已被更换），未回写"),
-        );
-        return;
+        if current_token.is_empty() {
+            return Err(GatewayError::with_status(409, "AutoClaw 续期时账号凭据发生变化，请重新登录"));
+        }
+        return Ok(current_token);
     }
     let mut next = crate::store::secret_view(&record);
     let fields: Vec<(&str, Value)> = vec![
@@ -684,17 +680,15 @@ async fn persist_refresh(
         fields.push(("tokenExpiresAt", crate::json::json_number(expires_at)));
     }
     next = crate::store::with_fields(&next, &fields);
-    match crate::store::save(ctx, account_id, &crate::store::secret_view(&record), &next).await {
-        Ok(true) => {}
-        Ok(false) => logging::verbose(
-            "[AutoClaw]",
-            &format!("账号 {account_id} 的刷新结果未写入（记录已变，本次仍用新令牌）"),
-        ),
-        Err(error) => logging::verbose(
-            "[AutoClaw]",
-            &format!("账号 {account_id} 刷新结果回写失败: {}", error.message),
-        ),
+    if crate::store::save(ctx, account_id, &crate::store::secret_view(&record), &next).await? {
+        return Ok(refreshed.token.clone());
     }
+    let latest = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
+    let token = crate::store::pick(&latest, &["token", "accessToken"]);
+    if token.is_empty() || token == previous.token {
+        return Err(GatewayError::with_status(409, "AutoClaw 续期结果未能落盘，请重新登录该账号"));
+    }
+    Ok(token)
 }
 
 // ─── 请求头 ────────────────────────────────────────────────────

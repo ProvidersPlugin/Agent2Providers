@@ -388,6 +388,10 @@ impl Provider for AccioProvider {
     }
 
     /// 查额度 / 订阅（`balance.rs`）。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query(ctx, account, self.region)

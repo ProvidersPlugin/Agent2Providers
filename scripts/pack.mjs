@@ -146,6 +146,10 @@ function collectUi(manifest) {
     seen.add(dir)
     files.push(...collectDir('ui', `ui/${dir}`))
   }
+  const documentation = join(PLUGIN_DIR, 'ui', 'provider-docs.json')
+  if (existsSync(documentation) && statSync(documentation).isFile()) {
+    files.push({ name: 'ui/provider-docs.json', data: readFileSync(documentation), executable: false })
+  }
   return files
 }
 

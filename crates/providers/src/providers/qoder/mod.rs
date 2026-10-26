@@ -347,6 +347,10 @@ impl Provider for QoderProvider {
         })
     }
 
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query(ctx, self.region, account)
@@ -457,8 +461,24 @@ impl Provider for QoderProvider {
         Box::pin(async move {
             let value = checkin::claim_daily_checkin(ctx, self.region, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report(&value))
+        })
+    }
+
+    fn checkin_with_options<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        _manual: bool,
+    ) -> SendFuture<'a, agent2api_provider_sdk::CheckinResult> {
+        Box::pin(async move {
+            let value = checkin::claim_daily_checkin(ctx, self.region, account).await
+                .map_err(GatewayError::into_control_message)?;
+            Ok(agent2api_provider_sdk::CheckinResult {
+                report: checkin_report(&value),
+                retry_at: value.get("retryAt").and_then(Value::as_i64),
+            })
         })
     }
 
@@ -785,39 +805,22 @@ async fn run_conversation_inner(
     }
 }
 
-/// `{success, msg}` → `CheckinReport`（与 kuku 的翻译同一口径）。
 fn checkin_report(value: &Value) -> proto::CheckinReport {
-    let success = value
-        .get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let message = value
-        .get("msg")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    if success {
-        proto::CheckinReport {
-            outcome: proto::CheckinOutcome::Claimed,
-            credit: None,
-            streak: None,
-            message: Some(if message.is_empty() {
-                "签到成功".to_string()
-            } else {
-                message
-            }),
-        }
+    let outcome = if value.get("alreadyCompleted").and_then(Value::as_bool) == Some(true) {
+        proto::CheckinOutcome::Done
+    } else if value.get("success").and_then(Value::as_bool) == Some(true) {
+        proto::CheckinOutcome::Claimed
+    } else if value.get("outcome").and_then(Value::as_str) == Some("inactive") {
+        proto::CheckinOutcome::Inactive
     } else {
-        proto::CheckinReport {
-            outcome: proto::CheckinOutcome::Failed,
-            credit: None,
-            streak: None,
-            message: Some(if message.is_empty() {
-                "签到失败（上游未给出原因）".to_string()
-            } else {
-                message
-            }),
-        }
+        proto::CheckinOutcome::Failed
+    };
+    proto::CheckinReport {
+        outcome,
+        credit: value.get("rewardPoints").and_then(Value::as_f64)
+            .filter(|points| *points > 0.0).map(|points| format!("{points} credits")),
+        streak: None,
+        message: value.get("msg").and_then(Value::as_str).map(str::to_string),
     }
 }
 

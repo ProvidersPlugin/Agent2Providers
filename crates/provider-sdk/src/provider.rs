@@ -305,6 +305,34 @@ pub trait Provider: Send + Sync + 'static {
         })
     }
 
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    fn supports_image_editing(&self) -> bool {
+        false
+    }
+
+    fn build_image_edit<'a>(
+        &'a self,
+        _ctx: &'a crate::ctx::PluginCtx,
+        _req: crate::images::ImageRequest,
+    ) -> SendFuture<'a, crate::images::ImagePlan> {
+        Box::pin(async move {
+            Err(unsupported(format!("{} 尚未接入图片编辑", self.provider_id())))
+        })
+    }
+
+    fn build_image<'a>(
+        &'a self,
+        _ctx: &'a crate::ctx::PluginCtx,
+        _req: crate::images::ImageRequest,
+    ) -> SendFuture<'a, crate::images::ImagePlan> {
+        Box::pin(async move {
+            Err(unsupported(format!("{} 尚未接入图片生成", self.provider_id())))
+        })
+    }
+
     /// 执行一次有状态转发。
     ///
     /// 默认返回错误（同上）。申报了 `capabilities.stateful` 的家必须实现。
@@ -340,9 +368,26 @@ pub trait Provider: Send + Sync + 'static {
         (Vec::new(), Vec::new())
     }
 
-    /// 可退避重试的建议。
+    /// 可退避重试的建议；None 表示没有专属建议，允许网关使用通用规则。
     fn retry_advice(&self, _body: &Value, _attempt: usize, _budget: usize) -> Option<proto::RetryAdvice> {
         None
+    }
+
+    /// 可选的重试决定；Stop 终止本次请求，不再重发或换账号。
+    fn retry_decision(
+        &self,
+        _status: u16,
+        body: &Value,
+        attempt: usize,
+        budget: usize,
+    ) -> crate::retry::RetryDecision {
+        match self.retry_advice(body, attempt, budget) {
+            Some(advice) => crate::retry::RetryDecision::Retry {
+                delay_ms: advice.delay_ms,
+                reason: advice.reason,
+            },
+            None => crate::retry::RetryDecision::Default,
+        }
     }
 
     /// 思考档位翻译（默认不注入）。
@@ -436,6 +481,11 @@ pub trait Provider: Send + Sync + 'static {
         Box::pin(async { Err("该提供商没有实现余额查询".to_string()) })
     }
 
+    /// 额度来源声明：只返回可核实的上游读数，旧宿主会忽略新增 JSON 字段。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        report.get("quotaSources").and_then(Value::as_array).cloned().unwrap_or_default()
+    }
+
     /// 每日签到。
     fn checkin<'a>(
         &'a self,
@@ -443,6 +493,16 @@ pub trait Provider: Send + Sync + 'static {
         _account: &'a str,
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(async { Err("该提供商没有实现签到".to_string()) })
+    }
+
+    /// 旧宿主未传 manual 时按自动签到处理，保留各家的无人值守写请求限制。
+    fn checkin_with_options<'a>(
+        &'a self,
+        ctx: &'a crate::ctx::PluginCtx,
+        account: &'a str,
+        _manual: bool,
+    ) -> SendFuture<'a, crate::CheckinResult> {
+        Box::pin(async move { self.checkin(ctx, account).await.map(Into::into) })
     }
 
     /// 领取类活动。

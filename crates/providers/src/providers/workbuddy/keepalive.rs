@@ -119,6 +119,10 @@ pub async fn run(
         let (poke_succeeded, poke_model) = poke_daily_activity(&session, &models).await;
         let web = create_web_conversation(&session, &models).await;
         let web_ok = web.get("succeeded").and_then(Value::as_bool) == Some(true);
+        if web.get("status").and_then(Value::as_i64) == Some(401)
+            || (report.get("status").and_then(Value::as_i64) == Some(401) && !web_ok && !poke_succeeded) {
+            return Err(GatewayError::with_status(401, "WorkBuddy 国际版保活登录态已失效"));
+        }
         if !poke_succeeded && !web_ok {
             logging::verbose("[Checkin]", "WorkBuddy 国际版免费模型与网页会话保活均未成功");
         }
@@ -187,6 +191,7 @@ pub async fn run(
                 normalize_activity_status(&call),
             )
         }
+        Err(error) if error.status_code == 401 => return Err(error),
         Err(error) => {
             logging::verbose(
                 "[Checkin]",
@@ -222,6 +227,7 @@ pub async fn run(
     } else if active {
         match billing_call(&session, "POST", "/v2/billing/meter/daily-checkin", None, false).await {
             Ok(call) => normalize_daily_claim(&call),
+            Err(error) if error.status_code == 401 => return Err(error),
             Err(error) => {
                 logging::verbose(
                     "[Checkin]",
@@ -257,6 +263,11 @@ pub async fn run(
         (Value::Null, Value::Null, Value::Null)
     };
     let web_ok = web.get("succeeded").and_then(Value::as_bool) == Some(true);
+    if web.get("status").and_then(Value::as_i64) == Some(401)
+        || (report.get("status").and_then(Value::as_i64) == Some(401)
+            && !claim_succeeded && !today_checked_in && !web_ok) {
+        return Err(GatewayError::with_status(401, "WorkBuddy 国际版活跃登录态已失效"));
+    }
 
     // 领取没有明确的成功/已领读数时，msg 给出这一轮**实际发生**的事。
     // 能走到这里的分支必然 !active：只写「已完成活跃上报」会让人以为积分
@@ -536,6 +547,7 @@ async fn report_activity(session: &Value) -> Value {
         .unwrap_or_default();
     json!({
         "succeeded": succeeded,
+        "status": result.as_ref().err().map(|error| error.status_code),
         "streakDays": streak_days.map(Value::from).unwrap_or(Value::Null),
         "msg": if succeeded {
             format!("活跃上报成功{streak_text}")
@@ -730,6 +742,9 @@ async fn create_web_conversation(session: &Value, models: &[String]) -> Value {
                 continue;
             }
         };
+        if response.status == 401 || response.status == 403 {
+            return json!({ "succeeded": false, "status": 401, "msg": "WorkBuddy 国际版网页登录态已失效" });
+        }
         if !response.is_success() {
             logging::verbose(
                 "[Checkin]",

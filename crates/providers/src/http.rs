@@ -38,6 +38,11 @@ fn cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn stream_cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// 取一个客户端：账号级代理优先，其次网关默认出口，都没有就直连。
 ///
 /// `gateway_proxy` 传 `ctx.env.proxy`（`""` = 直连，`"direct"` = 显式直连，
@@ -48,30 +53,45 @@ fn cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
 /// 客户端 —— 与网关侧 `ProxyResolution` 的第三态同一条口径：可用性优先，
 /// 「代理配错了」不该让整条链路不可用。
 pub fn client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
+    cached_client(proxy, gateway_proxy, false)
+}
+
+/// 长响应按连接与读取空闲设限，不使用覆盖整个响应体的固定总时限。
+pub fn stream_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
+    cached_client(proxy, gateway_proxy, true)
+}
+
+fn cached_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str, stream: bool) -> reqwest::Client {
+    let cache = if stream { stream_cache() } else { cache() };
     let key = match proxy {
         Some(proxy) => proxy.to_url(),
         None => gateway_proxy.trim().to_string(),
     };
-    if let Ok(guard) = cache().lock() {
+    if let Ok(guard) = cache.lock() {
         if let Some(client) = guard.get(&key) {
             return client.clone();
         }
     }
-    let built = build(&key);
-    if let Ok(mut guard) = cache().lock() {
+    let built = build(&key, stream);
+    if let Ok(mut guard) = cache.lock() {
         guard.insert(key, built.clone());
     }
     built
 }
 
 /// 建一个客户端（代理 URL 为空 / `direct` = 直连）。
-fn build(proxy_url: &str) -> reqwest::Client {
+fn build(proxy_url: &str, stream: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         // 与网关同一条栈：rustls，不依赖系统 openssl
         .use_rustls_tls()
-        // 控制面的默认超时；流式请求由调用方用 `.timeout()` 覆盖
-        .timeout(CONTROL_TIMEOUT)
         .user_agent(DEFAULT_USER_AGENT);
+    builder = if stream {
+        let timeouts = crate::timeouts::current();
+        builder.connect_timeout(Duration::from_millis(timeouts.connect_ms()))
+            .read_timeout(Duration::from_millis(timeouts.stream_idle_ms()))
+    } else {
+        builder.timeout(CONTROL_TIMEOUT)
+    };
     let trimmed = proxy_url.trim();
     if trimmed.is_empty() || trimmed == "direct" {
         // ── `no_proxy()` 为什么必须显式调 ──────────────────────────

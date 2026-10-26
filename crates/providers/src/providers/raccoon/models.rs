@@ -196,10 +196,13 @@ pub fn list() -> proto::ModelList {
 /// 清单本体（`list()` 的内层，便于别处只要数组时不必拆 `ModelList`）。
 pub fn raw_list() -> Vec<Value> {
     let state = read_state();
-    if state.models.is_empty() {
-        return fallback_models().iter().map(listing_entry).collect();
-    }
-    state.models.iter().map(listing_entry).collect()
+    let mut models: Vec<Value> = if state.models.is_empty() {
+        fallback_models().iter().map(listing_entry).collect()
+    } else {
+        state.models.iter().map(listing_entry).collect()
+    };
+    models.push(super::image_generation::model());
+    models
 }
 
 /// 源形态 → 聚合层的条目形态（键名映射；见模块头）。

@@ -389,8 +389,13 @@ fn map_entry(id: &str, info: &Value) -> Option<Value> {
     let mut item = Map::new();
     item.insert("id".to_string(), Value::String(id.to_string()));
     item.insert("name".to_string(), Value::String(display_name.to_string()));
-    // 工具调用是本家 wire 协议的一等公民（`request.tools`，规格 §3.3）→ true
-    item.insert("supportsToolCall".to_string(), Value::Bool(true));
+    let image_generation = super::image_generation::is_image_model(id);
+    if image_generation {
+        item.insert("kind".to_string(), Value::String("image".to_string()));
+        item.insert("output_modalities".to_string(), serde_json::json!(["image"]));
+        item.insert("supports_image_editing".to_string(), Value::Bool(true));
+    }
+    item.insert("supportsToolCall".to_string(), Value::Bool(!image_generation));
     // 输入图片：目录有 `supportsImages` 就照它；没有（内置兜底 / 字段缺失）按
     // Gemini 家族的多模态能力给 true（规格 §4.3 的 `inlineData` 就是它）。
     // 视频位**没有依据**，一律 false（报错方向只能选「少报」）。
@@ -412,7 +417,7 @@ fn map_entry(id: &str, info: &Value) -> Option<Value> {
     item.insert(
         "isDefault".to_string(),
         Value::Bool(
-            info.get("recommended")
+            !image_generation && info.get("recommended")
                 .and_then(Value::as_bool)
                 .unwrap_or_else(|| fallback_is_default(id)),
         ),

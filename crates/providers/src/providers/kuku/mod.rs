@@ -271,6 +271,10 @@ impl Provider for KukuProvider {
     ///
     /// 与 CatPaw 不同，KukuAI **没有独立查询凭证** —— 转发用的三个 Cookie
     /// 直接能查，因此每个账号都能查到。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, account)
@@ -342,19 +346,7 @@ impl Provider for KukuProvider {
     }
 }
 
-/// `{success, msg}` → `CheckinReport`。
-///
-/// ── 为什么要翻译（而不是直接回 Value）──────────────────────
-/// 插件协议的 `checkin.claim` 返回的是**六档 outcome**（`Claimed` / `Done` /
-/// `Ineligible` / `Inactive` / `Captcha` / `Failed`），网关据此决定「今天的
-/// 记录写成已领 / 不适用 / 需人工」。kuku 的 `{success, msg}` 只有两档，
-/// 所以：`success=true` → `Claimed`（新领到或今天已领都算成功，网关的记录
-/// 文案两者都写「已领」）；`success=false` → `Failed{message}`。
-///
-/// 「今天已经领过」在 kuku 的返回里是 `success=true` + 文案带「已领取」——
-/// 归 `Claimed` 而不是 `Done` 是有意的：网关对 `Done` 的处置与 `Claimed`
-/// 相同（都记「已领」），但 `Claimed` 的文案会带上游原话，用户能看到
-/// 「今日已领取」这种更准确的说明。
+/// 任务接口的明确结果映射为 Claimed / Done / Inactive / Failed。
 fn checkin_report(value: &Value) -> proto::CheckinReport {
     let success = value
         .get("success")
@@ -378,7 +370,13 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
         }
     } else {
         proto::CheckinReport {
-            outcome: proto::CheckinOutcome::Failed,
+            outcome: if value.get("alreadyCompleted").and_then(Value::as_bool) == Some(true) {
+                proto::CheckinOutcome::Done
+            } else if value.get("outcome").and_then(Value::as_str) == Some("inactive") {
+                proto::CheckinOutcome::Inactive
+            } else {
+                proto::CheckinOutcome::Failed
+            },
             credit: None,
             streak: None,
             message: Some(if message.is_empty() {

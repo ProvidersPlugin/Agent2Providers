@@ -783,6 +783,7 @@ fn merge_monitor_windows(billing: Value, windows: Value) -> Value {
     if !monitor_view.is_null() {
         object.insert("availableView".to_string(), monitor_view);
     }
+    object.insert("quotaMonitorRaw".to_string(), windows.get("raw").cloned().unwrap_or(Value::Null));
     object.insert(
         "walletsFrom".to_string(),
         Value::String("monitor".to_string()),

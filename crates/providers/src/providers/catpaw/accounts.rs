@@ -4,7 +4,8 @@
 //! ```text
 //!   Manual{payload}  三种形态都认（见下）
 //!   Desktop          导入本机登录态（~/.meituan-catpaw/auth.json）
-//!   FileText/Base64  不支持（凭证是登录态 JSON，粘贴即可，不必走文件）
+//!   FileText        官方 auth.json 或扁平单账号 JSON，解析后复用 Manual 校验
+//!   FileBase64      不支持二进制凭证文件
 //! ```
 //! 网页登录是另一条链（`login.rs` 的双通道 → 同一个 [`account_of`]）。
 //!
@@ -33,7 +34,6 @@ use serde_json::{Map, Value};
 use agent2api_provider_protocol as proto;
 
 use super::credentials::DESKTOP_ACCOUNT_ID;
-use super::PROVIDER_ID;
 
 /// 备注名长度上限（原项目 `name.trim().slice(0, 100)`）
 const MAX_NAME_LENGTH: usize = 100;
@@ -50,7 +50,7 @@ const BALANCE_TOKEN_FIELD: &str = "balanceToken";
 /// 添加账号入口。
 ///
 /// ── 为什么是同步的 ──────────────────────────────────────────
-/// CatPaw 的三条来源都不出网（粘贴 / 桌面端文件 / 文件导入拒绝），所以归一化
+/// CatPaw 的三条来源都不出网（粘贴 / 桌面端文件 / 文件导入），所以归一化
 /// 本身没有 await 点。做成同步让 `login_poll` 能在**持锁的闭包里**直接调用
 /// （那里拿不到 `PluginCtx` 也无法 await），adapter 的 trait 方法再包一层 async。
 pub(super) fn normalize(
@@ -62,11 +62,12 @@ pub(super) fn normalize(
             // 桌面端：记录里**不落 token**（每次实时读 auth.json），只写引用与展示字段。
             return desktop_account();
         }
-        proto::NormalizeSource::FileText { .. } | proto::NormalizeSource::FileBase64 { .. } => {
-            return Err(
-                "CatPaw 没有可导入的凭证文件（凭证是登录态 JSON），请直接粘贴内容添加"
-                    .to_string(),
-            )
+        proto::NormalizeSource::FileText { content, .. } => {
+            serde_json::from_str::<Value>(&content)
+                .map_err(|_| "CatPaw 凭证文件不是合法 JSON，请选择 auth.json 或单账号 JSON 文件".to_string())?
+        }
+        proto::NormalizeSource::FileBase64 { .. } => {
+            return Err("CatPaw 不支持二进制凭证文件，请选择 auth.json 或单账号 JSON 文件".to_string())
         }
     };
     let object = payload
@@ -300,8 +301,6 @@ pub(super) fn account_view(secret: &Value) -> Value {
         }
     }
     let mut view = serde_json::json!({
-        "id": crate::store::pick(secret, &["id"]),
-        "provider": PROVIDER_ID,
         "name": crate::store::pick(secret, &["name"]),
         "uid": uid,
         "loginName": login_name,

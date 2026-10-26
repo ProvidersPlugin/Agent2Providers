@@ -155,6 +155,7 @@ pub fn shape_usage(payload: &Value) -> Value {
             };
             let mut wallet = json!({
                 "type": "rolling_window",
+                "windowHours": window.hours,
                 "displayName": label,
                 "balance": remaining,
                 "remaining": remaining,

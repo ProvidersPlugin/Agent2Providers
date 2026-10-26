@@ -3,7 +3,7 @@
   "name": "提供商增强",
   "description": "为 Agent2API 扩展多家 AI 提供商，提供模型调用、账号登录与导入、凭证续期、模型目录、余额查询和签到等能力。具体功能以各提供商的支持情况为准。",
   "license": "AGPL-3.0",
-  "version": "0.2.2-beta.2",
+  "version": "3.3.0-beta.4",
   "protocol": 1,
   "providers": [
     {
@@ -58,12 +58,6 @@
       "id": "atomcode",
       "label": "AtomCode",
       "order": 8,
-      "default_enabled": true
-    },
-    {
-      "id": "chatglm",
-      "label": "智谱清言",
-      "order": 9,
       "default_enabled": true
     },
     {

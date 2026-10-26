@@ -447,8 +447,9 @@ pub async fn refresh(
     let next_refresh = payload
         .get("refresh_token")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(refresh_token)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "续期响应缺少新的 refresh_token，旧令牌可能已被消费，请重新登录授权".to_string())?
         .to_string();
     Ok((
         SigningCredential {

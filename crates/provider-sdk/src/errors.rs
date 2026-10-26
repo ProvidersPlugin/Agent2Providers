@@ -42,6 +42,13 @@ pub fn control_error(
     }
 }
 
+pub(crate) fn is_unauthorized(message: &str) -> bool {
+    message.strip_prefix(CONTROL_ERROR_PREFIX)
+        .and_then(|payload| serde_json::from_str::<ControlError>(payload).ok())
+        .is_some_and(|error| error.metadata.status == 401
+            && error.metadata.code.as_deref() != Some("checkin_auth_retry_exhausted"))
+}
+
 pub(crate) fn split_control_error(message: &str) -> Option<proto::WireError> {
     let payload = message.strip_prefix(CONTROL_ERROR_PREFIX)?;
     let error: ControlError = serde_json::from_str(payload).ok()?;

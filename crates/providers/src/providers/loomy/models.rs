@@ -135,14 +135,24 @@ fn map_entry(row: &Value) -> Option<Value> {
         .unwrap_or(id);
     let (name, rate) = split_rate_suffix(raw_name);
     let caps = row.get("capabilities").and_then(Value::as_object);
-    let tool_call = caps_bool(caps, "function_calling") || caps.is_none();
-    let reasoning = caps_bool(caps, "reasoning") || is_reasoning_model(id);
+    let image_generation = row.get("type").and_then(Value::as_str) == Some("image")
+        || row.get("output_modalities").or_else(|| row.pointer("/capabilities/output_modalities"))
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")));
+    let tool_call = !image_generation && (caps_bool(caps, "function_calling") || caps.is_none());
+    let reasoning = !image_generation && (caps_bool(caps, "reasoning") || is_reasoning_model(id));
     let mut item = json!({
         "id": id,
         "name": name,
         "supportsToolCall": tool_call,
         "supportsReasoning": reasoning,
     });
+    if image_generation {
+        item["kind"] = json!("image");
+        item["output_modalities"] = json!(["image"]);
+        item["supports_image_editing"] = json!(true);
+        item["isDefault"] = json!(false);
+    }
     if caps_bool(caps, "vision") || caps_modal(caps, "image") {
         if let Some(object) = item.as_object_mut() {
             object.insert("supportsImages".to_string(), Value::Bool(true));

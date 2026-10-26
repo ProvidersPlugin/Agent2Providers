@@ -252,6 +252,30 @@ impl Provider for AntigravityProvider {
         })
     }
 
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    fn build_image_edit<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(super::image_generation::build_edit(ctx, req))
+    }
+
+    fn build_image<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(super::image_generation::build(ctx, req))
+    }
+
     /// 上游错误分类（规格 §7 的映射表 + 本仓的四档口径）。
     ///
     /// ── 判据为什么先看文案再看状态码 ────────────────────────────
@@ -521,6 +545,10 @@ impl Provider for AntigravityProvider {
     /// 与模型目录里的每模型 `quota` 键不是一回事：那是**目录侧**的单模型读数
     /// （随 `fetchAvailableModels` 进缓存），这里是**账号级**的窗口额度 ——
     /// 两者并存，互不替代。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             balance::query_usage(ctx, account)

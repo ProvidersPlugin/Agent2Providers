@@ -5,11 +5,25 @@
 //! 标准 OpenAI `{data:[{id, object, created, owned_by}]}`。**只要网关 Basic
 //! 凭据**，不需要控制面签名（那套只服务额度/签到）。
 //!
-//! ── 实测口径：目录 ≠ 可用 ────────────────────────────────────
+//! ── 实测口径：目录 ≠ 可用，而且目录 ≠ 官方展示 ─────────────────
 //! officeace2api 实测：上游目录 34 个名，两个号实际只有 11 个能用，其余回
-//! `81004`（没权限）/ `81009`（名字不认）。所以**目录照收**，把「哪些真能用」
-//! 交给上游在转发时报错（它的 `model_not_available` 分类），本模块不猜、
-//! 也不自作主张过滤 —— 过滤错了会把用户能用的模型挡在门外。
+//! `81004`（没权限）/ `81009`（名字不认）。
+//!
+//! 但比「可用性」更要紧的一层是**官方客户端到底列哪些**：OfficeAce 桌面端
+//! 把 `/v2/models` 的完整目录按一张硬编码白名单收窄后才渲染（依据见
+//! [`OFFICIAL_WHITELIST`]）。实测这条通道上目录有 26 条、官方界面只列 5~6 条
+//! —— 差额全是 `kimi-k3-test-1009` / `glm-5.2-zx` / `openpangu-2.0-pro` /
+//! `deepseek-v4.1-flash-bnt` 这类内部灰度名。
+//!
+//! 本模块**按官方白名单收窄**（[`apply_whitelist`]）。这与「目录照收」是相反
+//! 的取舍，理由：用户看到的是「这家官方客户端能用的模型」，把上游的内部实验
+//! 名一并广告出去只会让人逐个试错（本仓的 `Fatal` 分类不换家，一次点名到无
+//! 权限模型就直接把上游错误透传给客户端）。白名单之外的名字**仍然点名可用**
+//! —— 过滤只作用于清单，不改转发闸门。
+//!
+//! 白名单的代价是**要跟着上游改**：官方客户端每次发版都可能增删这几个名字。
+//! 因此留了一条兜底：白名单一条都匹配不上时回落到完整目录并留痕（见
+//! [`apply_whitelist`]）—— 上游整体换血时宁可多列几个，也不能把清单清空。
 //!
 //! ── 缓存 ────────────────────────────────────────────────────
 //! **只有进程内一格**（10 分钟 TTL，手动「刷新模型清单」时 `force = true` 绕过）。
@@ -21,6 +35,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use agent2api_provider_sdk::PluginCtx;
 use serde_json::{Value, json};
 
 use crate::http::send_raw;
@@ -185,6 +200,114 @@ fn credits_text(rate: f64) -> String {
     format!("x{plain} credits")
 }
 
+/// 官方客户端展示的模型白名单（`id` 小写；比对时也按小写）。
+///
+/// ── 依据 ────────────────────────────────────────────────────
+/// OfficeAce 桌面端 `packages/api/dist/chunk-UEENO6BL.js`（39.8.7 实测）里
+/// 的 model-selection candidates 那条链：拉完 `/v2/models` 后逐条比对
+/// `Ct = new Set(["GLM-5","GLM-5.1","GLM-5.2","GLM-5.3",
+/// "DeepSeek-V4-Flash-0731","DeepSeek-V4.1-Flash"])`，不在集合里的直接丢
+/// （`Et()` 的 `!c && !l ? [] : [...]`）。同一文件里还有两张小表：
+///   · `$r` = `deepseek-v3-64k-batch` / `deepseek-r1-batch` / `deepseek-r1-batchl`
+///     —— 三个 batch 名，无条件剔除（本白名单天然不含它们，无需另写）；
+///   · `-zx` 后缀在比对前剥掉（`_t()`），即 `glm-5.2-zx` 会按 `glm-5.2` 命中。
+///     本模块照这个口径实现（见 [`canonical_id`]）。
+///
+/// ── 为什么是「名字」而不是「能力」──────────────────────────
+/// 这张表是**官方产品的展示决策**，不是上游能力声明：`kimi-k3.1-pro` 很可能
+/// 真的能打，只是官方客户端没打算让用户选它。所以这里只过滤清单，不做门禁
+/// —— 白名单外的名字点名调用仍然会被转发（见模块头）。
+const OFFICIAL_WHITELIST: &[&str] = &[
+    "glm-5",
+    "glm-5.1",
+    "glm-5.2",
+    "glm-5.3",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4.1-flash",
+];
+
+/// 白名单的规范形态：剥掉 `-zx` 后缀（官方客户端 `_t()` 的同一处理）。
+///
+/// ── 为什么剥掉后缀之后要**真的改名**（而不是只用于比对）──────
+/// 官方客户端 `_t()` 返回的是剥掉后缀的名字，`Et()` 直接把它当 `model` 用
+/// （`model: d`），随后 `Vr()` 还以这个名字为 key 做去重 —— 也就是
+/// `glm-5.2-zx` 在官方眼里**就是** `glm-5.2`，两者合并成一条。
+///
+/// 这个处理有独立的实测支撑：本仓 2026-10-23 的探测记录（`kv` 的
+/// `officeaceModelProbe`）里，`glm-5.2-zx` 与 `glm-5.3-zx` 都被上游判成
+/// 「模型级拒绝」（81004/81009），而同名的 `glm-5.2` / `glm-5.3` 正常可用。
+/// 也就是说 `-zx` 这个名字很可能上游不认 —— 只比对不改名会把一条打不通的
+/// 名字广告出去。（⚠️ 那份记录来自旧网关实现，本次改动没有再探一轮验证。）
+///
+/// 别的后缀（`-bnt` / `-harmony` / `-0930` / `-1017`）**不剥**：官方实现里
+/// 只有 `-zx` 一个特判，其余是独立变体，归并会让两个不同的上游模型撞成一条。
+fn canonical_id(id: &str) -> &str {
+    let trimmed = id.trim();
+    match trimmed.len().checked_sub(3) {
+        Some(cut) if trimmed.to_ascii_lowercase().ends_with("-zx") => &trimmed[..cut],
+        _ => trimmed,
+    }
+}
+
+/// 按官方白名单收窄目录，并把 `-zx` 归并到主名。
+///
+/// ── 一条兜底：一条都匹配不上时**原样返回** ──────────────────
+/// 白名单是外部事实（官方客户端的硬编码），上游换血时它会整体失效。那种情况
+/// 下如果照白名单过滤，清单会变成空的 —— 而「这家一个模型都没有」在界面上
+/// 与「插件坏了」无法区分。所以命中 0 条时退回完整目录，并打一条日志留痕
+/// （排查时能看出「白名单该更新了」，而不是以为上游真没模型）。
+///
+/// ── 去重顺序：主名优先 ──────────────────────────────────────
+/// `glm-5.2` 与 `glm-5.2-zx` 归并后是同一条。目录里两者都在时保留**不带
+/// 后缀**的那条（它带的是上游对外的正式字段）；只有 `-zx` 时就用归并后的
+/// 主名顶上。与官方 `Vr()` 里 `isZx && !f` 的那段判断同一取舍。
+pub fn apply_whitelist(models: Vec<Value>) -> Vec<Value> {
+    let total = models.len();
+    // 归并后的清单：(小写主名, 这条是不是 `-zx` 变体, 条目)。
+    // 第三个字段单独记「来源是变体」—— 变体在下面会被改名成主名，改完之后
+    // 光看 id 已经分不出它原本是 `glm-5.2` 还是 `glm-5.2-zx` 了。
+    let mut kept: Vec<(String, bool, Value)> = Vec::new();
+    for entry in models.iter() {
+        let mut model = entry.clone();
+        let id = model.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let canonical = canonical_id(&id).to_string();
+        let key = canonical.to_ascii_lowercase();
+        if !OFFICIAL_WHITELIST.iter().any(|name| *name == key) {
+            continue;
+        }
+        let is_variant = canonical != id;
+        if is_variant {
+            // `-zx` 变体：改名到主名（见 `canonical_id` 的说明）。上游不认这个
+            // 后缀名（实测回 81004/81009），广告出去只会让用户点到打不通的名字。
+            if let Some(object) = model.as_object_mut() {
+                object.insert("id".to_string(), Value::String(canonical.clone()));
+                object.insert("name".to_string(), Value::String(canonical.clone()));
+            }
+        }
+        match kept.iter().position(|(existing, _, _)| *existing == key) {
+            // 已有同名条目：只有「已存的是变体、当前是主名」才顶替，其余丢掉。
+            Some(index) => {
+                if kept[index].1 && !is_variant {
+                    kept[index] = (key, false, model);
+                }
+            }
+            None => kept.push((key, is_variant, model)),
+        }
+    }
+    if kept.is_empty() {
+        // 白名单一条都没命中 ⇒ 上游大概率改了命名。退回完整目录并留痕：
+        // 空清单在界面上与「插件坏了」无法区分，而多列几个内部名只是吵。
+        crate::logging::verbose(
+            "[OfficeAce]",
+            &format!(
+                "官方展示白名单一个都没命中（目录共 {total} 条），本次按完整目录返回 —— 上游可能改了命名，白名单需要跟着更新"
+            ),
+        );
+        return models;
+    }
+    kept.into_iter().map(|(_, _, model)| model).collect()
+}
+
 /// 把一个上游条目映成目录条目（保留上游给的字段，缺的补 `officeace`）。
 fn map_entry(entry: &Value) -> Option<Value> {
     let id = entry
@@ -239,7 +362,7 @@ pub fn parse_models(payload: &Value) -> Vec<Value> {
 }
 
 /// 拉一次模型目录并落地（内存 + 持久化缓存）。
-pub async fn refresh(credential: &OfficeAceCredential, force: bool) -> proto::RefreshOutcome {
+pub async fn refresh(ctx: &PluginCtx, credential: &OfficeAceCredential, force: bool) -> proto::RefreshOutcome {
     let now = crate::logging::now_ms();
     if !force {
         let fresh = with_state(|slot| {
@@ -292,6 +415,20 @@ pub async fn refresh(credential: &OfficeAceCredential, force: bool) -> proto::Re
     if models.is_empty() {
         return proto::RefreshOutcome::failed("OfficeAce 模型目录为空或格式不认识（保留现有清单）");
     }
+    // 按官方客户端那张白名单收窄（见 `apply_whitelist`）：上游目录里有大量
+    // 内部灰度名（`*-test-*` / `*-zx` / `*-bnt`），官方界面从不展示它们。
+    // 收窄在**倍率合并之前**做：倍率表是另一条链给的，两边的集合本来就对不齐，
+    // 先收窄能少算一轮无关条目。
+    let upstream_count = models.len();
+    let models = apply_whitelist(models);
+    crate::logging::log(
+        "[OfficeAce]",
+        &format!(
+            "模型目录：上游 {} 条，官方展示白名单保留 {} 条",
+            upstream_count,
+            models.len()
+        ),
+    );
     // 倍率：另一条链（控制面签名），失败就沿用最后一份读数，别抹空（见 `RATES`）。
     let rates = match super::subscription::fetch_model_token_rates(credential).await {
         Ok(payload) => remember_rates(parse_rates(&payload)),
@@ -323,20 +460,17 @@ pub async fn refresh(credential: &OfficeAceCredential, force: bool) -> proto::Re
             fetched_at: now,
         });
     });
-    // 目录刷新成功后按需起一轮可用性探测（有 6 小时 TTL + 在途标记，不会因为
-    // 目录被反复拉而反复打上游；`force` 由手动「刷新模型清单」透传，给用户一个
-    // 「重新探一次」的入口）。探测结论由 `adapter::advertise_models` 用来收窄
-    // 对外清单 —— 见 `probe` 模块头。
-    super::probe::maybe_spawn(credential, &models, force);
+    // 探测完成后通知网关同步清单，不再请求上游目录。
+    super::probe::maybe_spawn(ctx, credential, &models, force);
     proto::RefreshOutcome::refreshed(count)
 }
 
 /// 从账号记录直接刷（适配器用）。
-pub async fn refresh_from_record(record: Option<&Value>, force: bool) -> proto::RefreshOutcome {
+pub async fn refresh_from_record(ctx: &PluginCtx, record: Option<&Value>, force: bool) -> proto::RefreshOutcome {
     let credential = match from_record(record) {
         Ok(credential) => credential,
         Err(error) => return proto::RefreshOutcome::failed(error.message),
     };
-    refresh(&credential, force).await
+    refresh(ctx, &credential, force).await
 }
 

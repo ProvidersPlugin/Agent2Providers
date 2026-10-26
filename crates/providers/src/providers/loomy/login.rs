@@ -233,7 +233,8 @@ pub async fn login_with_code(
             "session": session,
             "userId": userid,
             "phone": phone,
-            "expiresAt": now + credentials::SESSION_TTL_MS,
+            // 不写 `expiresAt`：上游不给到期时刻，估算值不是事实（见
+            // `credentials` 模块头）。失效只认上游的 020002 / 100002。
             "addedAt": now,
         }),
         public: json!({

@@ -55,14 +55,9 @@
 //!   3. 调试抓包（`HostEnv.debug_traffic`）插件侧没有采集器 —— 抓包开关对本家
 //!      无效；
 //!   4. 用量上报（网关的 `telemetry`）在插件里是空实现，调用点保留；
-//!   5. **思考签名的服务端缓存兜底档失效**（issue #291）：响应侧由**网关**的
-//!      翻译机（`core::upstream::translate::AntigravityToChatStream` +
-//!      `core::protocol::antigravity_signature_cache`）写入，请求侧由**插件**
-//!      的 `antigravity_outbound` 读取 —— 两个进程各有一份内存，写的那份读不到。
-//!      主路径（客户端把 `extra_content.google.thought_signature` 原样带回）
-//!      **仍然有效**；失效的只是「客户端丢了这个非标字段」时的兜底。
-//!      要消除它需要协议加一个「按会话读写共享缓存」的方法，或把翻译层搬进
-//!      插件 —— 两条都是契约级改动，本步不做。
+//!   5. 思考签名：插件保留客户端回传的真实签名，Gemini / GPT-OSS 历史缺失时
+//!      补官方哨兵。网关在响应缓存所在进程按调用 id 回填真实签名，避免两份
+//!      进程内缓存互相不可见；没有缓存的旧会话仍由哨兵兜底。
 //!
 //! ── 子模块分工 ──────────────────────────────────────────────
 //! ```text
@@ -90,11 +85,13 @@ pub mod accounts;
 pub mod adapter;
 pub mod antigravity_outbound;
 pub mod antigravity_schema;
+mod antigravity_signatures;
 pub mod antigravity_signature_cache;
 pub mod balance;
 pub mod callback_server;
 pub mod credentials;
 pub mod endpoints;
+mod image_generation;
 pub mod login;
 pub mod models;
 pub mod oauth;

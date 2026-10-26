@@ -59,8 +59,7 @@ const HASH_WIDTHS: [usize; 3] = [7, 10, 14];
 
 /// 一个 SSE 事件（以空行收尾）允许缓冲的上限。超过就整段原样放行 ——
 /// 宁可不还原，也不把流卡住、更不让上游的一帧决定我们的内存占用。
-/// 与 `chat::UsageSniffer::MAX_LINE_BYTES` 同一个方向；区别是那边只旁路看流，
-/// 这边改的就是流本身，所以「丢缓冲」必须等于「放行」而不是丢数据。
+/// 超限时必须原样放行而不是丢数据，因为这里改写的是客户端真正收到的字节。
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
 
 /// 把超限的 `tools[].function.name` 改短，并交出还原器。
@@ -161,6 +160,7 @@ impl Restorer {
     }
 
     /// 非流式那份折叠好的回答（`chat::aggregate_sse` 的产物）。
+    #[cfg(any())]
     pub fn apply_completion(&self, completion: &mut Value) {
         self.apply(completion);
     }
@@ -176,38 +176,29 @@ impl Restorer {
         if !text.contains("tool_calls") {
             return event.to_vec();
         }
+        let Some(data) = crate::sse_events::data_of(event) else { return event.to_vec() };
+        let Ok(mut value) = serde_json::from_slice::<Value>(&data) else { return event.to_vec() };
+        if !self.apply(&mut value) { return event.to_vec(); }
         let mut out = Vec::with_capacity(event.len());
-        let mut touched = false;
-        for line in text.split_inclusive('\n') {
+        let mut replaced = false;
+        for line in crate::sse_events::lines_inclusive(&text) {
             let body = line.trim_end_matches(['\r', '\n']);
-            // 行尾那几个换行要按「去掉 body 之后剩下的后缀」取：写成
-            // `&line[..len-body.len()]` 会拿到行首，每帧尾巴就变成 `d`（"data:" 的首字母）
             let trailing = &line[body.len()..];
-            let Some(payload) = body.strip_prefix("data:") else {
-                // 不是 data 行（`id:`、注释、收尾空行）：原样
-                out.extend_from_slice(line.as_bytes());
-                continue;
-            };
-            // `data:` 后面那几个空格是上游的形状，替换时要原样还回去
-            let spaces = payload.len() - payload.trim_start().len();
-            let value_text = payload.trim_start();
-            let replaced = value_text
-                .parse::<Value>()
-                .ok()
-                .and_then(|mut value| self.apply(&mut value).then_some(value));
-            match replaced {
-                Some(value) => {
+            let payload = body.strip_prefix("data:").or_else(|| (body == "data").then_some(""));
+            if let Some(payload) = payload {
+                if !replaced {
+                    let spaces = payload.len() - payload.trim_start().len();
                     out.extend_from_slice(b"data:");
                     out.extend(std::iter::repeat_n(b' ', spaces));
                     out.extend_from_slice(value.to_string().as_bytes());
                     out.extend_from_slice(trailing.as_bytes());
-                    touched = true;
+                    replaced = true;
                 }
-                // 这一行没命中：连上游的空白都不动
-                None => out.extend_from_slice(line.as_bytes()),
+            } else {
+                out.extend_from_slice(line.as_bytes());
             }
         }
-        if touched { out } else { event.to_vec() }
+        out
     }
 }
 
@@ -256,7 +247,7 @@ impl StreamFixer {
 
 /// 事件结尾（空行）之后的位置；`None` = 还没收全。
 fn find_event_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(2).position(|pair| pair == b"\n\n").map(|at| at + 2)
+    crate::sse_events::event_end(bytes)
 }
 
 #[cfg(any())]

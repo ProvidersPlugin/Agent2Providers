@@ -243,7 +243,7 @@ impl Provider for LobsterAiProvider {
                 return Ok(false);
             };
             Ok(credentials::from_record(Some(&record))
-                .map(|credentials| credentials.expiring())
+                .map(|credentials| !credentials.refresh_token.is_empty() && credentials.expiring())
                 .unwrap_or(false))
         })
     }
@@ -290,6 +290,10 @@ impl Provider for LobsterAiProvider {
         })
     }
 
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -311,7 +315,7 @@ impl Provider for LobsterAiProvider {
         Box::pin(async move {
             let outcome = checkin::claim_daily_checkin(ctx, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report_of(&outcome))
         })
     }

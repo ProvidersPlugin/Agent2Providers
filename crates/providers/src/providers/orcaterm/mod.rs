@@ -194,6 +194,10 @@ impl Provider for OrcaTermProvider {
         })
     }
 
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(balance::query_usage(ctx, account))
     }

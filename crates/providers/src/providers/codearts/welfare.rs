@@ -503,6 +503,14 @@ async fn ledger_of(ctx: &PluginCtx, account_id: &str, now_ms: i64) -> Result<Led
     }
 }
 
+pub(super) async fn retry_at(ctx: &PluginCtx, account_id: &str, now_ms: i64) -> Result<Option<i64>, GatewayError> {
+    let ledger = ledger_of(ctx, account_id, now_ms).await?;
+    if ledger.attempts >= MAX_ATTEMPTS_PER_DAY {
+        return Ok(None);
+    }
+    Ok(Some(now_ms.saturating_add(gap_remaining(&ledger, now_ms).unwrap_or(600_000) as i64)))
+}
+
 /// 落一份台账（失败即报错 —— 调用方据此**不往下发写请求**）。
 async fn save_ledger(ctx: &PluginCtx, account_id: &str, ledger: &Ledger) -> Result<(), GatewayError> {
     ctx.ledger_put(account_id, LEDGER_KIND, &ledger.to_value())
@@ -616,7 +624,7 @@ pub async fn claim_rewards(
         return Ok(Run { outcome: Outcome::NotEligible, before: picked.clone(), after: Vec::new() });
     }
 
-    ledger.attempts += 1;
+    ledger.attempts = ledger.attempts.saturating_add(1).min(MAX_ATTEMPTS_PER_DAY);
     ledger.last_attempt_ms = now_ms;
     ledger.accepted = false;
     save_ledger(ctx, account_id, &ledger).await?;

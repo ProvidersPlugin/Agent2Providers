@@ -35,6 +35,7 @@ pub mod client;
 pub mod credentials;
 pub mod endpoints;
 pub mod images;
+mod image_generation;
 pub mod login;
 pub mod models;
 pub mod onboarding;
@@ -86,17 +87,21 @@ impl Provider for LoomyProvider {
             // 每日赠送积分，读 `GET /api/v2/points/records` 的摘要字段），
             // 界面上两张卡都列。
             //   `edition: false` —— 单一入口（手机验证码登录），没有地区概念。
-            //   `expiry: expiresAt` —— 落账号时按登录时刻 + 14 天估算（上游没有
-            //     续期接口，过期只能重新登录；这一列对它是「什么时候该重登」的
-            //     提示）。**不申报 `long_lived`**：凭证有固定寿命，只是过期后
-            //     救不回来。
+            //   `expiry: []` —— **不申报有效期**。上游登录响应只有
+            //     `{session, userid, phone}`，没有任何到期时刻；以前按「登录时刻
+            //     + 14 天」估算一个值填进 `expiresAt`，结果账号用满两周就红着写
+            //     「已过期」，而上游其实照常放行（实测：估算到期后仍能签到与转发）。
+            //     估算值不是事实，不能当有效期展示。真正的失效判据只有一个 ——
+            //     上游回 `020002` / `100002`，那时由网关写 `needsRelogin`
+            //     （见 `mod.rs` 的 `classify` 与网关 `provider_loop`）。
+            //   **不申报 `long_lived`**：session 确实会失效，只是失效时刻不可知。
             //   `credit_detail` —— 双账户各一行（永久积分 / 每日赠送积分），
             //     后者标 `daily` → 界面写「每日重置」而不是到期。
             .with_account_features(proto::AccountFeatures {
                 usage: true,
                 credit_detail: true,
                 identifier: vec!["uid".to_string()],
-                expiry: vec!["expiresAt".to_string()],
+                expiry: Vec::new(),
                 ..Default::default()
             })
         .with_checkin(proto::CheckinInfo {
@@ -151,6 +156,30 @@ impl Provider for LoomyProvider {
                 payload,
             ))
         })
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    fn build_image_edit<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build_edit(ctx, req))
+    }
+
+    fn build_image<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build(ctx, req))
     }
 
     /// 上游错误分类：
@@ -224,33 +253,26 @@ impl Provider for LoomyProvider {
 
     // ── 凭证 ──────────────────────────────────────────────────
 
-    /// 取可用 session。本家**没有续期**：这里只做「记录里有没有 session」的
-    /// 检查，临期与否只影响账号页的提示，不影响转发 —— 服务端拒了就是 401，
-    /// 编排层会把它归成 `TokenExpired` 并在刷新失败后如实报给客户端。
+    /// 取可用 session。本家**没有续期**，也**不预测失效**：这里只做「记录里
+    /// 有没有 session」的检查。服务端拒了（`020002` / `100002` / 401）才是真的
+    /// 失效，那时编排层归成 `TokenExpired` 并给账号落 `needsRelogin`。
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
             let credentials = credentials::snapshot(ctx, account).await?;
-            if credentials.expiring() {
-                agent2api_provider_sdk::log_warn!(
-                    "[Loomy] 账号凭证已过期或临期（会话 14 天、无续期接口），如遇 401 请重新短信登录"
-                );
-            }
             Ok(credentials.session)
         })
     }
 
     /// 没有续期手段（上游没有 refresh 接口）——维护任务不问本家。
+    ///
+    /// 恒 `false`：本家**没有可预测的到期时刻**（上游不返回，估算值会误杀
+    /// 仍然可用的账号）。失效只由转发链路上游的拒绝来确认，见 `ensure_token`。
     fn token_expiring<'a>(
         &'a self,
-        ctx: &'a PluginCtx,
-        account: &'a str,
+        _ctx: &'a PluginCtx,
+        _account: &'a str,
     ) -> SendFuture<'a, bool> {
-        Box::pin(async move {
-            let Ok(credentials) = credentials::snapshot(ctx, account).await else {
-                return Ok(false);
-            };
-            Ok(credentials.expiring())
-        })
+        Box::pin(async { Ok(false) })
     }
 
     // ── 目录 / 余额 / 签到 ────────────────────────────────────
@@ -294,6 +316,10 @@ impl Provider for LoomyProvider {
             let client = crate::http::client(None, &ctx.env.proxy);
             Ok(models::refresh(&client, &credentials.session, force).await)
         })
+    }
+
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
     }
 
     fn usage<'a>(

@@ -271,6 +271,10 @@ impl Provider for TraeProvider {
     }
 
     /// 额度读数（形状契约见 trait 文档；本家的实现细节在 `usage.rs`）。
+    fn quota_sources(&self, report: &Value) -> Vec<Value> {
+        crate::quota::sources(&self.meta().id, report)
+    }
+
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
             super::usage::query_usage(ctx, account)
@@ -287,7 +291,7 @@ impl Provider for TraeProvider {
         Box::pin(async move {
             let value = super::checkin::claim_daily_checkin(ctx, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             Ok(super::checkin_report(&value))
         })
     }

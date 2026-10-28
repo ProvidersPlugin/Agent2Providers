@@ -104,18 +104,52 @@ pub async fn checkin(
     let status = daily.get("status").and_then(Value::as_str).unwrap_or("");
     let extra = daily.get("extra").cloned().unwrap_or(Value::Null);
     let streak = extra.get("consecutive_days").and_then(Value::as_u64).map(|value| value as u32);
+    let mut outcome = daily_outcome(&client, &sid, daily, streak.clone()).await;
+    let bonus = claim_one_time(&client, &sid, &list).await;
+    if !bonus.credited.is_empty() {
+        let keys: Vec<&str> = bonus.credited.iter().map(|(key, _)| key.as_str()).collect();
+        let extra = format!("；一次性任务 {} 共 +{} 智点", keys.join("/"), trim_number(bonus.reward));
+        outcome.credit = Some(match outcome.credit.take() {
+            Some(credit) => format!("{credit}{extra}"),
+            None => extra.trim_start_matches("；").to_string(),
+        });
+        if outcome.outcome != proto::CheckinOutcome::Claimed {
+            outcome.outcome = proto::CheckinOutcome::Claimed;
+        }
+    }
+    if let Some(warning) = bonus.warning {
+        outcome.message = Some(match outcome.message.take() {
+            Some(message) => format!("{message}（{warning}）"),
+            None => warning,
+        });
+    }
+    if status == "claimed" && outcome.message.is_none() {
+        outcome.message = Some("今日已签到".to_string());
+    }
+    Ok(outcome)
+}
+
+/// 每日签到那一条的完整判定（领前读状态 → 领 → 领后回读余额）。
+async fn daily_outcome(
+    client: &reqwest::Client,
+    sid: &str,
+    daily: &Value,
+    streak: Option<u32>,
+) -> proto::CheckinReport {
+    let status = daily.get("status").and_then(Value::as_str).unwrap_or("");
     if status == "claimed" {
-        return Ok(proto::CheckinReport {
+        return proto::CheckinReport {
             outcome: proto::CheckinOutcome::Done,
             credit: None,
             streak,
             message: Some("今日已签到".to_string()),
-        });
+        };
     }
 
     // 领取日期取任务里「今天可领」那一档的 date（+08 口径由上游给，别自己算）。
-    let date = extra
-        .get("check_in_days")
+    let date = daily
+        .get("extra")
+        .and_then(|extra| extra.get("check_in_days"))
         .and_then(Value::as_array)
         .and_then(|days| {
             days.iter()
@@ -125,43 +159,111 @@ pub async fn checkin(
         .map(str::to_string)
         .unwrap_or_else(today_cst);
 
-    let before = balance_total(&client, &sid).await.unwrap_or(0.0);
+    let before = balance_total(client, sid).await.unwrap_or(0.0);
     let claim = http::post_json(
-        &client,
-        &sid,
+        client,
+        sid,
         &format!("{}?date={}", constants::CLAIM_PATH, date),
         &json!({}),
         &[],
     )
     .await;
     if let Err(message) = claim {
-        return Ok(proto::CheckinReport {
+        return proto::CheckinReport {
             outcome: proto::CheckinOutcome::Failed,
             credit: None,
             streak,
             message: Some(message),
-        });
+        };
     }
-    let after = balance_total(&client, &sid).await.unwrap_or(before);
+    let after = balance_total(client, sid).await.unwrap_or(before);
     let delta = after - before;
     if delta > 0.0 {
-        return Ok(proto::CheckinReport {
+        return proto::CheckinReport {
             outcome: proto::CheckinOutcome::Claimed,
             credit: Some(format!("+{} 智点", trim_number(delta))),
             streak: streak.map(|value| value + 1),
             message: None,
-        });
+        };
     }
     // 返回 ok 但余额没动：上游幂等，今天已经领过
-    Ok(proto::CheckinReport {
+    proto::CheckinReport {
         outcome: proto::CheckinOutcome::Done,
         credit: None,
         streak,
         message: Some("今日已签到（上游幂等，余额未变化）".to_string()),
-    })
+    }
 }
 
-async fn balance_total(client: &reqwest::Client, sid: &str) -> Option<f64> {
+/// 一次性任务的结果（只领 `status == "claimable"` 的）。
+struct Bonus {
+    /// 已确认到账的 `(task_key, 智点)`。
+    credited: Vec<(String, i64)>,
+    reward: f64,
+    /// 回执有数额但余额没跟上（记账延迟 / 假成功）。
+    warning: Option<String>,
+}
+
+/// 领掉所有**可领**的一次性任务，并用余额差确认到账。
+///
+/// ── 为什么只领 `claimable` ───────────────────────────────────
+/// 实测（2026-10-16 一手）：`incomplete` 的条目 claim 会被上游拒
+/// （400 `InvalidArgument`），`claimed` 的再领是幂等假成功。而
+/// `incomplete → claimable` 只能由**真实动作**换来 —— 灵犀没有「上报完成」
+/// 的口子。所以这里不替用户刷任务，只在上游说「可以领了」时把奖励领回来。
+///
+/// 单条失败只记账不拖垮每日签到（每条的错都吞进 warning / 日志）。
+async fn claim_one_time(client: &reqwest::Client, sid: &str, tasks: &[Value]) -> Bonus {
+    let wanted = super::onboarding::claimable_one_time(tasks);
+    if wanted.is_empty() {
+        return Bonus { credited: Vec::new(), reward: 0.0, warning: None };
+    }
+
+    let before = balance_total(client, sid).await.unwrap_or(-1.0);
+    let mut receipts: Vec<(String, i64)> = Vec::new();
+    for (key, expected) in wanted {
+        let path = format!("{}/{}/claim", constants::TASKS_PATH, key);
+        match http::post_json(client, sid, &path, &json!({}), &[]).await {
+            Ok(payload) => {
+                let got = http::data_of(&payload)
+                    .get("reward_amount")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                if got > 0 {
+                    receipts.push((key, got));
+                } else {
+                    crate::logging::log(
+                        "[Lingxi]",
+                        &format!("一次性任务 {key} 回执没有数额（预期 {expected}），按未到账处理"),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::logging::log("[Lingxi]", &format!("一次性任务 {key} 领取失败：{error}"));
+            }
+        }
+    }
+    if receipts.is_empty() {
+        return Bonus { credited: Vec::new(), reward: 0.0, warning: None };
+    }
+    let expected: f64 = receipts.iter().map(|(_, reward)| *reward as f64).sum();
+    let after = balance_total(client, sid).await.unwrap_or(before);
+    if before >= 0.0 && after - before >= expected {
+        return Bonus { credited: receipts, reward: expected, warning: None };
+    }
+    Bonus {
+        credited: Vec::new(),
+        reward: 0.0,
+        warning: Some(format!(
+            "一次性任务回执 +{} 但余额未同步（{}→{}），下次签到会重试",
+            trim_number(expected),
+            trim_number(before),
+            trim_number(after)
+        )),
+    }
+}
+
+pub(super) async fn balance_total(client: &reqwest::Client, sid: &str) -> Option<f64> {
     let payload = http::get_json(client, sid, constants::BALANCE_PATH).await.ok()?;
     http::data_of(&payload)
         .get("total_balance")
@@ -178,7 +280,7 @@ fn today_cst() -> String {
     }
 }
 
-fn trim_number(value: f64) -> String {
+pub(super) fn trim_number(value: f64) -> String {
     let text = format!("{value:.2}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }

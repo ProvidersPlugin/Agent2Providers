@@ -27,6 +27,7 @@ pub mod catalog;
 pub mod chat;
 pub mod constants;
 pub mod http;
+pub mod onboarding;
 pub mod stream;
 
 use agent2api_provider_protocol as proto;
@@ -50,7 +51,8 @@ impl Provider for LingxiProvider {
                 model_refresh: true,
                 usage: true,
                 checkin: true,
-                claims: false,
+                // 新手任务：可领的一次性奖励（claim_status / claim）
+                claims: true,
                 // 网页登录要靠壳侧读登录窗口的 Cookie，插件没有这条通道
                 web_login: false,
                 // 帧里的 model 是上游 key（GLM-5.3），要回写成请求名（lingxi/GLM-5.3）
@@ -81,10 +83,10 @@ impl Provider for LingxiProvider {
                 ..Default::default()
             })
             .with_checkin(proto::CheckinInfo {
-                description: Some("每日签到领智点（默认 100，连续第 7 天 200）".to_string()),
+                description: Some("每日签到领智点（默认 100，连续第 7 天 200）；可领的新手任务顺手领回".to_string()),
                 exclude_guest: false,
                 modes: vec![proto::CheckinMode::Checkin],
-                onboarding: false,
+                onboarding: true,
                 plans: false,
                 daily: true,
                 growth: false,
@@ -132,6 +134,26 @@ impl Provider for LingxiProvider {
         account: &'a str,
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(billing::checkin(ctx, account, None))
+    }
+
+    /// 新手任务状态（界面「新手任务」页打开时查）。
+    fn claim_status<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        refresh: bool,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(onboarding::get_tasks(ctx, account, refresh))
+    }
+
+    /// 新手任务领取（`only` 非空时只领那一条）。
+    fn claim<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        only: &'a str,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(onboarding::claim_all(ctx, account, only))
     }
 
     fn ensure_token<'a>(

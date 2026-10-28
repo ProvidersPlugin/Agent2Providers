@@ -183,6 +183,12 @@
       "label": "Antigravity",
       "order": 29,
       "default_enabled": true
+    },
+    {
+      "id": "lingxi",
+      "label": "WPS 灵犀",
+      "order": 30,
+      "default_enabled": true
     }
   ],
   "icons": "assets",

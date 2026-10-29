@@ -134,6 +134,7 @@ pub(super) fn account_view(secret: &Value) -> Value {
         // 按它算尾号会让同一账号每次刷新后显示不同）
         "tokenTail": crate::store::token_tail(&refresh_token),
         "hasRefreshToken": !refresh_token.is_empty(),
+        "refreshTokenLongLived": true,
         "hasAccessToken": !access_token.is_empty(),
         "desktop": false,
         // 有 refreshToken 就算「当前可用」（accessToken 可以由刷新补齐）

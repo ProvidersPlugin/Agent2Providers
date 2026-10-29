@@ -137,7 +137,7 @@ async fn token_request(
         .map(|(name, value)| format!("{}={}", form_encode(name), form_encode(value)))
         .collect::<Vec<_>>()
         .join("&");
-    let response = crate::http::client(proxy, "direct")
+    let response = crate::http::control_client(proxy, "direct")
         .post(TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
@@ -155,6 +155,11 @@ async fn token_request(
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     if !(200..300).contains(&status) {
+        if let Ok(payload) = serde_json::from_str::<Value>(&text) {
+            if let Some(error) = super::authorization::token_error(status, &payload) {
+                return Err(error);
+            }
+        }
         // 上游的错误体可能很长（HTML），截断后原样带上，便于排障
         let detail = serde_json::from_str::<Value>(&text)
             .ok()
@@ -281,7 +286,7 @@ async fn fetch_identity(
     ];
     let signed = super::signer::sign("GET", IDENTITY_URL, &headers, b"", &signer_credential(credential), false)
         .map_err(|reason| GatewayError::with_status(500, reason))?;
-    let mut request = crate::http::client(proxy, "direct")
+    let mut request = crate::http::control_client(proxy, "direct")
         .get(IDENTITY_URL)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
     for (name, value) in signed {
@@ -613,7 +618,7 @@ pub async fn poll_ticket(base: &str, pending: &PendingLogin, proxy: Option<&Reso
         ("plugin-name".to_string(), chat::DEFAULT_PLUGIN_NAME.to_string()),
         ("plugin-version".to_string(), chat::DEFAULT_PLUGIN_VERSION.to_string()),
     ];
-    let mut request = crate::http::client(proxy, "direct").get(&endpoint).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
+    let mut request = crate::http::control_client(proxy, "direct").get(&endpoint).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
     for (name, value) in headers {
         request = request.header(name.as_str(), value.as_str());
     }
@@ -867,7 +872,7 @@ mod tests {
         // ③ 比 ② 往后走了一整步（头解开了 → 开始验令牌），说明 ES256/JWK/JWS 这三层
         // 都被上游收下了。这条阶梯只在 `--ignored` 下跑，一次真凭据都不碰。
         async fn ladder(label: &str, proof: Option<String>) -> (u16, String) {
-            let mut request = crate::server::core::crate::http::client(None, "direct")
+            let mut request = crate::server::core::crate::http::control_client(None, "direct")
                 .post(TOKEN_URL)
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Accept", "application/json")

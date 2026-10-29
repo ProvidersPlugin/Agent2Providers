@@ -593,7 +593,7 @@ async fn poke_daily_activity(session: &Value, models: &[String]) -> (bool, Optio
         let proxy: Option<agent2api_provider_protocol::WireProxy> = session
             .get("proxy")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
-        let client = http::client(proxy.as_ref(), "direct");
+        let client = http::control_client(proxy.as_ref(), "direct");
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(TIMEOUT_MS),
             http::post_stream(
@@ -710,7 +710,7 @@ async fn create_web_conversation(session: &Value, models: &[String]) -> Value {
     let proxy: Option<agent2api_provider_protocol::WireProxy> = session
         .get("proxy")
         .and_then(|value| serde_json::from_value(value.clone()).ok());
-    let client = http::client(proxy.as_ref(), "direct");
+    let client = http::control_client(proxy.as_ref(), "direct");
     let url = web_conversations_url(session, Region::Intl);
     for model in models {
         let body = json!({

@@ -277,7 +277,7 @@ pub async fn send(
     plan: &ChatPlan,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<reqwest::Response, GatewayError> {
-    let client = egress::client(proxy, "direct");
+    let client = egress::stream_client(proxy, "direct");
     let mut builder = client.post(&plan.url).body(plan.body.clone());
     for (key, value) in &plan.headers {
         builder = builder.header(key, value);

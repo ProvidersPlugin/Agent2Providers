@@ -378,7 +378,7 @@ pub async fn refresh(
 
 /// 调 `OAuthRefreshToken` 换新 token。
 async fn call_refresh_api(ctx: &PluginCtx, credentials: &Credentials) -> Result<Credentials, String> {
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let response = cgi_action(
         &client,
         credentials,
@@ -506,7 +506,7 @@ pub async fn normalize(
     // ── 尽力补身份（不阻断添加）─────────────────────────────
     // 探活失败仍允许落库：token 可能刚过期而用户马上就要续期，或者上游
     // 临时抖动。真正不可用的凭证会在转发时给出准确文案。
-    let client = crate::http::client(input.proxy.as_ref(), &ctx.env.proxy);
+    let client = crate::http::control_client(input.proxy.as_ref(), &ctx.env.proxy);
     if let Ok((user_id, nickname)) = fetch_user_info(&client, &credentials).await {
         if !user_id.is_empty() {
             credentials.user_id = user_id;

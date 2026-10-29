@@ -317,19 +317,42 @@ pub fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
 /// 与源实现 `String(x).replace(/^Bearer\s+/i, '').trim()` 对齐：本机实测
 /// auth.json 解出来的 token 明文**自带** `Bearer ` 前缀，所以这一步是必须的，
 /// 否则拼出来的 Authorization 头会变成 `Bearer Bearer eyJ...`。
-#[allow(dead_code)] // autoclaw 的令牌清洗要用（同批搬迁，接线晚一步）
+///
+/// ── 为什么是**循环**剥离而不是剥一次（issue #386）──────────────
+/// 源实现的正则只命中一次，遇到 `Bearer Bearer eyJ…` 这种**存量脏值**
+/// （旧版本把双前缀的值原样落库了）会剥成 `Bearer eyJ…`，调用方再拼一个
+/// `Bearer ` 就又变回双前缀 —— 症状与没修一样，而且更难查（看起来「明明
+/// 剥过了」）。issue #386 的验收标准里明确要求「即便库里存的是带前缀的旧值，
+/// 发送也必须正确」，所以这里一路剥到不再是前缀为止。
+///
+/// 终止性：每轮循环要么返回、要么让字符串严格变短（剥掉至少 7 个字节），
+/// 因此必然终止。
 pub fn strip_bearer(value: &str) -> String {
-    let trimmed = value.trim();
-    // 按**字节**比对是安全的：`bearer` 全是 ASCII，命中时前 6 字节必然是
-    // 完整字符边界；非 ASCII 开头的值不会命中这个分支
-    let bytes = trimmed.as_bytes();
-    if bytes.len() > b"bearer".len() && bytes[..b"bearer".len()].eq_ignore_ascii_case(b"bearer") {
-        let rest = &trimmed[b"bearer".len()..];
-        if rest.starts_with(char::is_whitespace) {
-            return rest.trim_start().to_string();
+    let mut current = value.trim();
+    loop {
+        // 按**字节**比对是安全的：`bearer` 全是 ASCII，命中时前 6 字节必然是
+        // 完整字符边界；非 ASCII 开头的值不会命中这个分支
+        let bytes = current.as_bytes();
+        if bytes.len() < b"bearer".len()
+            || !bytes[..b"bearer".len()].eq_ignore_ascii_case(b"bearer")
+        {
+            return current.to_string();
         }
+        let rest = &current[b"bearer".len()..];
+        // ── 恰好等于 `Bearer` 时给空串（不能原样返回）──────────────
+        // 那不是一个可用的 token，而是「只有前缀、没有凭证」的脏值。
+        // 原样返回的话调用方会拼出 `Bearer Bearer`，正好是这个函数要防的
+        // 那种双前缀形态；返回空串则让调用方走「没有凭证」那条分支（AutoClaw
+        // 报「缺少 accessToken」，signed_auth_headers 干脆不发这个头）。
+        if rest.is_empty() {
+            return String::new();
+        }
+        if !rest.starts_with(char::is_whitespace) {
+            // `Bearerxyz` 这种：前缀后面没有空白，不构成前缀，原样返回
+            return current.to_string();
+        }
+        current = rest.trim_start();
     }
-    trimmed.to_string()
 }
 
 // ─── Windows DPAPI ──────────────────────────────────────────

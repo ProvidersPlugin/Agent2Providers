@@ -18,7 +18,7 @@ path = "src/main.rs"
 # 只控制「编不编进二进制」，不改变任何行为。
 [features]
 default = ["all"]
-all = ["demo", "commandcode", "modelscope", "orcaterm", "loomy", "lobsterai", "raccoon", "atomcode", "autoclaw", "officeace", "zcode", "workbuddy", "cline", "kuku", "monkeycode", "qoder", "trae", "catpaw", "accio", "codearts", "antigravity"]
+all = ["demo", "commandcode", "modelscope", "orcaterm", "loomy", "lobsterai", "raccoon", "atomcode", "autoclaw", "officeace", "zcode", "workbuddy", "cline", "kuku", "monkeycode", "qoder", "trae", "catpaw", "accio", "codearts", "antigravity", "doubaowork"]
 demo = []
 commandcode = []
 modelscope = []
@@ -40,6 +40,10 @@ catpaw = []
 accio = []
 codearts = []
 antigravity = []
+doubaowork = []
+
+[build-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
 
 [dependencies]
 # 同仓库内的两个契约 crate（工作区成员）。网关侧按 git tag 引用它们的

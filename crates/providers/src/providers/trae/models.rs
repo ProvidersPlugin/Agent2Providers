@@ -79,6 +79,29 @@ const CACHE_TTL_MS: i64 = 60 * 60 * 1000;
 /// 广告 id 的后缀（见模块头"广告名带 `-solo` 后缀"）。
 pub const ADVERTISE_SUFFIX: &str = "-solo";
 
+/// Max 模式变体的广告后缀：`<config>-solo-max`。
+///
+/// ── 为什么要造一个变体（而不是让用户切开关）────────────────
+/// Max 模式在上游是**请求体里的两个字段**（`model_auto_selection.strategy =
+/// "max"` 与 `context_window_size`），模型名不变；而本网关对客户端暴露的只有
+/// `/v1/models` 这张清单，没有"给某个模型开个开关"的通道。所以把一个模型能开
+/// Max 这件事**编码进 id**：清单里多一行 `<config>-solo-max`，客户端选中它就
+/// 等于选了 Max —— 与参考实现（magpie 的 `-max` 后缀）同一套做法。
+///
+/// 窗口值取 [`MAX_CONTEXT_WINDOW`]：目录接口（`get_detail_param`）里的
+/// `context_window_tokens.max` **实测恒等于 `dev`**（49 条全如此），不能拿来当
+/// Max 窗口；而客户端模型列表接口里的 `context_window_size.max` 我们这条链路
+/// 拿不到。所以这里用一个常量，见该常量的说明。
+pub const MAX_ADVERTISE_SUFFIX: &str = "-max";
+
+/// Max 变体广告出去的上下文窗口（1M）。
+///
+/// 上游对 `context_window_size` 的语义是"这次请求按多大的窗口计费/裁剪"，值由
+/// 客户端在 Max 模式下自己带。Trae 的 Max 档对外宣传就是 1M，这里照抄。
+/// 取不到真实值时的代价：带得比上游实际支持的大，上游会按自己的上限裁剪（不会
+/// 报错）；带得小则白瞎了 Max 档。所以宁大勿小。
+pub const MAX_CONTEXT_WINDOW: i64 = 1_000_000;
+
 #[derive(Clone, Default)]
 struct Cache {
     models: Vec<Value>,
@@ -208,9 +231,46 @@ pub fn parse_catalog(payload: &Value) -> Vec<Value> {
                 object.insert("credits".to_string(), Value::String(credits_text(rate)));
             }
         }
+        // Max 变体：同一份能力位，只把窗口换成 1M、id 加 `-max`。
+        // 判定见 [`max_variant_of`]（决定哪些模型该有 Max 档）。
+        if let Some(mut variant) = max_variant_of(&item, context) {
+            if let Some(object) = variant.as_object_mut() {
+                object.insert("maxInputTokens".to_string(), Value::from(MAX_CONTEXT_WINDOW));
+            }
+            out.push(variant);
+        }
         out.push(item);
     }
     out
+}
+
+/// 给一个已构造好的模型条目生成 Max 变体；不该有 Max 档时返回 `None`。
+///
+/// ── 判据：窗口 ≥ [`MAX_VARIANT_FLOOR`] 才算「值得开 Max」──────
+/// 上游目录里没有"这个模型支持 Max"的字段（`display_config.max_mode` 实测只有
+/// 两条内部 subagent 为 true，与 Max 档无关）。所以按窗口分档：本家目录里
+/// 主流是 200k（25 条）、豆包 256k（6 条）、`custom_model_gemini` 300k，
+/// 再往上就是 1M 那几个槽位。取 256k 当门槛，让豆包与 1M 档都能拿到 Max，
+/// 200k 那批不生成 —— 给 200k 的模型也挂一个 1M 变体，等于替上游承诺它做不到
+/// 的事，用户选中后要么被上游截断、要么直接报错。
+///
+/// 真机上若发现某个 200k 模型也能开 Max，改这个常量即可，不必动结构。
+const MAX_VARIANT_FLOOR: i64 = 256_000;
+
+fn max_variant_of(item: &Value, context: i64) -> Option<Value> {
+    if context < MAX_VARIANT_FLOOR {
+        return None;
+    }
+    let object = item.as_object()?;
+    let id = object.get("id").and_then(Value::as_str)?;
+    let name = object.get("name").and_then(Value::as_str).unwrap_or(id);
+    let mut variant = item.clone();
+    let target = variant.as_object_mut()?;
+    // id 在 `-solo` 之后再加 `-max`：`<config>-solo-max`。
+    // `payload::sanitize_model_name` 会按相反顺序把两段都剥掉。
+    target.insert("id".to_string(), Value::String(format!("{id}{MAX_ADVERTISE_SUFFIX}")));
+    target.insert("name".to_string(), Value::String(format!("{name} (Max)")));
+    Some(variant)
 }
 
 /// 每个模型的积分倍率：藏在条目的 `display_contact_config` 里 —— 那是**一段 JSON 字符串**，

@@ -269,6 +269,23 @@ pub async fn refresh_session(
                 GatewayError::with_status(502, format!("token 续期失败: {error}"))
             }
         })?;
+    // ── 404 / 405 单独说清楚（issue #381）─────────────────────────
+    // 续期端点存在（社区实测它回 400「refreshToken is empty」），所以 404
+    // 几乎只意味着一件事：**这个账号的 endpoint 指错了站点**（例如国际版
+    // 账号的 endpoint 是空串，插件回落到国内版）。这种情况下重新登录、重新
+    // 导入凭证都修不好 —— 必须改端点。原来它和「凭证被作废」共用一句话，
+    // 把用户往错误的方向带。
+    if matches!(response.status, 404 | 405) {
+        return Err(GatewayError::with_status(
+            i32::from(response.status),
+            format!(
+                "续期接口不存在（HTTP {}，请求地址 {url}）：通常是账号的端点（endpoint）\
+                 与账号所在地区不符，而不是凭证失效。请检查该账号的 endpoint 配置\
+                 （国际版应为 https://www.workbuddy.ai）",
+                response.status
+            ),
+        ));
+    }
     let data = unwrap_response(&response, "auth/token/refresh")?;
     let next = refresh_result_from(&data);
     if next.access_token.is_empty() {

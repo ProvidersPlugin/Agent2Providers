@@ -1,0 +1,140 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-cursor-auth",
+    "version": "0.2.23",
+    "directory": "packages/cursor"
+  },
+  "files": [
+    {
+      "source": "packages/cursor/package.json",
+      "destination": "package.json"
+    },
+    {
+      "source": "packages/cursor/index.mjs",
+      "destination": "index.mjs"
+    },
+    {
+      "source": "packages/cursor/native-session.mjs",
+      "destination": "native-session.mjs"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "localDerivation": {
+    "kind": "behavior-preserving ESM domain-module split",
+    "scope": "cursor directory only",
+    "description": "Relocated complete existing functions and classes from index.mjs and native-session.mjs into ordinary ESM domain modules. No protocol, login, conversation, retention, usage-debt, fallback, cancellation, or client-tool isolation implementation was replaced.",
+    "copiedSourceSha256": {
+      "index.mjs": "3ccc6b7e78c78cd3891144176cc6dd4aab7c3dd3d44690bc3975658dd6123bdc",
+      "native-session.mjs": "b11eb8f5ca3614833e23980958fdca98e579a1c6d5e0316e1aeb5d31391cc727",
+      "package.json": "16e0b54876ca84d129ec2d463203a0c2f694b7d757f17036ab724d30c56b46dd",
+      "LICENSE": "bebc3d1ec74f197b010ed6f6b6743dbae73fe4865d71bd0670b0a4e203056679"
+    },
+    "derivedFiles": [
+      {
+        "source": "packages/cursor/index.mjs",
+        "destinations": [
+          { "file": "index.mjs", "role": "Unchanged named CursorAuthPlugin body and compatible _internal export keys" },
+          { "file": "constants.mjs", "role": "Cursor endpoint, client, protocol and environment constants" },
+          { "file": "auth.mjs", "role": "CLI discovery, keychain, token renewal, team cache, login and account calls" },
+          { "file": "usage.mjs", "role": "Plan usage pools, on-demand budget and Grok Bot allowance" },
+          { "file": "models.mjs", "role": "Picker catalog, token-keyed model cache, variant resolution and runtime model shape" },
+          { "file": "protocol.mjs", "role": "Compatibility protobuf, Connect framing, failure mapping and usage decoding" },
+          { "file": "conversation.mjs", "role": "Caller MCP catalog, imported history, session identity and Run bootstrap blobs" },
+          { "file": "usage-debt.mjs", "role": "Single usage-event claims, debt, in-flight collection and per-Run ledger" },
+          { "file": "transport.mjs", "role": "Endpoint cache, HTTP/2 to HTTP/1.1 fallback and bounded native outbound FIFO" },
+          { "file": "agent-run.mjs", "role": "Native and stateless Run opening, accounting, heartbeat and cancellation closures" },
+          { "file": "decoder.mjs", "role": "Stateless stream decoder and unchanged caller-only MCP exec bridge" },
+          { "file": "chat.mjs", "role": "Chat responses, continuation/rebuild selection, regional retry and Max Mode retry" }
+        ]
+      },
+      {
+        "source": "packages/cursor/native-session.mjs",
+        "destinations": [
+          { "file": "native-session.mjs", "role": "Public facade re-exporting every original native-session API name" },
+          { "file": "native-core.mjs", "role": "One limits object and error class, hashing, canonical encoding and timer primitives" },
+          { "file": "native-protocol.mjs", "role": "Strict native protobuf and MCP argument decoding" },
+          { "file": "native-quiet.mjs", "role": "Complete original Quiet class and native frame classification" },
+          { "file": "native-history.mjs", "role": "Continuation history/result validation and complete Segment class" },
+          { "file": "native-owner.mjs", "role": "Complete original NativeSession class with per-owner state and wire/pool dependencies" },
+          { "file": "native-pool.mjs", "role": "Complete original NativeSessionPool class and sole nativeSessions singleton" }
+        ]
+      },
+      {
+        "source": "packages/cursor/package.json",
+        "destination": "package.json",
+        "change": "Updated only the files allowlist to include derived modules, LICENSE and SOURCE.json; removed the absent README entry. Version, main and exports are unchanged."
+      }
+    ],
+    "preservedPublicExports": {
+      "index.mjs": ["CursorAuthPlugin", "_internal"],
+      "native-session.mjs": ["NATIVE_LIMITS", "NativeSessionError", "Quiet", "nativeFields", "nativeMcpArgs", "NativeSessionPool", "nativeSessions"]
+    },
+    "stateLifecycle": "Existing process/module caches remain declared exactly once in their domain modules, not recreated per plugin or request. Retained Run and segment state stays on the original owner instances; per-Run accounting/decoder/transport closures stay together. Pool and wire dependencies remain injected through the original constructor.",
+    "wiringChanges": [
+      "Added static ESM imports/exports and MIT/SOURCE attribution comments; no eval, new Function, vm or textual runtime loading.",
+      "Moved the existing _internal resetH1/onH1 and resetTeam/expireTeam closure bodies to their state-owning modules; the regional retry invokes resetH1() instead of assigning a cross-file primitive copy.",
+      "All internal imports stay within this Cursor directory or Node built-ins; the module dependency graph is acyclic."
+    ],
+    "clientToolIsolation": "Both Run paths retain x-cursor-agent-allowed-tools=mcp_tool_call,get_mcp_tools_tool_call. The original exec bridge still refuses Cursor shell/file/edit requests and foreign, unregistered or approval-based native MCP calls.",
+    "license": "MIT; original LICENSE preserved without modification"
+  },
+  "securityDerivations": [
+    {
+      "kind": "Cursor account-auth endpoint trust boundary",
+      "scope": "Cursor vendor upstream destinations only; not user-selected egress proxy URLs",
+      "derivedFrom": "packages/cursor/index.mjs at 0ea458b4a5319f025e0828f2600da57941e28867",
+      "references": [
+        {
+          "domain": "cursor.sh",
+          "source": "packages/cursor/index.mjs:44,46",
+          "examples": ["https://api2.cursor.sh", "https://agentn.global.api5.cursor.sh"],
+          "reference": "https://github.com/magpie-community/plugins/blob/0ea458b4a5319f025e0828f2600da57941e28867/packages/cursor/index.mjs#L44-L46"
+        },
+        {
+          "domain": "cursor.com",
+          "source": "packages/cursor/index.mjs:45,601-610",
+          "examples": ["https://cursor.com"],
+          "reference": "https://github.com/magpie-community/plugins/blob/0ea458b4a5319f025e0828f2600da57941e28867/packages/cursor/index.mjs#L601-L610"
+        }
+      ],
+      "changes": [
+        {
+          "file": "transport.mjs",
+          "change": "Validate configured, cached and default Agent URLs as absolute HTTPS URLs on cursor.sh/cursor.com or their dot-delimited subdomains. Reject userinfo (including empty @), fragments (including empty #), whitespace/backslashes, malformed URLs/DNS labels, non-default ports and noncanonical port syntax. Return the validated canonical URL; only omitted port or literal :443 is accepted. Validation stays outside the configuration fetch fallback catch, and the old cache entry is removed before validating a newly advertised endpoint."
+        },
+        {
+          "file": "chat.mjs",
+          "change": "Surface only CURSOR_ENDPOINT_REJECTED NativeSessionError as the existing HTTP 502 cursor_error response with X-Magpie-Sign-In: kept, covering both initial selection and regional refresh. Do not change handling of other native-session errors."
+        },
+        {
+          "files": ["auth.mjs", "transport.mjs", "usage.mjs", "usage-debt.mjs"],
+          "change": "Set redirect: error on all fetch routes carrying the account bearer token or API key, so a server-provided HTTP Location cannot choose another authenticated upstream destination. Grok Bot's Cookie request already has redirect: error and remains unchanged; auth/poll carries no bearer/key and is unchanged."
+        }
+      ],
+      "samePackageReview": {
+        "serverSelectedEndpoint": "Only agentUrlConfig.agentUrl/agentnUrl feeds a dynamic authenticated destination, via agentURL -> runNative/runOnce -> open/openH2 -> HTTP/2 Authorization; both initial selection and regional refresh share validation.",
+        "fixedAuthenticatedRoutes": "Dashboard/model/account unary calls, API-key exchange, usage-event queries, GetHardLimit, GetCurrentPeriodUsage, RunSSE and BidiAppend use the pinned HTTPS API constant; Grok Bot uses the pinned HTTPS WEBSITE constant. HTTP/2 does not follow redirects, and authenticated fetch calls now reject redirects.",
+        "nonDestinationURLs": "The loader input URL only selects /chat/completions and is not fetched upstream. Browser login uses the fixed WEBSITE constant. History images are embedded data or text and are never fetched with account credentials. No other server-returned body URL routes to an authenticated request."
+      },
+      "errorBehavior": "The first present agentUrl/agentnUrl candidate is validated in the original priority order. An invalid selected candidate throws HTTP 502 CURSOR_ENDPOINT_REJECTED before opening that endpoint; the response names the field and rejection reason but never echoes the URL, userinfo or token. No second candidate, default-host fallback or regional/Max Mode retry is used after rejection. Missing endpoint fields or a failed config fetch keep the existing validated default-AGENT fallback and cache TTL; valid configured endpoints retain their existing priority and caching.",
+      "unchanged": "All public exports, MIT LICENSE, limits/session/pool/usage-debt ownership, client-tool isolation, transport FIFO, heartbeat, timeout and HTTP/2 fallback logic remain intact. No main/network, host, Rust, build configuration, UI or other provider changes; no egress-proxy allowlist.",
+      "verification": "Pinned local reference source and same-package callsite review; pure Bun bundling only, with no plugin execution, tests, accounts or upstream requests."
+    },
+    {
+      "kind": "Shared caller-MCP authorization for retained and stateless Cursor Runs",
+      "files": ["decoder.mjs"],
+      "derivedFrom": "packages/cursor/index.mjs:2600-2672 at 0ea458b4a5319f025e0828f2600da57941e28867",
+      "reference": "https://github.com/magpie-community/plugins/blob/0ea458b4a5319f025e0828f2600da57941e28867/packages/cursor/index.mjs#L2600-L2672",
+      "change": "Extracted the existing native-path caller authorization into callerMcpAllowed and apply it before publishing or answering any MCP exec envelope in both native=true and native=false paths. Require any supplied provider/server namespace to be tools or legacy magpie, the resolved tool name to be in caller tools, no approval field 6 or nonzero approval field 7, and a namespaced field-1 name when explicit field 5 is absent. Every repeated envelope is checked before the selected call can be returned.",
+      "toolChoice": "The unchanged conversation.mjs toolsOf returns no tools for omitted/empty declarations or tool_choice:none and filters a named choice; both exec paths now enforce that resulting caller list.",
+      "denialBehavior": "Foreign, unregistered, disabled or approval-requiring MCP requests use the existing upstream not available ExecClientControlMessage followed by exec close and return null. No client toolcall is emitted or executed. Rejections still count as bridge-answered calls in the original decoder/native owner batch and usage paths; a naturally unknown model tool is a refused call, not a claimed local RCE.",
+      "unchanged": "Valid native-call shape, native strict protobuf/MCP decoding, duplicate identity validation, native/stateless argument encoding, IDs, actual execution boundary, client-owned execution, limits, pool/session/usage-debt state and all public exports are unchanged.",
+      "verification": "Static source diff and pure Bun bundling only; no CLI, plugin execution, tests, accounts or requests."
+    }
+  ]
+}

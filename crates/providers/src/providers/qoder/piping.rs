@@ -30,8 +30,7 @@ use futures::StreamExt;
 use serde_json::Value;
 
 use crate::telemetry::RequestTelemetry;
-use crate::http as egress;
-use crate::stall::{self, IDLE_TIMEOUT_PREFIX};
+use crate::stall::IDLE_TIMEOUT_PREFIX;
 
 use crate::errors::GatewayError;
 use crate::logging;
@@ -58,15 +57,7 @@ pub(super) async fn prefetch_stream_head(
 > {
     // 传输层错误先折进 io::Error（文案与通用层 `ForwardStream::new` 同一出处）；
     // 空闲守卫从这里武装，随剩余流一路带给 `drive_stream`
-    let source = response.bytes_stream().map(|item| {
-        item.map_err(|error| std::io::Error::other(egress::describe_chain(&error)))
-    });
-    let mut source = stall::idle_guard(
-        Box::pin(source),
-        std::time::Duration::from_millis(
-            crate::timeouts::current().stream_idle_ms(),
-        ),
-    );
+    let mut source = crate::response_stream::sse(response);
     let capture = telemetry.capture();
     let mut lines = stream::LineBuffer::new();
     let mut prefetched: Vec<Value> = Vec::new();
@@ -99,7 +90,7 @@ pub(super) async fn prefetch_stream_head(
                 SseEvent::Skip => {}
                 // 流直接收尾（无内容无错误）：剩余流原样交给 drive_stream，
                 // 由它走正常收尾（finish 帧 + [DONE]）
-                SseEvent::Done => return Ok((prefetched, with_pending_tail(source, lines))),
+                SseEvent::Done => return Ok((prefetched, Box::pin(futures::stream::empty()))),
                 // 首帧之前的业务错误：冷却落库（与非流式同一落点，排队态不在
                 // `record_limited` 的名单里、天然不落）+ 交回编排层（额度/鉴权
                 // 走换号与刷新，排队由调用方退避重发）。任何分类都返回
@@ -210,6 +201,7 @@ pub(super) async fn drive_stream(
 ) -> Result<(), String> {
     let mut lines = stream::LineBuffer::new();
     let mut failed: Option<String> = None;
+    let mut completed = false;
     // 调试模式的采集器：预读阶段旁路的是同一个实例，这里续上（解析之前采
     // 原始字节 —— 采的是上游原样吐出的内容）
     let capture = telemetry.capture();
@@ -245,7 +237,7 @@ pub(super) async fn drive_stream(
         for data in lines.push(&chunk) {
             match stream::parse_sse_line(&data) {
                 SseEvent::Skip => {}
-                SseEvent::Done => break 'outer,
+                SseEvent::Done => { completed = true; break 'outer; }
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     // 上游的业务错误（HTTP 200 里的信封错误）：转成带状态码的
                     // 文案写进流，形态与通用层的收尾一致。额度类在这里落冷却
@@ -281,7 +273,7 @@ pub(super) async fn drive_stream(
         }
     }
     // 尾行（上游没以换行收尾时）
-    if failed.is_none() {
+    if !completed {
         for data in lines.finish() {
             match stream::parse_sse_line(&data) {
                 SseEvent::Chunk(chunk) => {
@@ -324,6 +316,9 @@ pub(super) async fn drive_stream(
                 return Ok(());
             }
         }
+        if translator.usage.is_some() {
+            if send_frame(sink, &translator.usage_frame()).await.is_err() { return Ok(()); }
+        }
         let _ = sink
             .send(
                 stream::sse_frame(&serde_json::json!({
@@ -333,7 +328,7 @@ pub(super) async fn drive_stream(
             )
             .await;
         let _ = sink.send(stream::sse_done().as_bytes()).await;
-        return Ok(());
+        return Err(message);
     }
 
     // 正常收尾：先把拆解器的缓冲冲刷出来，再发 finish 帧

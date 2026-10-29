@@ -455,7 +455,7 @@ pub async fn ensure_initialized(api_key: &str, gateway_proxy: &str) {
     let fingerprint = generate(key);
     let mut headers = endpoints::cli_headers();
     headers.extend(endpoints::auth_headers(key));
-    let client = http::client(None, gateway_proxy);
+    let client = http::control_client(None, gateway_proxy);
     let fingerprint_url = endpoints::url(endpoints::FINGERPRINT_PATH);
     let lifecycle_url = endpoints::url(endpoints::LIFECYCLE_PATH);
     let fingerprint_body = fingerprint.record_payload();

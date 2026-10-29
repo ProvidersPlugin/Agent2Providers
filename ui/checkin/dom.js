@@ -106,7 +106,7 @@ export function icon(name, size = 16) {
 }
 
 /**
- * 提供商图标：优先用真图标（网关 `/plugins/runtime/providers/<id>.png`），
+ * 提供商图标：优先用真图标（网关 `/plugins/runtime/providers/<file>`），
  * 没有则回落首字母。
  *
  * ── 图标从哪来 ──────────────────────────────────────────────
@@ -131,15 +131,19 @@ const ICON_FALLBACK = {
   'cline-free': 'cline',
   'accio-cn': 'accio',
 };
+const ICON_FILES = {
+  'minimax-code': 'minimax-code.svg',
+  'minimax-code-global': 'minimax-code.svg',
+};
 
 export function providerBadge(id, label) {
   const name = String(label || id || '·');
   const initial = name.trim().slice(0, 1).toUpperCase() || '·';
-  const slug = ICON_FALLBACK[id] || id;
+  const file = ICON_FILES[id] || `${ICON_FALLBACK[id] || id}.png`;
   const node = el('span', { class: 'ck-badge', title: name });
   // `<img>` 的 onError 回落到首字母：网关没这张图时不留一个破图图标
   const img = el('img', {
-    src: `/plugins/runtime/providers/${slug}.png`,
+    src: `/plugins/runtime/providers/${file}`,
     alt: '',
     loading: 'lazy',
   });

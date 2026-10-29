@@ -1,46 +1,102 @@
-//! ModelScope 两种出站请求的薄封装：网页站（cookie 鉴权）与推理域（Bearer）。
-//!
-//! ── 为什么收在一处 ──────────────────────────────────────────
-//! 四处消费者（`checkin` / `balance` / `models` / 账号添加时的探活）共用同一套
-//! 超时、错误翻译与「响应信封 → 人话」口径；各写一份会让「哪个码算令牌失效」
-//! 这类判据分叉。
-//!
-//! ── 上游的**两种信封**（实测，都出现在同一家的不同接口上）──
-//! 这是本文件最需要注意的一处：魔搭自己的接口没统一大小写。
-//!
-//! ```text
-//!   /api/v1/users/login/info        {"Code":200,"Success":true,"Data":{…},"Message":"success"}
-//!   /api/v1/inference/rate-limit    {"Code":200,"Success":true,"Data":{…}}
-//!   /openapi/v1/magicubes/balance   {"success":true,"data":{…}}            ← 全小写
-//! ```
-//!
-//! 因此取值一律**两种写法都认**（[`succeeded`] / [`data_of`] / [`message_of`]），
-//! 不要只按一种写死 —— 那会让某一条链路把成功读成失败（或反之）。
-//!
-//! ── 令牌失效的判据 ──────────────────────────────────────────
-//! 网页站对无效令牌给的是 **HTTP 401 + `{"Code":10019901001,"Message":"access
-//! forbidden"}`**。也有接口用 HTTP 200 + `Success:false` 表达失败 —— 两条路
-//! 都要认：HTTP 401/403 → 调用方按令牌失效处置，业务位为假 → 502 并把上游
-//! 文案带出来。
+//! 网页站使用会话 Cookie，推理目录使用 Bearer；两种响应信封的字段大小写不同。
+//! 401 表示凭证失效，403 也可能是权限或风控拒绝，不能一律提示重新登录。
 
+use agent2api_provider_protocol::WireProxy;
 use serde_json::Value;
 
 use super::region::Region;
 use crate::http;
+use crate::proxy_util::{resolve_account_proxy, ProxyResolution};
 
-/// 响应信封的**成功位**（大写 `Success` 与小写 `success` 都认）。
-///
-/// 两种都没有时看 `Code`（缺失则视为成功 —— HTTP 已经 2xx 了，没有反证
-/// 就照实报成功）。
+pub struct ControlClient {
+    region: Region,
+    token: String,
+    http: reqwest::Client,
+}
+
+impl ControlClient {
+    pub fn new(
+        region: Region,
+        token: String,
+        proxy: Option<&WireProxy>,
+        gateway_proxy: &str,
+    ) -> Result<Self, String> {
+        if token.trim().is_empty() {
+            return Err("ModelScope 账号缺少令牌，无法查询".to_string());
+        }
+        if let Some(proxy) = proxy {
+            reqwest::Proxy::all(proxy.to_url())
+                .map_err(|_| "ModelScope 账号代理地址无效".to_string())?;
+        }
+        Ok(Self { region, token, http: http::control_client(proxy, gateway_proxy) })
+    }
+
+    pub fn from_store(
+        ctx: &agent2api_provider_sdk::PluginCtx,
+        region: Region,
+        account: &agent2api_provider_sdk::StoreAccount,
+    ) -> Result<Self, String> {
+        let record = crate::store::record_of(account);
+        let proxy = match resolve_account_proxy(record.get("proxy")) {
+            Some(ProxyResolution::Resolved(proxy)) => Some(proxy),
+            Some(ProxyResolution::Failed(error)) => return Err(error),
+            None => None,
+        };
+        Self::new(region, super::credentials::token_of(&record)?, proxy.as_ref(), &ctx.env.proxy)
+    }
+
+    pub async fn for_account(
+        ctx: &agent2api_provider_sdk::PluginCtx,
+        region: Region,
+        account: &str,
+    ) -> Result<Self, String> {
+        let found = ctx.store_get(region.provider_id(), account).await.map_err(|error| error.to_string())?;
+        Self::from_store(ctx, region, &found)
+    }
+
+    pub async fn site_json(&self, path: &str, operation: &str) -> Result<Value, String> {
+        let headers = vec![("Cookie".to_string(), format!("m_session_id={}", self.token))];
+        let (status, payload) = http::get_json(&self.http, &site_url(self.region, path), &headers)
+            .await.map_err(|error| format!("{operation}失败：{error}"))?;
+        self.checked(status, payload, operation, true)
+    }
+
+    pub async fn models_json(&self, path: &str) -> Result<Value, String> {
+        let headers = vec![("Authorization".to_string(), format!("Bearer {}", self.token))];
+        let url = format!("{}{path}", self.region.inference_base_url());
+        let (status, payload) = http::get_json(&self.http, &url, &headers).await?;
+        self.checked(status, payload, "模型目录查询", false)
+    }
+
+    fn checked(&self, status: u16, payload: Value, operation: &str, site: bool) -> Result<Value, String> {
+        if status == 401 { return Err(expired_message(self.region, status, site)); }
+        if status == 403 {
+            return Err(format!("{operation}被上游拒绝（HTTP 403），请检查账号权限或稍后重试"));
+        }
+        if !(200..300).contains(&status) { return Err(format!("{operation}返回 HTTP {status}")); }
+        if !payload.is_object() && !(!site && payload.is_array()) {
+            return Err(format!("{operation}返回无法识别的响应"));
+        }
+        if !succeeded(&payload) {
+            return Err(format!("{operation}失败（Code={}）：{}", code_of(&payload), message_of(&payload)));
+        }
+        if site && !data_of(&payload).is_object() {
+            return Err(format!("{operation}响应缺少业务数据"));
+        }
+        Ok(payload)
+    }
+}
+
+
+/// 响应信封的成功位；推理目录不带业务信封，交给调用方校验 data。
 pub fn succeeded(payload: &Value) -> bool {
-    if let Some(flag) = payload.get("Success").and_then(Value::as_bool) {
-        return flag;
+    for key in ["Success", "success"] {
+        if let Some(flag) = payload.get(key) {
+            return flag.as_bool() == Some(true);
+        }
     }
-    if let Some(flag) = payload.get("success").and_then(Value::as_bool) {
-        return flag;
-    }
-    match payload.get("Code").and_then(Value::as_i64) {
-        Some(code) => code == 200,
+    match payload.get("Code").or_else(|| payload.get("code")) {
+        Some(code) => matches!(code.as_i64(), Some(0 | 200)),
         None => true,
     }
 }
@@ -80,63 +136,7 @@ pub fn site_url(region: Region, path: &str) -> String {
     format!("{}{path}", region.site_base_url())
 }
 
-/// 向**网页站**发一次带会话 cookie 的 GET。
-///
-/// 鉴权是 `Cookie: m_session_id=<令牌>`（实测口径）。
-///
-/// 返回 `(status, payload)`；**业务位不在本函数里判** —— 调用方各自知道
-/// 「这次调用的成功长什么样」（签到只看 HTTP，余额看业务位）。
-pub async fn site_get(
-    region: Region,
-    path: &str,
-    token: &str,
-    what: &str,
-    gateway_proxy: &str,
-) -> Result<(u16, Value), String> {
-    if token.trim().is_empty() {
-        return Err("ModelScope 账号缺少令牌，无法查询".to_string());
-    }
-    let url = site_url(region, path);
-    let headers = vec![("Cookie".to_string(), format!("m_session_id={token}"))];
-    let client = http::client(None, gateway_proxy);
-    let (status, payload) = http::get_json(&client, &url, &headers)
-        .await
-        .map_err(|error| {
-            if error.contains("超时") {
-                format!("{what}超时，请稍后重试")
-            } else {
-                format!("{what}失败：{error}")
-            }
-        })?;
-    Ok((status, payload))
-}
-
-/// 向**推理域**发一次带 Bearer 的 GET（目前只有模型目录用）。
-///
-/// 与 [`site_get`] 是**两个域**：网页站挂了会连签到一起失败，而推理域挂了只
-/// 影响模型目录 —— 分开成两个函数，才不会让排障时误判成同一处故障。
-pub async fn inference_get(
-    region: Region,
-    path: &str,
-    token: &str,
-    what: &str,
-    gateway_proxy: &str,
-) -> Result<(u16, Value), String> {
-    if token.trim().is_empty() {
-        return Err("ModelScope 账号缺少令牌，无法查询".to_string());
-    }
-    let url = format!("{}{path}", region.inference_base_url());
-    let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-    let client = http::client(None, gateway_proxy);
-    http::get_json(&client, &url, &headers)
-        .await
-        .map_err(|error| format!("{what}失败：{error}"))
-}
-
-/// 令牌失效的统一文案（网页站与推理域共用一个判据：401 / 403）。
-///
-/// 打错站点时上游给的就是 401 —— 那正是用户把两地账号加混时最需要看到的
-/// 一句话，所以文案里点明「不属于该站点」。
+/// HTTP 401 的令牌失效文案；错误站点也可能返回 401，因此同时提示站点不匹配。
 pub fn expired_message(region: Region, status: u16, site: bool) -> String {
     if site {
         format!(

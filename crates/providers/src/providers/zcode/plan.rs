@@ -62,9 +62,9 @@ pub(super) fn build_request(
     let jwt = text_of("jwt");
     if jwt.is_empty() {
         return Err(GatewayError::with_status(
-            401,
-            "该 ZCode 账号缺少套餐登录态（jwt），无法使用套餐池（Start Plan）通道：\
-             请重新登录该账号，或在账号设置里把「使用套餐」切回编码套餐",
+            400,
+            "该 ZCode 账号的套餐凭据字段缺失（jwt），无法使用套餐池（Start Plan）：\
+             请检查导入记录及 pluginSecret 的存储形态；只有确认登录态未保存时才需要重新登录",
         ));
     }
     let model = body.get("model").and_then(Value::as_str).map(str::trim).unwrap_or("");
@@ -122,9 +122,8 @@ pub(super) fn build_request(
 }
 
 fn captcha_pool_empty(provider_id: &str) -> GatewayError {
-    let message = "套餐池（Start Plan）通道需要人机验证令牌，当前令牌池为空：\
-         令牌由**打开着的界面**自动铸造，请先打开主窗口（轻量模式下窗口被销毁时）\
-         或浏览器面板页让它补铸；也可以先在账号设置里把「使用套餐」切回编码套餐";
+    let message = "上游当前要求套餐池（Start Plan）推理请求完成人机验证，但本机令牌池为空：\
+         请打开主窗口或浏览器面板页补充令牌；这不是账号失效或套餐额度不足";
     if crate::readiness::hold(provider_id, message) {
         logging::log(
             "[Routing]",

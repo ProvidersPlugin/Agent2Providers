@@ -1,0 +1,86 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-grok-auth",
+    "version": "0.2.1",
+    "directory": "packages/grok"
+  },
+  "files": [
+    {
+      "source": "packages/grok/package.json",
+      "destination": "package.json"
+    },
+    {
+      "source": "packages/grok/index.mjs",
+      "destination": "index.mjs"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "derivedFiles": [
+    { "source": "packages/grok/index.mjs", "destination": "index.mjs", "purpose": "Public entry point and original GrokAuthPlugin / _internal exports" },
+    { "source": "packages/grok/index.mjs", "destination": "constants.mjs", "purpose": "Provider identity, CLI reference source and original timing constants" },
+    { "source": "packages/grok/index.mjs", "destination": "cli.mjs", "purpose": "Unchanged CLI discovery, real installed version detection, service headers and cancellable response reads" },
+    { "source": "packages/grok/index.mjs", "destination": "auth.mjs", "purpose": "CLI-owned home/scope/identity references, device OAuth and original single-flight renewal queue; no credential copies or stale-token fallback" },
+    { "source": "packages/grok/index.mjs", "destination": "http.mjs", "purpose": "Responses request parameters, fail-closed web-access restrictions, cancellable forwarding and kept sign-in responses" },
+    { "source": "packages/grok/index.mjs", "destination": "models.mjs", "purpose": "Default and live model catalogs with context-window variants and CLI reference reads" },
+    { "source": "packages/grok/index.mjs", "destination": "usage.mjs", "purpose": "Cancellable subscription usage and original shared rate-limit state; no auth persistence" },
+    { "source": "packages/grok/index.mjs", "destination": "plugin.mjs", "purpose": "Plugin factory, two reference-only CLI methods, explicit storage metadata and public hooks" }
+  ],
+  "localChanges": [
+    {
+      "files": ["http.mjs"],
+      "purpose": "web_search and web_search_preview external_web_access=false return local HTTP 400 unsupported_external_web_access before credential renewal or upstream fetch; the restriction is never silently removed"
+    },
+    {
+      "files": ["auth.mjs", "plugin.mjs", "models.mjs", "usage.mjs", "http.mjs"],
+      "purpose": "CLI OAuth success stores only source=grok-cli, home, selected scope and accountId. Each operation rereads that scope and verifies the account identity; access/refresh tokens and torn-read caches are not stored or used as fallback"
+    },
+    {
+      "files": ["auth.mjs", "plugin.mjs", "constants.mjs"],
+      "purpose": "CPA JSON import method 2 is unavailable. Supporting explicit manual imports requires preserving the original Auth fields plus scope in the host encrypted store and renewal without creating another plaintext home/auth.json. No CPA file is read or copied here"
+    },
+    {
+      "files": ["auth.mjs", "cli.mjs"],
+      "purpose": "Browser method 0 runs only the existing real CLI login --device-auth in its own home; the CLI alone creates/writes auth.json. No plugin credential homes or credential-file writes remain"
+    },
+    {
+      "files": ["cli.mjs", "constants.mjs"],
+      "purpose": "Client headers use the exact detected installed CLI version, including older versions. Missing or unreadable versions fail with an installation/readability instruction; no higher hardcoded fallback or automatic install is used"
+    },
+    {
+      "files": ["auth.mjs", "cli.mjs", "http.mjs", "models.mjs", "usage.mjs", "plugin.mjs"],
+      "purpose": "Optional AbortSignal propagates through CLI-file reads, torn-read retries, version detection, OAuth waiting and cancellation, shared renewal waiting, fetch and response body reads; one cancelled waiter does not stop a renewal joined by others"
+    }
+  ],
+  "hostReadOnly": {
+    "recordedOn": "2026-10-27",
+    "files": ["auth.mjs", "plugin.mjs", "index.mjs"],
+    "operations": "token reads only the saved CLI home/scope, checks accountId and expiry, and fails on a rejected unchanged token. No automatic grok models call, renewal queue or CLI credential-file write remains",
+    "ensure": "auth.ensure(snapshot, info, {getAuth, force, signal}) rereads the live selected host reference before and after the real CLI-file read, compares the complete reference, and returns only the stored pure reference. force rechecks without rotating; a changed token must already have been provided by the original CLI",
+    "maintenance": "The factory no longer registers auth.refresh or refreshLead; metadata.refresh=false. The import-compatible refreshAuth entry reports grok_local_refresh_unsupported without invoking the CLI",
+    "explicitLogin": "Existing signIn device OAuth, current authorize, callback scope selection, and exact installed CLI version detection are preserved. Only an explicitly requested CLI login may write the CLI-owned auth.json",
+    "provenancePolicy": "Original repository, commit, package, derivedFiles and localChanges entries are preserved as historical provenance; this section records the current host read-only override"
+  },
+  "authMethods": [
+    {
+      "index": 0,
+      "type": "oauth",
+      "label": "Sign in with Grok Build (device code)",
+      "scope": "CLI-owned home/auth.json selected OAuth entry",
+      "storedFields": ["source", "home", "scope", "accountId"],
+      "credentials": "reference-only; no bearer or refresh token mirror"
+    },
+    {
+      "index": 1,
+      "type": "oauth",
+      "label": "Use Grok Build's current sign-in",
+      "scope": "Explicitly saved CLI home and selected OAuth entry; not another entry or identity",
+      "storedFields": ["source", "home", "scope", "accountId"],
+      "credentials": "reference-only; each operation rereads the CLI file"
+    }
+  ]
+}

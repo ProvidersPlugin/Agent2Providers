@@ -32,71 +32,66 @@ pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 // 计费接口在缺少 User-Agent 时会返回 403 / code=10085；请求级头可覆盖此默认值。
 const DEFAULT_USER_AGENT: &str = "undici";
 
-/// 客户端缓存（键 = 代理 URL，空串 = 直连）。
-fn cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+type ClientKey = (String, Option<crate::timeouts::Timeouts>);
+
+fn cache() -> &'static Mutex<HashMap<ClientKey, reqwest::Client>> {
+    static CACHE: OnceLock<Mutex<HashMap<ClientKey, reqwest::Client>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn stream_cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// 取控制面客户端，带 20 秒总超时，不能用于读取对话流。
+///
+/// 账号级代理优先，其次 `gateway_proxy`（空串或 `direct` 表示直连）。
+/// 代理 URL 非法时降级直连。
+pub fn control_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
+    cached_client(proxy, gateway_proxy, None)
 }
 
-/// 取一个客户端：账号级代理优先，其次网关默认出口，都没有就直连。
-///
-/// `gateway_proxy` 传 `ctx.env.proxy`（`""` = 直连，`"direct"` = 显式直连，
-/// 其余是代理 URL）。
-///
-/// ── 代理配错时的处置 ────────────────────────────────────────
-/// `reqwest::Proxy::all` 在 URL 非法时返回错误。这里**降级成直连**并返回
-/// 客户端 —— 与网关侧 `ProxyResolution` 的第三态同一条口径：可用性优先，
-/// 「代理配错了」不该让整条链路不可用。
-pub fn client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
-    cached_client(proxy, gateway_proxy, false)
-}
-
-/// 长响应按连接与读取空闲设限，不使用覆盖整个响应体的固定总时限。
+/// 长响应只限制建连与读取空闲，不设置整个响应体的总时限。
 pub fn stream_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
-    cached_client(proxy, gateway_proxy, true)
+    cached_client(proxy, gateway_proxy, Some(crate::timeouts::current()))
 }
 
-fn cached_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str, stream: bool) -> reqwest::Client {
-    let cache = if stream { stream_cache() } else { cache() };
-    let key = match proxy {
+fn cached_client(
+    proxy: Option<&proto::WireProxy>,
+    gateway_proxy: &str,
+    timeouts: Option<crate::timeouts::Timeouts>,
+) -> reqwest::Client {
+    let proxy_url = match proxy {
         Some(proxy) => proxy.to_url(),
         None => gateway_proxy.trim().to_string(),
     };
-    if let Ok(guard) = cache.lock() {
+    let key = (proxy_url, timeouts);
+    if let Ok(guard) = cache().lock() {
         if let Some(client) = guard.get(&key) {
             return client.clone();
         }
     }
-    let built = build(&key, stream);
-    if let Ok(mut guard) = cache.lock() {
+    let built = build(&key.0, timeouts);
+    if let Ok(mut guard) = cache().lock() {
+        if guard.len() >= 128 { guard.clear(); }
         guard.insert(key, built.clone());
     }
     built
 }
 
 /// 建一个客户端（代理 URL 为空 / `direct` = 直连）。
-fn build(proxy_url: &str, stream: bool) -> reqwest::Client {
+fn build(proxy_url: &str, timeouts: Option<crate::timeouts::Timeouts>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         // 与网关同一条栈：rustls，不依赖系统 openssl
         .use_rustls_tls()
         .user_agent(DEFAULT_USER_AGENT);
-    builder = if stream {
-        let timeouts = crate::timeouts::current();
-        builder.connect_timeout(Duration::from_millis(timeouts.connect_ms()))
-            .read_timeout(Duration::from_millis(timeouts.stream_idle_ms()))
-    } else {
-        builder.timeout(CONTROL_TIMEOUT)
+    builder = match timeouts {
+        Some(timeouts) => builder
+            .connect_timeout(Duration::from_millis(timeouts.connect_ms()))
+            .read_timeout(Duration::from_millis(timeouts.read_timeout_backstop_ms())),
+        None => builder.timeout(CONTROL_TIMEOUT),
     };
     let trimmed = proxy_url.trim();
     if trimmed.is_empty() || trimmed == "direct" {
         // ── `no_proxy()` 为什么必须显式调 ──────────────────────────
         // `reqwest` 开了 `system-proxy` 特性（Antigravity 要跟随系统代理，
-        // 见 [`client_system_proxy`]）之后，**默认**就会读系统设置。而仓内
+        // 见 [`control_client_system_proxy`]）之后，**默认**就会读系统设置。而仓内
         // 其余二十家的口径是「直连就是直连」（出口由账号代理决定，不被机器
         // 环境悄悄改写）—— 少了这一句，那些家的直连请求会突然走用户系统里
         // 配的代理，症状是「设了账号代理反而更慢 / 没设代理却报代理错误」。
@@ -105,7 +100,7 @@ fn build(proxy_url: &str, stream: bool) -> reqwest::Client {
         match reqwest::Proxy::all(trimmed) {
             Ok(proxy) => builder = builder.proxy(proxy),
             Err(_) => {
-                // 见 `client()` 的说明：降级直连，不阻断链路
+                // 见 `control_client` 的说明：降级直连，不阻断链路
                 builder = builder.no_proxy();
             }
         }
@@ -124,10 +119,10 @@ fn build(proxy_url: &str, stream: bool) -> reqwest::Client {
 /// **别把这条抄到别家** —— 对国内可直连的上游，「直连就是直连」才是正确
 /// 口径（见 [`build`] 里 `no_proxy()` 的说明）。
 ///
-/// 与 [`client`] 不同**不进缓存表**：它没有「出口参数」这一维，进程内一份
+/// 与 [`control_client`] 不同**不进缓存表**：它没有「出口参数」这一维，进程内一份
 /// 即可。系统代理改了要重启插件才生效（reqwest 在 build 时探测一次）——
 /// 登录与 Antigravity 的请求都是低频操作，这个取舍不影响正确性。
-pub fn client_system_proxy() -> reqwest::Client {
+pub fn control_client_system_proxy() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
@@ -275,9 +270,9 @@ pub async fn send_raw(
     timeout_ms: Option<u64>,
 ) -> Result<ApiResponse, reqwest::Error> {
     let client = match proxy {
-        Some(proxy) => client(Some(proxy), ""),
-        // `"direct"` 是 http::client 的显式直连哨兵（见它的说明）
-        None => client(None, "direct"),
+        Some(proxy) => control_client(Some(proxy), ""),
+        // `direct` 是显式直连，不跟随系统代理。
+        None => control_client(None, "direct"),
     };
     let mut builder = match method {
         "POST" => client.post(url),

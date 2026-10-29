@@ -27,6 +27,7 @@ pub struct ImageRequest {
 pub enum ImageResponseKind {
     Openai,
     Gemini,
+    ModelscopeAsync,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

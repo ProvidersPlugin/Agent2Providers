@@ -282,7 +282,7 @@ async fn execute(
             .as_ref()
             .map(|session| session.fingerprints.clone())
             .unwrap_or_default(),
-        submitted_fingerprints(&decision),
+        submitted_fingerprints(&decision, prepared.synthetic_tail),
     );
     let mut guard = FinishGuard::new(&ctx, inflight);
 

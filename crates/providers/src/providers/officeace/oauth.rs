@@ -126,7 +126,7 @@ fn random_bytes(count: usize) -> Vec<u8> {
 /// 第一步：向云端要一个 state（**无鉴权**）。
 async fn fetch_state() -> Result<String, String> {
     let url = format!("{CLOUD_BASE}/v1/claw/auth/state");
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
@@ -194,7 +194,7 @@ pub fn cancel(flow: &str) {
 /// 单次取码。`Ok(None)` = 还没登完（202）；`Err` = 作废（404）或其它失败。
 async fn poll_code(state: &str) -> Result<Option<String>, String> {
     let url = format!("{CLOUD_BASE}/v1/claw/auth/code?state={}", url_escape(state));
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .get(&url)
         .header("Accept", "application/json")
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
@@ -407,7 +407,7 @@ pub async fn refresh(
     .map(|(name, value)| format!("{}={}", url_escape(name), url_escape(value)))
     .collect::<Vec<_>>()
     .join("&");
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .post(TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
@@ -486,7 +486,7 @@ async fn exchange_code(
     .map(|(name, value)| format!("{}={}", url_escape(name), url_escape(value)))
     .collect::<Vec<_>>()
     .join("&");
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .post(TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
@@ -557,7 +557,7 @@ async fn fetch_permission(
         region: REGION,
         date_override: None,
     })?;
-    let mut request = crate::http::client(None, "direct")
+    let mut request = crate::http::control_client(None, "direct")
         .get(&url)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
     for (name, value) in &headers {
@@ -609,7 +609,7 @@ async fn resolve_project_id(credential: &SigningCredential, region: &str) -> Opt
         date_override: None,
     })
     .ok()?;
-    let mut request = crate::http::client(None, "direct")
+    let mut request = crate::http::control_client(None, "direct")
         .get(&url)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
     for (name, value) in &headers {
@@ -665,7 +665,7 @@ async fn subscribe_model_info(
         region: REGION,
         date_override: None,
     })?;
-    let mut request = crate::http::client(None, "direct")
+    let mut request = crate::http::control_client(None, "direct")
         .post(&url)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(body);

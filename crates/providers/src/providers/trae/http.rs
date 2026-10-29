@@ -40,7 +40,7 @@ pub async fn post_json(
     timeout: Duration,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Reply, GatewayError> {
-    let mut request = egress::client(proxy, "direct")
+    let mut request = egress::control_client(proxy, "direct")
         .post(url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")

@@ -79,75 +79,43 @@ pub fn include_usage(body: &Value) -> bool {
 pub enum SseEvent {
     /// 正常事件（已过 `unwrapApiData`）
     Data(Value),
+    /// 完整 DONE 事件，轮次在协议层已经结束。
+    Done,
     /// 上游在数据帧里报错
     Failed(CatPawError),
 }
 
-/// SSE 逐行读取器（对照 `catpaw-upstream-client.mjs` 的 `turnStream`）。
-///
-/// ── 为什么按字节缓冲而不是字符串 ─────────────────────────────
-/// TCP 分片不会按行对齐，思考内容里中文占大头（一个汉字 3 字节）——按 `String`
-/// 逐段拼接时若分片落在字符中间会产生 U+FFFD（内容损坏）。这里沿用
-/// `upstream/sse.rs` 的做法：只有完整行才解码。
+/// SSE 事件读取器，跨块保留原始字节，完整 DONE 才能终止轮次。
 pub struct SseReader {
-    tail: Vec<u8>,
+    events: crate::sse_events::DataEvents,
 }
 
 impl Default for SseReader {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl SseReader {
-    pub fn new() -> Self {
-        Self { tail: Vec::new() }
-    }
+    pub fn new() -> Self { Self { events: crate::sse_events::DataEvents::new() } }
 
-    /// 吃一段上游字节，吐出这一批能解析出的事件
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        let mut out = Vec::new();
-        self.tail.extend_from_slice(chunk);
-        let mut start = 0usize;
-        while let Some(offset) = self.tail[start..].iter().position(|byte| *byte == b'\n') {
-            let end = start + offset;
-            let line = String::from_utf8_lossy(&self.tail[start..end]).to_string();
-            if let Some(event) = parse_line(&line) {
-                out.push(event);
-            }
-            start = end + 1;
-        }
-        self.tail.drain(..start);
-        out
+        self.events.push(chunk).into_iter().filter_map(|payload| parse_data(&payload)).collect()
     }
 
-    /// 流结束：处理可能没有换行结尾的最后一行。
-    ///
-    /// 与 `upstream/sse.rs` 的「丢弃半行」取向不同（那边是透传帧，留下残缺帧会让
-    /// 客户端解析失败）；这里是自己解析，最后一行是完整 JSON 时能用上，
-    /// 残缺时 `serde_json` 解析失败自然丢弃。
     pub fn finish(&mut self) -> Option<SseEvent> {
-        let line = String::from_utf8_lossy(&self.tail).to_string();
-        self.tail.clear();
-        parse_line(&line)
+        self.events.finish().into_iter().find_map(|payload| parse_data(&payload))
     }
 }
 
-/// 解析一行 SSE（非 `data:` 行、空行、`[DONE]`、非法 JSON 都返回 None）
-fn parse_line(line: &str) -> Option<SseEvent> {
-    let trimmed = line.trim();
-    let raw = trimmed.strip_prefix("data:")?.trim();
-    if raw.is_empty() || raw == "[DONE]" {
-        return None;
-    }
+fn parse_data(raw: &str) -> Option<SseEvent> {
+    if raw.trim().is_empty() { return None; }
+    if crate::sse_events::is_done(raw.as_bytes()) { return Some(SseEvent::Done); }
     match serde_json::from_str::<Value>(raw) {
         Ok(value) => Some(match unwrap_api_data(value) {
             Ok(value) => SseEvent::Data(value),
             Err(error) => SseEvent::Failed(error),
         }),
         Err(_) => {
-            // 无法解析的行**忽略**（原实现同：上游偶尔混入心跳/注释帧）
-            logging::verbose("[CatPaw]", "忽略无法解析的 SSE 行");
+            logging::verbose("[CatPaw]", "忽略无法解析的 SSE 事件");
             None
         }
     }
@@ -311,9 +279,7 @@ impl TurnTranslator {
 
     /// 收尾：校验「流在消息完成前结束」并执行 tool_choice 约束，产出本轮结果。
     ///
-    /// ── 这里**不代表** turn 已结束 ───────────────────────────────
-    /// `message.finished=true` 只是消息完成，服务端关连接才是 turn 结束
-    /// （UPSTREAM_PROTOCOL §3.2）。因此调用方必须把 SSE 读到底再来调 `finish`。
+    /// `message.finished=true` 只完成当前消息，须等完整 DONE 或 HTTP EOF 再收尾。
     pub fn finish(&mut self, pending: &mut Vec<Bytes>) -> Result<TurnResult, CatPawError> {
         if !self.completed {
             return Err(CatPawError::upstream("上游 SSE 在消息完成前结束"));
@@ -406,6 +372,12 @@ impl TurnTranslator {
             }),
         );
         sse_bytes(&Value::Object(body))
+    }
+
+    pub(super) fn usage_frame(&self) -> Option<Bytes> {
+        if !self.include_usage { return None; }
+        let usage = self.latest.as_ref().and_then(usage_from_response)?;
+        Some(self.chunk_frame(Value::Null, None, Some(usage)))
     }
 
     /// 本轮 usage（已按 §9.3 修正；上游没给就是三个 0）

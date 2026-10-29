@@ -286,9 +286,18 @@ where
     let mut line = serde_json::to_vec(frame)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("帧无法序列化: {e}")))?;
     if line.len() + 1 > MAX_LINE_BYTES {
+        // ── 错误文案为什么要提到「请求体」─────────────────────────
+        // 这个上限在真实世界里几乎只会被一件事撞到：`chat` / `conversation`
+        // 的帧里带着完整请求体（含 base64 图片）。只说「帧超过 N 字节」
+        // 会让用户与维护者都无从下手 —— issue #15 里那条 502 就是这样，
+        // 报告者花了很久才定位到「是图片太多」。把最可能的原因写进错误，
+        // 让这条信息本身可行动。
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("帧超过 {MAX_LINE_BYTES} 字节上限（{} 字节）", line.len()),
+            format!(
+                "帧超过 {MAX_LINE_BYTES} 字节上限（{} 字节）：通常是请求体过大（含 base64 图片的上下文），请减少图片数量或缩小图片后重试",
+                line.len()
+            ),
         ));
     }
     line.push(b'\n');

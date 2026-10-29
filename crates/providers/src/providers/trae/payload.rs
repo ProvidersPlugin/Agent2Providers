@@ -57,13 +57,38 @@ pub fn function_for(variant: &str) -> &'static str {
 /// `x-solo-solo` 之后还能回到 `x-solo`。
 /// ⚠️ 绝不按 `/` 切：上游配置名里 `/` 是合法字符（`deepseek-ai/deepseek-v4-pro`），
 /// 切了就等于把一个可用模型变成一个 4001。
+///
+/// Max 变体（`<config>-solo-max`）的 `-max` 也在这里剥掉：那一段不是上游认的
+/// 模型名，只是网关侧「这次要走 Max 档」的标记，真正表达 Max 的是
+/// [`prepare_body`] 注入的 `model_auto_selection` 与 `context_window_size`。
+/// ⚠️ `-max` 只在 [`is_max_variant`] 成立时才剥 —— 裸名 `qwen3.8-max` 是上游
+/// 真模型，无条件剥会把一个可用模型变成 4001。
 pub fn sanitize_model_name(model: &str, variant: &str) -> String {
     let mut name = model.trim();
+    if is_max_variant(name) {
+        name = name
+            .strip_suffix(super::models::MAX_ADVERTISE_SUFFIX)
+            .unwrap_or(name);
+    }
     if variant == "solo" {
         name = name.strip_suffix("-solo").unwrap_or(name);
     }
     name = name.strip_suffix("-intl").unwrap_or(name);
     name.trim().to_string()
+}
+
+/// 这个模型名是不是网关广告出去的 Max 变体（`<config>-solo-max`）。
+///
+/// ── 判据：`-solo` 与 `-max` **同时**在末尾，且 `-max` 在后 ──────────
+/// Max 变体的广告 id 是 `<config>-solo` 再拼 `-max`，所以它恒以 `-solo-max`
+/// 结尾；而真叫 `x-max` 的上游 config 广告成 `x-max-solo`（以 `-solo` 结尾），
+/// 用户直接写裸名 `x-max` 时也不带 `-solo` —— 两种都不满足，不会误判。
+///
+/// ⚠️ 不能只判「以 `-max` 结尾」：裸名 `qwen3.8-max` 是上游真模型，判成 Max
+/// 变体就会给它多塞 `model_auto_selection`，等于替用户开了付费档。
+pub fn is_max_variant(model: &str) -> bool {
+    let name = model.trim();
+    name.ends_with("-solo-max") || name.ends_with("-intl-max")
 }
 
 /// 入站请求体 → SOLO 出站体（对象形态；出站序列化由调用方做）。
@@ -89,6 +114,8 @@ pub fn prepare_body(source: &Value, variant: &str, resolved_model: &str) -> Valu
         // 上游目录只认裸名。两者归一后不等时留一条日志线索（不是错误）。
         model = resolved.to_string();
     }
+    // Max 判定要在 sanitize **之前**做：剥完之后 `-max` 已经没了。
+    let max_mode = is_max_variant(&model);
     let model = {
         let sanitized = sanitize_model_name(&model, variant);
         if sanitized.is_empty() {
@@ -135,6 +162,27 @@ pub fn prepare_body(source: &Value, variant: &str, resolved_model: &str) -> Valu
             out.insert("stop".to_string(), obj["stop"].clone());
         }
         _ => {}
+    }
+    // Max 档：**模型名不变**，靠这两个字段告诉上游「这次按 1M 窗口算」。
+    //
+    // 形状照抄 Trae CN 客户端（`@byted-icube/ai-modules-chat` 的
+    // `model_auto_selection` 构造，见 `models::MAX_ADVERTISE_SUFFIX` 的说明）：
+    // ```js
+    // { model_auto_selection: { strategy: "max" },
+    //   context_window_size: <窗口> }
+    // ```
+    // 枚举值 `ModelAutoSelectionStrategy.MAX === "max"`（逐字）。
+    // `context_window_size` 只在 Max 档下发：普通档上游自己按目录里的
+    // `context_window_tokens.dev` 算，多带一个值反而可能与目录口径打架。
+    if max_mode {
+        out.insert(
+            "model_auto_selection".to_string(),
+            json!({ "strategy": "max" }),
+        );
+        out.insert(
+            "context_window_size".to_string(),
+            json!(super::models::MAX_CONTEXT_WINDOW),
+        );
     }
     Value::Object(out)
 }

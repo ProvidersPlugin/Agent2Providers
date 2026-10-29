@@ -200,29 +200,10 @@ pub fn today(now_ms: i64) -> String {
         .unwrap_or_else(|| chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string())
 }
 
-/// 一个北京时间自然日的长度（毫秒）。
-const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-
-/// `now` 之后最近的**北京时间**零点（毫秒时间戳，纯函数）。
-///
-/// 给「福利池撞额度 ⇒ 冷却到本池重置点」用：上游不告诉我们日池什么时候重置，
-/// 但它的一整套日口径（活动周期、`daily_token_limit` 的「今日」）都是 UTC+8 零点，
-/// 所以那个零点就是唯一有据可依的重置时刻。用固定偏移而不是机器时区，理由与
-/// [`today`] 完全相同 —— 网关跑在 UTC 容器里时，「明天零点」也必须仍然是北京的那个。
-///
-/// 边界：恰好落在零点上时给**次日**零点（刚过零点，下一个重置点是一整天之后）。
-pub fn next_day_boundary_ms(now_ms: i64) -> i64 {
-    let shifted = now_ms + i64::from(DAY_ZONE_OFFSET_SECONDS) * 1000;
-    // div_euclid 而不是 `/`：负数时刻（1970 前）在 Rust 里默认向零取整会算错整天边界
-    let start_of_today = shifted.div_euclid(DAY_MS) * DAY_MS;
-    start_of_today + DAY_MS - i64::from(DAY_ZONE_OFFSET_SECONDS) * 1000
-}
-
 /// 一次 ops 请求：签名 GET/POST + `code == 0` 的 envelope 判定。
 ///
 /// 头集合只有三项（`Content-Type` / `Agent-Type: PromptCenter` / `X-Language`），
-/// 与目录、统计那两处都不同；区域 API 的签名**不带 Host**（参考实现默认
-/// `sign_host:false`），福利网关那套才带 —— 别统一。
+/// 与目录、统计那两处都不同；区域 API 签名不带 Host。
 async fn welfare_request(
     base: &str,
     method: &str,
@@ -241,11 +222,11 @@ async fn welfare_request(
     let signed = signer::sign(method, &url, &headers, &payload, &signing, false)
         .map_err(|reason| GatewayError::with_status(500, format!("CodeArts 活动请求签名失败：{reason}")))?;
     let built = match method {
-        "POST" => crate::http::client(None, "direct")
+        "POST" => crate::http::control_client(None, "direct")
             .post(&url)
             .timeout(std::time::Duration::from_secs(20))
             .body(payload.clone()),
-        _ => crate::http::client(None, "direct").get(&url).timeout(std::time::Duration::from_secs(20)),
+        _ => crate::http::control_client(None, "direct").get(&url).timeout(std::time::Duration::from_secs(20)),
     };
     let mut request = built;
     for (name, value) in signed {
@@ -677,7 +658,7 @@ pub async fn claim_rewards(
     save_ledger(ctx, account_id, &ledger).await?;
     logging::log(
         "[CodeArts]",
-        &format!("{}：官方活动列表已回读确认到账（计入套餐赠送积分，不增加福利模型 token 池）", which.label()),
+        &format!("{}：官方活动列表已回读确认到账（计入套餐赠送积分）", which.label()),
     );
     Ok(Run { outcome: Outcome::Confirmed, before: picked, after: verified })
 }
@@ -695,31 +676,11 @@ pub async fn refresh_usage(ctx: &PluginCtx, account_id: &str, now_ms: i64) -> Va
     let Ok(credential) = current_credential(ctx, account_id).await else {
         return Value::Null;
     };
-    let (statistics, benefit) = balance::fetch_both(
-        super::models::DEFAULT_BASE_URL,
-        super::models::DEFAULT_BENEFIT_GATEWAY_URL,
-        &credential,
-        chat::DEFAULT_LANGUAGE,
-        chat::DEFAULT_PLUGIN_VERSION,
-    )
-    .await;
-    // 形状与 `query_usage` 保持一致：福利那一侧的三种状态分开落
-    // （读到 → wallets；上游明说没有 → benefitAbsent；读失败 → benefitError）。
-    // 「领到了积分」与「有福利模型额度」是两本账 —— 后者没有不代表领取失败。
-    let benefit_absent = matches!(&benefit, Ok(None));
-    let benefit_value = benefit.as_ref().ok().and_then(|value| value.as_ref());
+    let Ok(statistics) = balance::fetch_statistics(
+        super::models::DEFAULT_BASE_URL, &credential, chat::DEFAULT_LANGUAGE, chat::DEFAULT_PLUGIN_VERSION,
+    ).await else { return Value::Null };
     let _ = now_ms;
-    let mut document = balance::usage_document(statistics.as_ref().ok(), benefit_value);
-    if benefit_absent {
-        document["benefitAbsent"] = Value::Bool(true);
-    }
-    if let Err(error) = &statistics {
-        document["statisticsError"] = Value::String(error.message.clone());
-    }
-    if let Err(error) = &benefit {
-        document["benefitError"] = Value::String(error.message.clone());
-    }
-    document
+    balance::usage_document(Some(&statistics))
 }
 
 #[cfg(any())]
@@ -817,58 +778,6 @@ mod tests {
         assert_eq!("2026-09-27", today(millis));
         let earlier = millis - 45 * 60 * 1000;
         assert_eq!("2026-09-26", today(earlier), "北京 23:45 仍是前一天");
-    }
-
-    /// 日池冷却的重置点：北京时间的下一个零点，而不是「24 小时后」也不是 UTC 零点。
-    #[test]
-    fn next_day_boundary_is_the_coming_beijing_midnight() {
-        let ms = |rfc: &str| {
-            chrono::DateTime::parse_from_rfc3339(rfc).expect("合法时刻").timestamp_millis()
-        };
-        // 北京 23:45（= UTC 15:45）→ 15 分钟后就是次日零点
-        let late = ms("2026-09-26T15:45:00Z");
-        assert_eq!(late + 15 * 60 * 1000, next_day_boundary_ms(late));
-        // 北京 08:00（= UTC 00:00）→ 16 小时后；UTC 零点此刻正是北京时间中午前后，
-        // 拿 UTC 当天零点当答案会差 8 小时
-        let morning = ms("2026-09-26T00:00:00Z");
-        assert_eq!(morning + 16 * 60 * 60 * 1000, next_day_boundary_ms(morning));
-        // 恰好落在零点上 → 给**下一个**零点（刚过零点，下一个重置点是一整天之后）
-        let exactly = next_day_boundary_ms(late + 15 * 60 * 1000);
-        assert_eq!(late + 15 * 60 * 1000 + DAY_MS, exactly);
-    }
-
-    /// 与 [`today`] 交叉核对：两条读法共用同一个偏移常量，所以「下一个零点」这一毫秒
-    /// 之前仍应属于今天、它本身必须已经进明天 —— 偏移只错一处也会被这条抓住
-    /// （而不是等到生产上冷却时间差 8 小时才发现）。全部比较走 `today()`，
-    /// 不在测试里另算一遍时区，否则错的可能是测试自己。
-    #[test]
-    fn next_day_boundary_agrees_with_the_ledger_day() {
-        let next_day = |text: &str| {
-            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
-                .expect("today() 给的就是 YYYY-MM-DD")
-                .succ_opt()
-                .expect("有次日")
-                .format("%Y-%m-%d")
-                .to_string()
-        };
-        for hour in [0, 7, 8, 9, 15, 16, 23] {
-            // UTC 的 2026-09-26 各整点：北京口径横跨 26/27 两天，两种都测到
-            let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 26)
-                .expect("合法日期")
-                .and_hms_opt(hour, 0, 0)
-                .expect("合法时刻")
-                .and_utc()
-                .timestamp_millis();
-            let boundary = next_day_boundary_ms(now);
-            assert!(boundary > now, "重置点必须在未来：UTC hour={hour}");
-            assert!(
-                boundary - now <= DAY_MS,
-                "重置点不该比一整天还远：UTC hour={hour}，差了 {} 小时",
-                (boundary - now) / 3_600_000
-            );
-            assert_eq!(today(now), today(boundary - 1), "零点前一毫秒还属于今天：hour={hour}");
-            assert_eq!(next_day(&today(now)), today(boundary), "零点整已经属于明天：hour={hour}");
-        }
     }
 
     // ── 真流程：mock 上游 ─────────────────────────────────────

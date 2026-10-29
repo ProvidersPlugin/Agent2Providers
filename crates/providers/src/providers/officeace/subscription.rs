@@ -100,8 +100,8 @@ async fn call(
     })
     .map_err(|reason| GatewayError::with_status(500, format!("OfficeAce 订阅请求签名失败：{reason}")))?;
     // 直连客户端（不套账号代理）：控制面与 LLM 域是两个站点，与网关那份同一取舍。
-    // `crate::http::client(None, "direct")` 就是网关 `egress::client_for(None)` 的等价物。
-    let client = crate::http::client(None, "direct");
+    // `crate::http::control_client(None, "direct")` 就是网关 `egress::client_for(None)` 的等价物。
+    let client = crate::http::control_client(None, "direct");
     let built = match method {
         "POST" => client
             .post(&url)

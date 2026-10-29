@@ -722,7 +722,7 @@ async fn run_conversation_inner(
                         prefetched,
                     )
                     .await
-                    .map_err(|error| GatewayError::with_status(499, error));
+                    .map_err(|error| GatewayError::with_status(502, error));
                 }
                 // 首帧就是排队信封（HTTP 200 + statusCodeValue 403）：还没报头，
                 // 退避重发（和 HTTP 层的排队走同一条路）
@@ -945,28 +945,30 @@ async fn drive_aggregate(
     use futures::StreamExt;
 
     let mut lines = stream::LineBuffer::new();
-    let mut source = response.bytes_stream();
+    let mut source = crate::response_stream::sse(response);
     let mut business_failure: Option<chat::AttemptError> = None;
+    let mut transport_failure: Option<chat::AttemptError> = None;
+    let mut completed = false;
     // 调试模式的采集器（与 drive_stream 同一位置：解析之前采原始字节）
     let capture = telemetry.capture();
 
     'outer: while let Some(item) = source.next().await {
-        let chunk = item.map_err(|error| {
-            chat::AttemptError::Fatal(GatewayError::with_status(
-                502,
-                format!(
-                    "Qoder 上游流式传输中断: {}",
-                    crate::http::describe_chain(&error)
-                ),
-            ))
-        })?;
+        let chunk = match item {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                transport_failure = Some(chat::AttemptError::Fatal(GatewayError::with_status(
+                    502, format!("Qoder 上游流式传输中断: {error}"),
+                )));
+                break;
+            }
+        };
         if let Some(capture) = capture.as_deref() {
             capture.push(&chunk);
         }
         for data in lines.push(&chunk) {
             match stream::parse_sse_line(&data) {
                 SseEvent::Skip => {}
-                SseEvent::Done => break 'outer,
+                SseEvent::Done => { completed = true; break 'outer; }
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
                         &limit.ctx,
@@ -993,7 +995,7 @@ async fn drive_aggregate(
             }
         }
     }
-    if business_failure.is_none() {
+    if business_failure.is_none() && !completed {
         for data in lines.finish() {
             if let SseEvent::Chunk(chunk) = stream::parse_sse_line(&data) {
                 translator.consume(&chunk, Some(&telemetry));
@@ -1002,7 +1004,7 @@ async fn drive_aggregate(
     }
     // 聚合路径下这一档错误是**终态**：它能带着状态码交回编排层，由编排层决定
     // 换账号还是刷新重试（这是与流式路径的关键差别 —— 流式时 HTTP 头已发出）
-    if let Some(error) = business_failure {
+    if let Some(error) = business_failure.or(transport_failure) {
         return Err(error);
     }
     // 冲刷拆解器的尾巴，再成形（少了这一步，回答末尾会少几个字符）

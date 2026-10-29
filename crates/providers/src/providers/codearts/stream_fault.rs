@@ -225,15 +225,6 @@ pub fn stream_frame_fault(payload: &str) -> Option<StreamFault> {
             break;
         }
     }
-    // benefit 档案不存在（账号没在官方体系里注册过权益，2026-10-09 取证：官方
-    // 客户端登录用一下即恢复 —— 那边的 initBenefit 每次启动都 POST claim）。
-    // 余额查询链路会自动补这条注册（见 `balance::claim_benefit`），给用户一句
-    // 「会自愈」的指引，别让人以为账号坏了。指引里不含「insufficient quota」
-    // 等状态词，放在 status 判定之前不会影响下面的分类。
-    if message.to_lowercase().contains("benefit not found") {
-        message.push_str("（该账号还没有福利档案，余额查询会自动向官方注册，稍等片刻重试即可）");
-    }
-
     let lowered = message.to_lowercase();
     let status = if lowered.contains("insufficient quota") {
         403
@@ -296,7 +287,7 @@ mod tests {
             ("空", ""),
             ("结束哨兵", "[DONE]"),
             ("半截 JSON", r#"{"error_code":"#),
-            ("成功信封", r#"{"error_code":"0000","error_msg":"success","result":{"daily_token_limit":1}}"#),
+            ("成功信封", r#"{"error_code":"0000","error_msg":"success","result":{}}"#),
             ("零码带内容", r#"{"error_code":"0","choices":[{"delta":{"content":"hi"}}]}"#),
             ("普通增量", r#"{"choices":[{"index":0,"delta":{"content":"2"},"finish_reason":"stop"}]}"#),
             ("用量帧", r#"{"id":"x","model":"glm-5.2","usage":{"total_tokens":9}}"#),

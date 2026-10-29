@@ -1,0 +1,47 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-devin-auth",
+    "version": "0.1.24",
+    "directory": "packages/devin"
+  },
+  "files": [
+    {
+      "source": "packages/devin/package.json",
+      "destination": "package.json"
+    },
+    {
+      "source": "packages/devin/index.mjs",
+      "destination": "index.mjs"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "derivedFiles": [
+    {
+      "source": "packages/devin/index.mjs",
+      "destinations": [
+        "index.mjs",
+        "constants.mjs",
+        "state.mjs",
+        "auth.mjs",
+        "model-catalog.mjs",
+        "connect.mjs",
+        "request.mjs",
+        "request-stream.mjs",
+        "usage.mjs"
+      ],
+      "license": "MIT",
+      "changes": "Split into native ES modules by plugin factory, shared cache state, CLI/token identity and sign-in, model catalog/usage, Connect protobuf/gzip transport, request serialization and response streaming. Preserve DevinAuthPlugin and _internal, cache and sign-in lifetimes, existing protocol/client metadata and caller-owned tool-call passthrough; do not execute upstream tools.",
+      "localChanges": [
+        "CLI sign-in returns a non-secret source: devin-cli reference with the authorized real pathref and a stableAccount identity derived from existing GetUserStatus email/org/team fields, never the CLI token. Source operations reread only that file, revalidate the same account and server, and reject missing, signed-out, changed or unverifiable credentials and legacy copied-token CLI records without falling back to a saved key.",
+        "Remove token-copying homeFor credentials.toml writes and all CLI subprocess identity/model fallbacks. Keep the existing GetCliModelConfigs API/cache and known snapshot/configured model fallback; add no endpoint or remote catalog.",
+        "Loader, chat, usage and model hooks accept keyless non-api CLI source references; SDK options use a non-secret source marker and usage never sends the transient CLI key to client.auth.set. Only the plugin-initiated browser OAuth result retains a token for host-managed encrypted storage, with no local plaintext auth-file writes.",
+        "Propagate caller cancellation through CLI-source file reads and the existing GetUserStatus request while retaining its 15-second timeout, browser OAuth timeout/callback-server cleanup, and Connect stream cancellation. Add source helpers to _internal without removing its original keys."
+      ]
+    }
+  ]
+}

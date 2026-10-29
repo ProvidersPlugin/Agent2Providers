@@ -251,6 +251,12 @@ impl<'a> ConversationSink<'a> {
         Self { inner }
     }
 
+    /// 当前这条流的只读取消信号；可在等上游响应、子进程或回调时 select。
+    /// 返回独立 Arc，观察取消不需要借用 sink，也不会取消同包其它请求。
+    pub fn cancellation(&self) -> std::sync::Arc<crate::serve::Cancel> {
+        self.inner.cancellation()
+    }
+
     /// 上报上游响应头（**必须**在第一个 chunk 之前调一次）。
     pub async fn head(&mut self, head: proto::StreamHead) -> Result<(), String> {
         self.inner.send_head(head).await
@@ -269,6 +275,11 @@ impl<'a> ConversationSink<'a> {
 
 /// `ConversationSink` 的内部接口（由 `serve()` 实现，作者不该用）。
 pub trait SinkInner: Send {
+    /// 自定义 sink 的默认信号永不触发，保持已有实现的源码兼容。
+    fn cancellation(&self) -> std::sync::Arc<crate::serve::Cancel> {
+        std::sync::Arc::new(crate::serve::Cancel::default())
+    }
+
     fn send_head<'a>(&'a mut self, head: proto::StreamHead) -> SendFuture<'a, ()>;
     fn send_chunk<'a>(&'a mut self, bytes: &'a [u8]) -> SendFuture<'a, ()>;
 }
@@ -286,6 +297,12 @@ pub trait Provider: Send + Sync + 'static {
     /// 在建表时不必构造整个 `ProviderMeta`）。
     fn provider_id(&self) -> String {
         self.meta().id
+    }
+
+    /// Optional process-owned cleanup. Existing providers keep their no-op default;
+    /// helper-backed providers await this before the SDK acknowledges shutdown.
+    fn shutdown<'a>(&'a self) -> SendFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
     }
 
     // ── 数据面 ────────────────────────────────────────────────
@@ -461,6 +478,20 @@ pub trait Provider: Send + Sync + 'static {
         _force: bool,
     ) -> SendFuture<'a, proto::RefreshOutcome> {
         Box::pin(async { Ok(proto::RefreshOutcome::unchanged()) })
+    }
+
+    /// 可选的同次刷新快照信封；旧 provider 仍返回原 RefreshOutcome。
+    /// helper-backed provider 可以避免宿主紧接 models.list 再出一次网。
+    fn refresh_models_snapshot<'a>(
+        &'a self,
+        ctx: &'a crate::ctx::PluginCtx,
+        account: &'a str,
+        force: bool,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            serde_json::to_value(self.refresh_models(ctx, account, force).await?)
+                .map_err(|_| "刷新结果无法序列化".to_string())
+        })
     }
 
     // ── 余额 / 签到 / 领取 ─────────────────────────────────────

@@ -97,7 +97,7 @@ pub enum KeyCheck {
 pub async fn probe_key(api_key: &str, gateway_proxy: &str) -> KeyCheck {
     let mut headers = endpoints::cli_headers();
     headers.extend(endpoints::auth_headers(api_key));
-    let client = http::client(None, gateway_proxy);
+    let client = http::control_client(None, gateway_proxy);
     match http::get_json(
         &client,
         &endpoints::url(endpoints::BILLING_CREDITS_PATH),

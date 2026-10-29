@@ -191,30 +191,26 @@ pub fn note_challenge() {
     }
 }
 
-/// 记一次「上游确实回了 3007」，并把「推理免码」的结论**翻回要码**。
-///
-/// 为什么 3007 必须能翻这个结论：它是这条链上**唯一**能证伪 `skip_model_request`
-/// 的观测。免码上线后如果上游哪天把这一格改回 `false`（或直接不认这个开关），
-/// 我们手上不会有任何配置侧的信号 —— 只有 3007 会说话。让它当场改回要码，
-/// 免码路线的代价就被钉在「**最多一次** 3007 往返」上，而不是每次都撞。
+/// 记一次上游 3007；实际验证失败优先于推理免码配置。
 pub fn note_challenge_and_require_token() {
     note_challenge();
+    CHALLENGE_REQUIRES_TOKEN.store(true, Ordering::SeqCst);
     set_required(true);
 }
 
-/// 上游配置同步到本进程：只按 `enabled` 决定要不要令牌。
-///
-/// `skip_model_request` **不再参与**这个结论。它的原意是「官方客户端在推理请求上
-/// 不附验证头」，而这一格上游长期回 `true`；照它停铸会让令牌池永远空着，
-/// 请求转而去走免码头，实测会间歇 502。获取配置失败时保持现值不动 ——
-/// 真有免码失效，3007 会立刻把它翻回要码。
+/// 推理免码只取上游明确下发的开关；实际 3007 比配置优先。
 pub fn apply_config(config: &super::claim::CaptchaConfig) {
     note_synced();
-    set_required(config.enabled);
+    if !config.enabled {
+        CHALLENGE_REQUIRES_TOKEN.store(false, Ordering::SeqCst);
+    }
+    set_required(config.enabled && (!config.skip_model_request
+        || CHALLENGE_REQUIRES_TOKEN.load(Ordering::SeqCst)));
 }
 
 /// 结论本体（`true` = 每条模型请求都要一枚令牌）
 static TOKEN_REQUIRED: AtomicBool = AtomicBool::new(true);
+static CHALLENGE_REQUIRES_TOKEN: AtomicBool = AtomicBool::new(false);
 /// 上一次同步到配置的时刻（0 = 启动至今没同步成功过；面板与排障读它）
 static LAST_SYNC_AT: AtomicI64 = AtomicI64::new(0);
 
@@ -263,7 +259,7 @@ pub fn set_required(required: bool) -> bool {
     } else {
         logging::console_line(
             "[ZCode]",
-            "🔓 上游已关闭验证码：套餐池（Start Plan）通道停止取用与铸造令牌",
+            "🔓 上游配置允许推理免验证码：套餐池（Start Plan）通道停止取用与铸造令牌",
         );
         ungate();
     }

@@ -6,7 +6,7 @@
 //! （`X-Product` / `X-Client-Type` / `X-Tm` …）与 `X-Authorization`。因此
 //! 本插件的形态是**无状态转发**：一次 HTTP 请求 = 一次生成。
 //!
-//! ── 三道上游闸（每一条都是实测出来的，改之前先读对应模块）──────
+//! ── 四道上游闸（每一条都是实测出来的，改之前先读对应模块）──────
 //! ```text
 //!   1. `max_tokens` 小正整数（<10000）→ 406 空响应体（#58 / #69）
 //!      归一在 `normalize_max_tokens`，只对本家生效。
@@ -14,6 +14,8 @@
 //!      `prompt::normalize` 前置 OpenClaw 身份前缀 + 改写外来身份句。
 //!   3. `X-Harness-Type: zcode` → 403 pay-view / 406
 //!      转发头里**不发**这个头（刷新头里保留，两处口径不同且都有实测依据）。
+//!   4. 请求体带 `metadata` → 500 `parse response failed`（issue #388）
+//!      出站前删掉整个 `metadata`（见 `strip_client_metadata`）。
 //! ```
 //!
 //! ── 两个地区是两个 provider（与网关内置版同构）────────────────
@@ -224,7 +226,16 @@ impl Provider for AutoClawProvider {
         Box::pin(async move {
             let record = crate::store::record(ctx, self.region.provider_id(), &req.account)
                 .await?;
-            let token = crate::store::pick(&record, &["token", "accessToken", "access_token"]);
+            // ── 取出来先剥 `Bearer ` 前缀（issue #386）────────────────
+            // 存储里的 token 可能自带前缀（登录响应原样落库的值就是这样），
+            // 而下面拼头时会再加一个 —— 不剥就是 `Bearer Bearer eyJ…`，上游按
+            // 空格切分后拿到的凭证不是合法 JWT，恒定 401 `Invalid token`。
+            // 判据与 `refresh::signed_auth_headers` 出口那一处同一套（那边覆盖
+            // 刷新 / 余额 / 签到 / 目录），两条链路都收口才不会有漏网路径。
+            let token = crate::crypto::strip_bearer(&crate::store::pick(
+                &record,
+                &["token", "accessToken", "access_token"],
+            ));
             if token.is_empty() {
                 return Err("AutoClaw 账号缺少 accessToken，无法转发".to_string());
             }
@@ -260,6 +271,9 @@ impl Provider for AutoClawProvider {
             }
             normalize_max_tokens(&mut out_body);
             prompt::normalize(&mut out_body);
+            // 最后一道：删掉客户端自带的 `metadata`（第四道闸，issue #388）。
+            // 放在 prompt::normalize 之后，因为它只动 `messages`，两者互不干扰。
+            strip_client_metadata(&mut out_body);
             Ok(ChatPlan::chat(
                 format!(
                     "{}/chat/completions",
@@ -779,8 +793,35 @@ fn normalize_max_tokens(body: &mut Value) {
     }
 }
 
-// ─── 账号视图 ──────────────────────────────────────────────────
+/// 删掉客户端自带的 `metadata` 字段（第四道上游闸，issue #388）。
+///
+/// ── 为什么必须删，而不是「转换」────────────────────────────────
+/// 上游 `/chat/completions` 收到 `metadata` 时直接回 **500
+/// `parse response failed`** —— 注意这不是 4xx 参数错误，而是一个看起来像
+/// 「服务端坏了」的 500。于是客户端侧的表现为：调参数、换模型、重试全都没用，
+/// 因为坏的是请求体的**形状**而不是内容。issue #388 的实测是「同一完整请求
+/// 仅删除 metadata 就恢复 200」，因此这里选择整段删除而不是挑字段改写 ——
+/// 上游既然不认这个字段，改写它没有意义，反而可能引入下一个未知闸门。
+///
+/// ── 这个字段是哪来的 ────────────────────────────────────────
+/// ZCode 等客户端为标识设备 / 账号 / 会话，会自动在请求里塞
+/// `metadata.user_id`（JSON 字符串）。网关原样透传，插件再原样转发 ——
+/// 这条链路上没有任何一环认为它有问题，直到上游 500。
+///
+/// ── 为什么整段删而不是只删 `user_id` ─────────────────────────
+/// `metadata` 是 OpenAI 协议里**可选**的归属字段，对生成结果没有任何影响
+/// （上游不用它做计费或路由 —— 真要那样的话它会解析而不是 500）。
+/// 只删 `user_id` 会留下一个空对象或其它未知子键，仍然要赌上游认不认；
+/// 整段删是唯一确定安全的形态。
+///
+/// 只影响本家的出站请求体：入站的 `req.body` 是克隆来的，其它家不受影响。
+fn strip_client_metadata(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.remove("metadata");
+    }
+}
 
+// ─── 账号视图 ──────────────────────────────────────────────────
 /// 账号公开视图（界面账号页读的那几个键）。
 ///
 /// ── 为什么邮箱很重要（别删）─────────────────────────────────

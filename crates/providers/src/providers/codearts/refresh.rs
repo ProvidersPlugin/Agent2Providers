@@ -182,6 +182,15 @@ pub async fn ensure_fresh(
     }
     let credential = Credential::from_payload(&record)
         .map_err(|reason| GatewayError::with_status(400, reason))?;
+    let account_id = record.get("id").and_then(Value::as_str)
+        .filter(|id| !id.is_empty()).unwrap_or(account_id);
+    let relogin = super::authorization::relogin_error(&record);
+    if !force && relogin.is_some() && !credential.needs_refresh(0, logging::now_ms()) {
+        return Ok(credential);
+    }
+    if let Some(error) = relogin {
+        return Err(error);
+    }
     if !force && !credential.needs_refresh(REFRESH_LEAD_MS, logging::now_ms()) {
         return Ok(credential);
     }
@@ -197,13 +206,29 @@ pub async fn ensure_fresh(
     // 让等待者也走一遍写回，比对的是**它自己那份续期之前**的快照 —— leader 一落盘，
     // 那份快照就"过期"了，于是每一次并发续期都会给健康路径打一条
     // 「续期成功但没能写回…请重新添加该账号」的假警报（审计抓出来的）。
-    let (fresh, leader_should_persist) = match flights().join(&key) {
-        Join::Waiter(waiter) => (waiter.wait().await?, false),
+    let result = match flights().join(&key) {
+        Join::Waiter(waiter) => waiter.wait().await.map(|fresh| (fresh, false)),
         Join::Leader(leader) => {
             let result = oauth::refresh_credential(&credential, proxy).await;
+            if let Err(error) = &result {
+                if error.code.as_deref() == Some(super::authorization::EXPIRED_CODE) {
+                    super::authorization::remember_expired(ctx, account_id, &record, error).await;
+                }
+            }
             leader.finish(result.clone());
-            (result?, true)
+            result.map(|fresh| (fresh, true))
         }
+    };
+    let (fresh, leader_should_persist) = match result {
+        Ok(result) => result,
+        Err(error) if !force && !credential.needs_refresh(0, logging::now_ms()) => {
+            logging::log(
+                "[CodeArts]",
+                &format!("提前续期失败（{}），旧凭据尚未过期，本次继续使用", error.message),
+            );
+            return Ok(credential);
+        }
+        Err(error) => return Err(error),
     };
     if !leader_should_persist {
         return Ok(fresh);

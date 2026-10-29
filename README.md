@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-**Provider Enhancement** (提供商增强) is the official provider plugin for Agent2API.
+**Provider Enhancement** (提供商增强) is the official provider plugin for [Agent2API](https://github.com/aimod-cc/Agent2API).
 It supplies provider-specific sign-in and account import, model requests, credential
 renewal, model catalogs, balances and check-in. Available capabilities vary by provider.
 The gateway loads the plugin as a separate process, so a fault in one provider
@@ -15,7 +15,7 @@ repository by tag.
 
 ## Supported Providers
 
-Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supported · — not applicable). These implementations are provided by this plugin, not bundled with the gateway.
+Capabilities supplied by Provider Enhancement. The table lists the currently enabled Rust integrations. Static model catalogs, usage and plan information are not equivalent to online catalogs or monetary balances.
 
 | Platform | LLM requests | Token auto-refresh | Model list | Balance query | Check-in | Claims |
 | --- | :--: | :--: | :--: | :--: | :--: | :--: |
@@ -40,12 +40,11 @@ Capabilities supplied by Provider Enhancement (✓ supported · ✗ not supporte
 | ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Doubao Work | Implemented; unverified | ✗ | Implemented; unverified | Implemented; unverified | Implemented; unverified | Implemented; unverified |
 
-Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; credential renewal, balances, check-in and claims depend on the service you configure.
+Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; other capabilities depend on the service you configure. API account creation skips a second proxy save only for `proxySaved: true`; older gateways retain a compatibility save and verification warning. Failure does not remove an added account or falsely report that its proxy was saved.
 
-> Note: in Model list, ✓ means automatic online fetching is supported (some platforms also keep a built-in static table as a fallback); ZCode only has a built-in static table. ✗ in Token auto-refresh means the platform has no usable refresh flow (the account keeps working while its credentials are valid). Qoder check-in is available on the China version only.
-
-Zhipu Qingyan is provided by the separate Web Providers plugin, not by this package.
+> Note: model-list markers cover online fetching or static catalogs as specified by each row and implementation. Missing refresh or usage hooks do not establish that the upstream lacks an endpoint. Qoder check-in is China-version only.
 
 ## Building
 
@@ -141,7 +140,7 @@ locally without a release.
 The gateway refers to the same repository **by tag**:
 
 ```toml
-agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.0" }
+agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.1" }
 ```
 
 So a contract change reaches the gateway only after a new tag and an updated

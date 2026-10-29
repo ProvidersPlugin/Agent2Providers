@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "description": {
-    "zh-CN": "提供商实现由本插件提供。具体支持情况随插件版本更新，国内版、国际版和额度池分别列出。",
-    "zh-Hant": "提供商實作由本外掛提供。具體支援情況隨外掛版本更新，國內版、國際版和額度池分別列出。",
-    "en": "Provider integrations are supplied by this plugin. Capabilities follow the installed plugin version; regions and quota pools are listed separately.",
-    "ja": "プロバイダー連携はこのプラグインが提供します。対応状況はインストール済みのバージョンに従い、地域とクォータプールを個別に表示します。",
-    "ko": "제공업체 연동은 이 플러그인이 제공합니다. 기능은 설치된 플러그인 버전을 따르며 지역과 할당량 풀을 별도로 표시합니다.",
-    "pt-BR": "As integrações são fornecidas por este plugin. As capacidades acompanham a versão instalada; regiões e pools de cota são listados separadamente."
+    "zh-CN": "提供商实现由本插件提供。具体支持情况随插件版本更新，国内版、国际版和额度池分别列出。手动回调按网关声明的 callbackInput 原样提交 URL 或隐藏的 code；旧网关未声明时不猜输入。回调接收不算完成，仍等待网关终态。API 添加仅在 proxySaved:true 时跳过第二次代理保存，旧网关兼容保存仍提示核查；失败不撤销已加账号。",
+    "zh-Hant": "提供商實作由本外掛提供。具體支援情況隨外掛版本更新，國內版、國際版和額度池分別列出。手動回呼依閘道宣告的 callbackInput 原樣提交 URL 或隱藏的 code；舊閘道未宣告時不猜測輸入。回呼接收不算完成，仍等待閘道終態。API 新增僅在 proxySaved:true 時略過第二次代理儲存，舊閘道相容儲存仍提示核查；失敗不撤銷已新增帳號。",
+    "en": "Provider integrations are supplied by this plugin. Capabilities follow the installed plugin version; regions and quota pools are listed separately. Manual callbacks submit an unchanged URL or hidden code according to the gateway's callbackInput; undeclared inputs are not guessed. Callback acceptance is not completion; the gateway's terminal result is still required. API creation skips a second proxy save only for proxySaved:true; older gateways retain a compatibility-save warning. Failure does not remove an added account.",
+    "ja": "プロバイダー連携はこのプラグインが提供します。対応状況はインストール済みのバージョンに従い、地域とクォータプールを個別に表示します。手動コールバックはゲートウェイの callbackInput に従い、URL または非表示の code を変更せず送信します。未宣言の入力は推測しません。受信だけでは完了とせず、ゲートウェイの終端結果を待ちます。API 追加時は proxySaved:true の場合のみ 2 回目のプロキシ保存を省略し、旧ゲートウェイの互換保存では確認警告を残します。失敗しても追加済みアカウントは削除しません。",
+    "ko": "제공업체 연동은 이 플러그인이 제공합니다. 기능은 설치된 플러그인 버전을 따르며 지역과 할당량 풀을 별도로 표시합니다. 수동 콜백은 게이트웨이의 callbackInput에 따라 URL 또는 숨겨진 code를 변경 없이 제출하고 미선언 입력은 추측하지 않습니다. 수신만으로 완료되지 않으며 게이트웨이의 최종 결과를 기다립니다. API 추가 시 proxySaved:true인 경우에만 두 번째 프록시 저장을 생략하며 이전 게이트웨이의 호환 저장에는 확인 경고를 남깁니다. 실패해도 추가된 계정을 삭제하지 않습니다.",
+    "pt-BR": "As integrações são fornecidas por este plugin. As capacidades acompanham a versão instalada; regiões e pools de cota são listados separadamente. Callbacks manuais enviam a URL original ou code oculto conforme callbackInput do gateway; entradas não declaradas não são deduzidas. O recebimento não conclui o login; ainda se aguarda o resultado final do gateway. A criação por API só omite a segunda gravação do proxy com proxySaved:true; gateways antigos mantêm um aviso da gravação de compatibilidade. Falhas não removem contas já adicionadas."
   },
   "providers": {
     "demo": { "hidden": true },
@@ -30,13 +30,29 @@
       "capabilities": {
         "refresh": { "status": "not_applicable" },
         "claims": { "status": "not_applicable" }
-      }
+      },
+      "notes": [{
+        "zh-CN": "已接入官方异步 Images 接口：Qwen-Image / Z-Image 文生图、Qwen-Image-Edit 参考图编辑，仅限当前目录中已确认的型号。单次 n=1，编辑接受 1–3 张参考图；创建后只查询原任务，不重新提交。未使用真实账号验证，具体可用型号和额度以账号为准。",
+        "zh-Hant": "已接入官方非同步 Images 介面：Qwen-Image / Z-Image 文字生圖、Qwen-Image-Edit 參考圖編輯，僅限目前目錄中已確認的型號。單次 n=1，編輯接受 1–3 張參考圖；建立後只查詢原任務，不重新提交。尚未以真實帳號驗證，可用型號與額度以帳號為準。",
+        "en": "Implements the official asynchronous Images API for confirmed catalog models: Qwen-Image / Z-Image generation and Qwen-Image-Edit reference editing. Uses n=1 and 1–3 references; polls the original task without resubmitting. Not validated with a real account; model availability and quota depend on the account.",
+        "ja": "公式の非同期 Images API を実装しています。確認済みの一覧モデルに限り、Qwen-Image / Z-Image の画像生成と Qwen-Image-Edit の参照画像編集に対応します。n=1、参照画像は 1–3 枚で、元のタスクのみを照会し再送信しません。実アカウントでは未検証で、利用可能なモデルとクォータはアカウントによります。",
+        "ko": "확인된 목록 모델에 공식 비동기 Images API를 구현했습니다. Qwen-Image / Z-Image 생성과 Qwen-Image-Edit 참조 편집을 지원합니다. n=1, 참조 이미지 1–3장으로 원래 작업만 조회하고 다시 제출하지 않습니다. 실제 계정으로 검증하지 않았으며 사용 가능한 모델과 할당량은 계정에 따라 다릅니다.",
+        "pt-BR": "Implementa a API Images assíncrona oficial para modelos confirmados no catálogo: geração Qwen-Image / Z-Image e edição Qwen-Image-Edit. Usa n=1 e 1–3 referências; consulta a tarefa original sem reenviar. Não validado com conta real; modelos disponíveis e cota dependem da conta."
+      }]
     },
     "modelscope-intl": {
       "capabilities": {
         "refresh": { "status": "not_applicable" },
         "claims": { "status": "not_applicable" }
-      }
+      },
+      "notes": [{
+        "zh-CN": "国际版使用独立账号与模型目录；图片调用复用官方异步 Images 协议，只开放目录中已确认的 Qwen-Image / Z-Image / Qwen-Image-Edit 型号。单次 n=1，编辑接受 1–3 张参考图。未使用国际版真实账号验证，不保证与国内版拥有相同型号和额度。",
+        "zh-Hant": "國際版使用獨立帳號與模型目錄；圖片呼叫共用官方非同步 Images 協定，只開放目錄中已確認的 Qwen-Image / Z-Image / Qwen-Image-Edit 型號。單次 n=1，編輯接受 1–3 張參考圖。尚未以國際版真實帳號驗證，不保證與國內版擁有相同型號和額度。",
+        "en": "The international region has separate accounts and catalogs. Images use the official asynchronous protocol only for confirmed Qwen-Image / Z-Image / Qwen-Image-Edit models. Uses n=1 and 1–3 references. Not validated with an international account; models and quota may differ from the domestic region.",
+        "ja": "国際版は別のアカウントとモデル一覧を使用します。確認済みの Qwen-Image / Z-Image / Qwen-Image-Edit にのみ公式の非同期 Images プロトコルを使用します。n=1、参照画像は 1–3 枚です。国際版の実アカウントでは未検証で、国内版とモデルやクォータが同じとは限りません。",
+        "ko": "국제 지역은 별도 계정과 모델 목록을 사용합니다. 확인된 Qwen-Image / Z-Image / Qwen-Image-Edit 모델에만 공식 비동기 Images 프로토콜을 사용합니다. n=1, 참조 이미지 1–3장입니다. 국제 계정으로 검증하지 않았으며 중국 지역과 모델 및 할당량이 같다고 보장하지 않습니다.",
+        "pt-BR": "A região internacional tem contas e catálogo separados. Usa o protocolo Images assíncrono oficial apenas para modelos Qwen-Image / Z-Image / Qwen-Image-Edit confirmados, com n=1 e 1–3 referências. Não validado com conta internacional; modelos e cota podem diferir da região chinesa."
+      }]
     },
     "orcaterm": {
       "capabilities": {
@@ -221,6 +237,19 @@
         "ja": "モデルグループのクォータ残量を割合で表示します。金銭の残高ではありません。",
         "ko": "모델 그룹 할당량 기간의 잔여 비율을 표시하며 현금 잔액은 아닙니다.",
         "pt-BR": "Exibe percentuais restantes das janelas de cota por grupo de modelos, não saldo em dinheiro."
+      }]
+    },
+    "doubaowork": {
+      "capabilities": {
+        "refresh": { "status": "unsupported" }
+      },
+      "notes": [{
+        "zh-CN": "基于 EchoBird 的 MIT 实现接入豆包工作：官方页面登录或完整 Cookie、账号在线模型目录、流式对话与思考、图片输入、订阅窗口和奖励额度查询、每日签到及已达成奖励领取。工具调用使用文本桥接，并非原生 function calling；未接入图片生成或编辑，未伪造 Token 用量。Cookie 失效后需重新登录。未使用真实账号验证，接口和活动以官方实际返回为准。",
+        "zh-Hant": "基於 EchoBird 的 MIT 實作接入豆包工作：官方頁面登入或完整 Cookie、帳號線上模型目錄、串流對話與思考、圖片輸入、訂閱時段和獎勵額度查詢、每日簽到及已達成獎勵領取。工具呼叫使用文字橋接，並非原生 function calling；尚未接入圖片生成或編輯，未偽造 Token 用量。Cookie 失效後需重新登入。尚未以真實帳號驗證，介面與活動以官方實際回傳為準。",
+        "en": "Integrates Doubao Work using EchoBird's MIT implementation: official-page login or complete cookies, account-specific online models, streaming chat and reasoning, image input, subscription windows and bonus quota, daily check-in and eligible reward claims. Tool calls use a text bridge, not native function calling. Image generation and editing are not integrated; token usage is not fabricated. Expired cookies require a new login. Not validated with a real account; endpoints and campaigns depend on actual upstream responses.",
+        "ja": "EchoBird の MIT 実装を基に豆包工作を連携します。公式ページでのログインまたは完全な Cookie、アカウント別オンラインモデル一覧、ストリーミング対話と推論、画像入力、契約期間別と報酬のクォータ確認、毎日のチェックインと条件達成済み報酬の取得に対応します。ツール呼び出しはテキスト橋渡しでありネイティブではありません。画像生成・編集は未連携で、トークン使用量は捏造しません。Cookie が無効になった場合は再ログインが必要です。実アカウントでは未検証で、API とキャンペーンは実際の応答に従います。",
+        "ko": "EchoBird의 MIT 구현을 기반으로 Doubao Work를 연동합니다. 공식 페이지 로그인 또는 전체 Cookie, 계정별 온라인 모델 목록, 스트리밍 대화 및 추론, 이미지 입력, 구독 기간과 보너스 할당량 조회, 일일 체크인 및 조건을 충족한 보상 수령을 지원합니다. 도구 호출은 텍스트 연결이며 네이티브 function calling이 아닙니다. 이미지 생성과 편집은 연동하지 않았으며 토큰 사용량을 꾸며내지 않습니다. Cookie가 만료되면 다시 로그인해야 합니다. 실제 계정으로 검증하지 않았으며 API와 이벤트는 상위 서비스 응답에 따릅니다.",
+        "pt-BR": "Integra o Doubao Work com a implementação MIT do EchoBird: login na página oficial ou cookies completos, modelos online por conta, chat e raciocínio em streaming, entrada de imagens, janelas da assinatura e cota bônus, check-in diário e resgate de recompensas elegíveis. Ferramentas usam uma ponte de texto, não function calling nativo. Geração e edição de imagens não estão integradas; o uso de tokens não é inventado. Cookies expirados exigem novo login. Não validado com conta real; APIs e campanhas dependem das respostas upstream."
       }]
     }
   }

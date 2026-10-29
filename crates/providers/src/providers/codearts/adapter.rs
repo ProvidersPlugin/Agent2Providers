@@ -36,7 +36,7 @@ use super::chat;
 use super::credentials::Credential;
 use super::models;
 use super::session;
-use super::{accounts, balance, login, onboarding, refresh, welfare};
+use super::{accounts, authorization, balance, login, onboarding, refresh, welfare};
 
 /// provider id（落盘契约，存量 id 不能改名）。
 pub const PROVIDER_ID: &str = "codearts";
@@ -62,7 +62,7 @@ impl Provider for CodeArtsProvider {
                 refresh: true,
                 // 三源目录发现（`models.rs`）
                 model_refresh: true,
-                // 两份账：订阅统计 + 福利网关（`balance.rs`）
+                // 套餐总积分及分项积分（`balance.rs`）
                 usage: true,
                 // 每日 ops 福利 = 本家的「签到」（`welfare.rs`）
                 checkin: true,
@@ -96,12 +96,8 @@ impl Provider for CodeArtsProvider {
             ])
             .with_models(models::list())
             // 账号行：各位各有出处，别照着别家抄。
-            //   `usage` —— 余额是**两份账**（订阅统计 + 福利网关，见 `balance`），
-            //     界面上「读到 0」与「没读到」必须能分开，后端因此把失败的一侧
-            //     写进 `statisticsError` / `benefitError` 而不是整次失败。
-            //   `usage_detail` —— 余额列走「套餐徽标 + 点击逐项读数」的两行形态：
-            //     本家的计量表一行放不下，「可用 N 积分」是各池加总，两个权益
-            //     不同的账号在列里看不出差别。
+            //   `usage` —— 套餐统计提供总积分与分项积分。
+            //   `usage_detail` —— 余额列显示套餐与总积分，点击查看分项。
             //   `edition: false` —— 没有版本 / 地区概念：region 固定在 cn-north-4
             //     且必须与 token 签发地一致，不是用户可选项；`login_type`
             //     （WEB/IDE）也不是版本。
@@ -109,10 +105,7 @@ impl Provider for CodeArtsProvider {
             //     **是主要信息**。
             //   `concurrency_default: 3` —— 上游硬顶（超过直接回 HTTP 400，且是
             //     账号级冲突、不降级换号），所以 0 解释成「按默认 3」。
-            //   `default_limiters` —— 余额读数常判不出（免费版账号的统计里没有
-            //     积分类计量表、`available` 为 null，额度全在福利 token 池），
-            //     缺省的余额规则形同虚设；按自然日 Token 消耗判定才兜得住
-            //     「别把一个账号打爆」，而「过了 0 点额度就回来」正是它的额度形态。
+            //   `default_limiters` —— 以总积分余额作为默认额度保护。
             .with_account_features(proto::AccountFeatures {
                 usage: true,
                 usage_detail: true,
@@ -120,8 +113,8 @@ impl Provider for CodeArtsProvider {
                 expiry: vec!["expiresAt".to_string()],
                 concurrency_default: Some(3),
                 default_limiters: Some(vec![proto::DefaultLimiter {
-                    kind: proto::DefaultLimiterKind::Token,
-                    threshold: 10_000_000.0,
+                    kind: proto::DefaultLimiterKind::Balance,
+                    threshold: 1.0,
                     period_seconds: 0,
                     action: proto::DefaultLimiterAction::Skip,
                 }]),
@@ -174,7 +167,7 @@ impl Provider for CodeArtsProvider {
             // ① 凭据（含临期主动续期与写回）；代理沿用编排层为本账号解析出的那份
             let credential = refresh::ensure_fresh(ctx, &account_id, false, req.proxy.as_ref())
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             if !credential.valid() {
                 return Err("CodeArts 账号缺少可用的临时凭据，请重新登录".to_string());
             }
@@ -440,16 +433,13 @@ impl Provider for CodeArtsProvider {
             .unwrap_or("");
         let message = format!("上游返回 {status}{}", raw_part(raw));
         match status {
-            // 403：额度耗尽 —— 标记账号冷却并换下一账号。恢复时刻只在**认得出
-            // 日池**时给（下一个北京零点），其余仍走存储层的 10 分钟兜底。
             403 => proto::ErrorClass::QuotaLimited {
-                reset_at: daily_pool_reset_at(logging::now_ms(), &message),
+                reset_at: None,
                 message,
                 upstream_code: None,
                 status,
             },
             429 => proto::ErrorClass::QuotaLimited {
-                // 429 是分钟级限流，与日池无关：不给它零点，交给 10 分钟兜底
                 reset_at: None,
                 message,
                 upstream_code: None,
@@ -465,24 +455,13 @@ impl Provider for CodeArtsProvider {
         }
     }
 
-    /// 福利池是**账号级**日额度：本次失败的模型是福利源时，整组福利模型一起
-    /// 记冷却 —— 不然池子已经空了，换一个福利模型名照样从头撞一遍。
-    fn cooldown_models(&self, _account: &str, wire_model: &str) -> proto::CooldownModels {
-        match models::cached_catalog() {
-            Some(catalog) => proto::CooldownModels {
-                models: benefit_cooldown_group(&catalog, wire_model),
-            },
-            None => proto::CooldownModels::default(),
-        }
-    }
-
     /// 取一个**可用**的 access key：临期就真刷并写回。
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
             let proxy = record_proxy(ctx, account).await?;
             Ok(refresh::ensure_fresh(ctx, account, false, proxy.as_ref())
                 .await
-                .map_err(GatewayError::into_message)?
+                .map_err(GatewayError::into_control_message)?
                 .access_key_id)
         })
     }
@@ -496,7 +475,7 @@ impl Provider for CodeArtsProvider {
             let proxy = record_proxy(ctx, account).await?;
             Ok(refresh::ensure_fresh(ctx, account, true, proxy.as_ref())
                 .await
-                .map_err(GatewayError::into_message)?
+                .map_err(GatewayError::into_control_message)?
                 .access_key_id)
         })
     }
@@ -512,6 +491,9 @@ impl Provider for CodeArtsProvider {
                 Ok(record) if record.is_object() => record,
                 _ => return Ok(false),
             };
+            if authorization::relogin_error(&record).is_some() {
+                return Ok(false);
+            }
             Ok(Credential::from_payload(&record)
                 .map(|credential| {
                     credential.can_refresh()
@@ -521,13 +503,13 @@ impl Provider for CodeArtsProvider {
         })
     }
 
-    /// 余额可查（两份账，见 `balance.rs` 模块头：订阅统计 + 福利网关）。
+    /// 读取总积分与分项积分额度。
     fn quota_sources(&self, report: &Value) -> Vec<Value> {
         crate::quota::sources(&self.meta().id, report)
     }
 
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
-        Box::pin(async move { query_usage(ctx, account).await.map_err(GatewayError::into_message) })
+        Box::pin(async move { query_usage(ctx, account).await.map_err(GatewayError::into_control_message) })
     }
 
     /// 目录刷新：三源发现 → 落进程内缓存。
@@ -677,7 +659,7 @@ impl Provider for CodeArtsProvider {
                         "result": outcome.label(),
                         "confirmed": matches!(outcome, super::welfare::Outcome::Confirmed),
                         "usage": usage,
-                        "note": "领取到账的是套餐赠送积分，不增加福利模型 token 池",
+                        "note": "领取到账的是套餐赠送积分",
                     }))
                 }
                 other => Err(format!(
@@ -750,28 +732,6 @@ fn note_size_gate(reason: Option<&'static str>, wire_bytes: i64) {
     }
 }
 
-/// 纯函数：给定目录与本次真名，返回整组冷却名单。福利判定**大小写无关**
-/// （客户端的大小写变体也算福利）；命中 → 全部福利模型 id，并把**本次发送名
-/// 原文**也补进名单。
-fn benefit_cooldown_group(catalog: &models::Catalog, wire_model: &str) -> Vec<String> {
-    let is_benefit = catalog.models.iter().any(|model| {
-        model.id.eq_ignore_ascii_case(wire_model) && model.source == models::ModelSource::Benefit
-    });
-    if !is_benefit {
-        return vec![wire_model.to_string()];
-    }
-    let mut names: Vec<String> = catalog
-        .models
-        .iter()
-        .filter(|model| model.source == models::ModelSource::Benefit)
-        .map(|model| model.id.clone())
-        .collect();
-    if !names.iter().any(|name| name == wire_model) {
-        names.push(wire_model.to_string());
-    }
-    names
-}
-
 /// 账号自己配的代理，口径与 qoder 的 `auth::account_proxy` 一致：
 /// **解析失败就报错**，不静默降级成直连。
 pub(crate) async fn record_proxy(ctx: &PluginCtx, account_id: &str) -> Result<Option<ResolvedProxy>, GatewayError> {
@@ -799,101 +759,13 @@ async fn account_max_concurrent(ctx: &PluginCtx, account_id: &str) -> Option<u64
         .filter(|value| *value > 0)
 }
 
-/// 余额查询（两份账：订阅统计 + 福利网关）。
-///
-/// **两个源各自成功各自失败**：福利网关是另一台机器，它挂了不该让订阅统计
-/// 显示不出来（反过来也是）。只有两边都失败才整次失败 —— 而那通常意味着
-/// 凭据本身已经不行了，错误文案照 `statistics` 那侧给（它才是主账）。
+/// 读取套餐统计，总积分是本家的额度来源。
 async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
     let credential = welfare::current_credential(ctx, account_id).await?;
-    let (statistics, benefit) = balance::fetch_both(
-        models::DEFAULT_BASE_URL,
-        models::DEFAULT_BENEFIT_GATEWAY_URL,
-        &credential,
-        chat::DEFAULT_LANGUAGE,
-        chat::DEFAULT_PLUGIN_VERSION,
-    )
-    .await;
-    // ── 「无 benefit 档案」先自动注册一次再重查 ─────────────────
-    // benefit 记录不是开账号就有的：官方客户端每次启动都 POST claim（幂等建档），
-    // 没走过这一步的账号 InferHub 一律 `4004.200 benefit not found` 拒答。
-    // 去抖：注册是写语义的幂等调用，没必要每分钟补一发（10 分钟一次足够）。
-    let mut benefit = benefit;
-    if matches!(&benefit, Ok(None)) && benefit_claim_due(account_id) {
-        match balance::claim_benefit(models::DEFAULT_BENEFIT_GATEWAY_URL, &credential).await {
-            Ok(_) => {
-                benefit = balance::fetch_benefit_balance(
-                    models::DEFAULT_BENEFIT_GATEWAY_URL,
-                    &credential,
-                )
-                .await;
-            }
-            Err(error) => {
-                logging::verbose(
-                    "[CodeArts]",
-                    &format!("benefit 自动注册失败（账号 {account_id}）：{}", error.message),
-                );
-            }
-        }
-    }
-    if statistics.is_err() && benefit.is_err() {
-        let (first, second) = (statistics.as_ref().err(), benefit.as_ref().err());
-        let message = match (first, second) {
-            (Some(first), Some(second)) => {
-                format!("{}（福利网关：{}）", first.message, second.message)
-            }
-            (Some(first), _) => first.message.clone(),
-            (_, Some(second)) => second.message.clone(),
-            _ => "CodeArts 余额查询失败".to_string(),
-        };
-        let status = statistics
-            .as_ref()
-            .err()
-            .map(|error| error.status_code)
-            .unwrap_or(502);
-        return Err(GatewayError::with_status(status, message));
-    }
-    let benefit_value = benefit.as_ref().ok().and_then(|value| value.as_ref());
-    let mut document = balance::usage_document(statistics.as_ref().ok(), benefit_value);
-    let benefit_models: Vec<String> = models::cached_catalog().map(|catalog| catalog.models.into_iter()
-        .filter(|model| model.source == models::ModelSource::Benefit).map(|model| model.id).collect()).unwrap_or_default();
-    document["quotaBenefitModels"] = serde_json::json!(benefit_models);
-    match &benefit {
-        // 上游明说没有该账号的福利数据：落一个**中性**标记而不是错误
-        Ok(None) => {
-            document["benefitAbsent"] = Value::Bool(true);
-        }
-        Ok(Some(_)) => {}
-        Err(error) => {
-            document["benefitError"] = Value::String(error.message.clone());
-        }
-    }
-    if let Err(error) = &statistics {
-        document["statisticsError"] = Value::String(error.message.clone());
-    }
-    Ok(document)
-}
-
-/// benefit 自动注册（claim）的**进程级去抖**：距上次尝试不足窗口期返回 false。
-///
-/// 自动余额查询默认每分钟跑一次，「无档案」的账号若不加去抖就会每分钟被补发
-/// 一次 claim —— 调用幂等但没必要（官方客户端也就是每次启动一发）。
-fn benefit_claim_due(account_id: &str) -> bool {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
-    const WINDOW: Duration = Duration::from_secs(600);
-    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    let map = LAST.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = match map.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if guard.get(account_id).is_some_and(|at| at.elapsed() < WINDOW) {
-        return false;
-    }
-    guard.insert(account_id.to_string(), Instant::now());
-    true
+    let statistics = balance::fetch_statistics(
+        models::DEFAULT_BASE_URL, &credential, chat::DEFAULT_LANGUAGE, chat::DEFAULT_PLUGIN_VERSION,
+    ).await?;
+    Ok(balance::usage_document(Some(&statistics)))
 }
 
 /// 把上游原文拼成统一文案的一截（空则不拼）。
@@ -902,24 +774,6 @@ fn raw_part(raw: &str) -> String {
         String::new()
     } else {
         format!(": {}", raw.trim())
-    }
-}
-
-/// 认得出「福利日池打满」的文案 ⇒ 冷却到**北京时间下一个零点**；认不出 ⇒ None
-/// （由存储层落 10 分钟兜底）。
-///
-/// `InferHub.4291.200 / insufficient quota` 是本家**按日**的 token 池打满时那一帧。
-/// 上游不告诉我们什么时候重置，但它整套日口径都是 UTC+8 零点（见
-/// `welfare::today` 的说明），所以零点是有据可依的那个答案。
-///
-/// 只认这两串原文，不认状态码：429 是限流（分钟级，10 分钟兜底正是它要的），
-/// 认不出额度的 403 是内容闸门/权限/签名那一类（本来就不该罚账号）。
-fn daily_pool_reset_at(now_ms: i64, message: &str) -> Option<i64> {
-    let text = message.to_lowercase();
-    if text.contains("insufficient quota") || text.contains("4291.200") {
-        Some(welfare::next_day_boundary_ms(now_ms))
-    } else {
-        None
     }
 }
 

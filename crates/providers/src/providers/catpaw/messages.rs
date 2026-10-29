@@ -65,6 +65,13 @@ use super::fingerprint::js_truthy;
 /// 改动会让模型对「上一轮为什么没结果」的理解发生变化，因此冻结。
 pub const INTERRUPTED_TOOL_RESULT: &str = "[工具调用被用户中断]";
 
+/// 历史以 tool 结果结尾时补的合成 user 文案。
+///
+/// 上游要求 round/turn 的消息列表以 user 收尾；客户端重放一段以 tool 结尾的
+/// 历史（网关重启丢了注册表、或换了模型重发上一轮）时本进程补这一条顶上。
+/// 它只进本轮提交，不写回客户端、不进指纹链（见 `Prepared::synthetic_tail`）。
+const SYNTHETIC_CONTINUE_TEXT: &str = "继续";
+
 /// 一次归一化的产物（对应原实现 `normalizeMessages` 的返回对象）。
 ///
 /// 三个字段的消费点（round 请求体，见 UPSTREAM_PROTOCOL §3.1）：
@@ -488,6 +495,16 @@ fn assemble(
     })
 }
 
+/// 历史以 tool 结果结尾时补的那条合成 user 消息（见 `SYNTHETIC_CONTINUE_TEXT`）。
+pub(super) fn synthetic_continue_message() -> Value {
+    json!({
+        "type": "user",
+        "messageId": crate::ids::new_conversation_id(),
+        "content": [{ "type": "text", "text": SYNTHETIC_CONTINUE_TEXT }],
+        "finished": true,
+    })
+}
+
 /// 一条 tool 消息的配对校验 + `toolName` 回填（原实现第 294-305 行）。
 ///
 /// 回填是**必须的**而非可选优化：客户端回显历史时常常只给 `tool_call_id`
@@ -589,7 +606,7 @@ fn join_directives(parts: &[String]) -> Option<String> {
 }
 
 /// 消息的 `type` 字段（阶段 2 的消息都是归一化产物，type 必有）
-fn message_type(message: &Value) -> Option<&str> {
+pub(super) fn message_type(message: &Value) -> Option<&str> {
     message.get("type").and_then(Value::as_str)
 }
 

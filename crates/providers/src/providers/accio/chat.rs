@@ -25,7 +25,6 @@
 //! release 是 `panic=abort`：零 unwrap/expect/panic；不持锁穿越 await
 //! （凭证进来前取好快照）。
 
-use futures::StreamExt;
 use serde_json::{json, Value};
 
 
@@ -39,7 +38,7 @@ use crate::logging;
 use super::credentials::Credentials;
 use super::endpoints;
 use super::protocol::{self, UpstreamKind};
-use super::stream::{self, Delta, Frame, LineBuffer};
+use super::stream::{self, Delta, Frame, FrameStream};
 
 /// 会话式转发用到的翻译器（`mod.rs` 构造它）
 pub use super::stream::Translator;
@@ -156,7 +155,7 @@ pub async fn send(
     plan: &ChatPlan,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<reqwest::Response, GatewayError> {
-    let client = egress::client(proxy, "direct");
+    let client = egress::stream_client(proxy, "direct");
     let mut builder = client.post(&plan.url).body(plan.body.clone());
     for (key, value) in &plan.headers {
         builder = builder.header(key, value);
@@ -321,174 +320,143 @@ fn frames_for_deltas(translator: &mut Translator, deltas: &[Delta]) -> Option<St
     (!out.is_empty()).then_some(out)
 }
 
+fn usage_frames(translator: &Translator) -> String {
+    translator.usage().map(|usage| stream::sse_frame(&json!({
+        "id": translator.response_id(),
+        "object": "chat.completion.chunk",
+        "created": translator.created(),
+        "model": translator.model_out(),
+        "choices": [],
+        "usage": usage,
+    }))).unwrap_or_default()
+}
+
+fn empty_response_error() -> GatewayError {
+    GatewayError::with_status(502, "Accio 上游返回空响应（没有有效正文、思考或工具调用）")
+        .with_code("accio_empty_response")
+}
+
 /// 收尾帧（finish_reason + usage）
 fn tail_frames(translator: &mut Translator) -> String {
     let mut out = String::new();
-    if translator.take_role_frame() {
-        out.push_str(&stream::sse_frame(&chunk_frame(
-            translator,
-            json!({ "role": "assistant", "content": "" }),
-            Value::Null,
-        )));
-    }
     out.push_str(&stream::sse_frame(&chunk_frame(
         translator,
         json!({}),
         Value::String(translator.final_finish_reason()),
     )));
-    if let Some(usage) = translator.usage() {
-        out.push_str(&stream::sse_frame(&json!({
-            "id": translator.response_id(),
-            "object": "chat.completion.chunk",
-            "created": translator.created(),
-            "model": translator.model_out(),
-            "choices": [],
-            "usage": usage,
-        })));
-    }
+    out.push_str(&usage_frames(translator));
     out.push_str(&stream::sse_done());
     out
 }
 
-/// 首帧预读：把上游拉到第一个**有内容或结束**的帧，决定「能不能交给客户端」。
+fn failure_frames(translator: &Translator, error: &GatewayError) -> String {
+    let mut out = usage_frames(translator);
+    out.push_str(&stream::sse_frame(&json!({
+        "error": { "message": error.message, "type": "upstream_error" },
+    })));
+    out.push_str(&stream::sse_done());
+    out
+}
+
+/// 首帧预读：没有有效正文、思考或具名工具调用时，不能发出成功响应头。
 ///
-/// 返回 `(预读到的帧, 剩余字节流)`。首帧前就撞上错误 → 交回带状态码的 `Err`，
-/// 编排层据此换号（此刻一个字节都还没下发）。
+/// 预读与续传持有同一个解码器，保留同块后续事件与跨块未完成事件。
 pub(super) async fn prefetch_stream_head(
     ctx: &PluginCtx,
     response: reqwest::Response,
     limit: &LimitContext,
-) -> Result<(Vec<Frame>, futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>), GatewayError> {
-    let source = response.bytes_stream().map(|item| {
-        item.map_err(|error| std::io::Error::other(egress::describe_chain(&error)))
-    });
-    let mut source = crate::stall::idle_guard(
-        Box::pin(source),
-        std::time::Duration::from_millis(crate::timeouts::current().stream_idle_ms()),
-    );
-    let mut buffer = LineBuffer::new();
-    let mut frames: Vec<Frame> = Vec::new();
-    while let Some(item) = source.next().await {
-        let chunk = item.map_err(|error| {
-            GatewayError::with_status(502, format!("Accio 上游流式传输中断: {error}"))
-        })?;
-        let text = String::from_utf8_lossy(&chunk).to_string();
-        for line in buffer.push(&text) {
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let Some(frame) = stream::parse_frame(data) else {
-                continue;
-            };
-            if frame.is_error() {
-                let error = frame_error(&frame);
-                if error.status_code == 429 {
-                    record_limited(ctx, limit, &error.message).await;
-                }
-                return Err(error);
+) -> Result<(Vec<Frame>, FrameStream), GatewayError> {
+    let mut source = FrameStream::new(response);
+    let mut frames = Vec::new();
+    let mut usage = None;
+    let mut tool_bytes = 0usize;
+    while let Some(mut frame) = source.next().await? {
+        if frame.is_error() {
+            let error = frame_error(&frame);
+            if error.status_code == 429 {
+                record_limited(ctx, limit, &error.message).await;
             }
-            let has_content = !frame.parts.is_empty();
-            let finished = frame.turn_complete;
-            if has_content || finished {
-                frames.push(frame);
-                // 半行换手：把缓冲区里还没成行的尾巴拼回流头（见 `take_pending`
-                // 的说明）—— 不做这一步，被切在 chunk 边界的帧会静默丢内容
-                let leftover = buffer.take_pending();
-                let source: futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>> =
-                    if leftover.is_empty() {
-                        source
-                    } else {
-                        Box::pin(
-                            futures::stream::once(async move { Ok(bytes::Bytes::from(leftover)) })
-                                .chain(source),
-                        )
-                    };
-                return Ok((frames, source));
-            }
+            return Err(error);
         }
+        if frame.has_output() {
+            if let Some(usage) = usage {
+                frames.push(Frame { usage: Some(usage), ..Frame::default() });
+            }
+            frames.push(frame);
+            return Ok((frames, source));
+        }
+        if let Some(next) = frame.usage.take() {
+            usage = Some(next);
+        }
+        let finished = frame.turn_complete;
+        frame.parts.retain(|part| matches!(part, stream::Part::FunctionCall { .. }));
+        if !frame.parts.is_empty() {
+            tool_bytes = frame.parts.iter().fold(tool_bytes, |size, part| {
+                match part {
+                    stream::Part::FunctionCall { id, name, args } => size.saturating_add(id.len() + name.len() + args.len()),
+                    _ => size,
+                }
+            });
+            if tool_bytes > 1024 * 1024 || frames.len() >= 1024 {
+                return Err(GatewayError::with_status(502, "Accio 首帧前的工具参数过大，已中断"));
+            }
+            frames.push(frame);
+        }
+        if finished { break; }
     }
-    // 流在没有任何内容帧之前就结束了：交给下游按「空回答」收尾
-    Ok((frames, source))
+    Err(empty_response_error())
 }
 
 /// 流式：逐帧翻译并下发（在 spawn 的后台任务里跑）。
 pub async fn drive_stream(
     ctx: &PluginCtx,
-    mut source: futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>,
+    mut source: FrameStream,
     mut translator: Translator,
     telemetry: std::sync::Arc<RequestTelemetry>,
     limit: LimitContext,
     sink: &mut ConversationSink<'_>,
     prefetched: Vec<Frame>,
-) {
-    let mut buffer = LineBuffer::new();
-    let mut failed: Option<GatewayError> = None;
-    // 预读到的帧先补发（它们的字节已经被消费掉了）
-    for frame in prefetched {
+) -> Result<(), GatewayError> {
+    let mut prefetched = prefetched.into_iter();
+    loop {
+        let frame = match prefetched.next() {
+            Some(frame) => Some(frame),
+            None => match source.next().await {
+                Ok(frame) => frame,
+                Err(error) => {
+                    telemetry.note_error(&error.message);
+                    let _ = sink.send(failure_frames(&translator, &error).as_bytes()).await;
+                    return Err(error);
+                }
+            },
+        };
+        let Some(frame) = frame else { break };
+        if frame.is_error() {
+            let error = frame_error(&frame);
+            if error.status_code == 429 {
+                record_limited(ctx, &limit, &error.message).await;
+            }
+            if let Some(usage) = frame.usage {
+                translator.consume(&Frame { usage: Some(usage), ..Frame::default() }, Some(&telemetry));
+            }
+            telemetry.note_error(&error.message);
+            let _ = sink.send(failure_frames(&translator, &error).as_bytes()).await;
+            return Err(error);
+        }
         let deltas = translator.consume(&frame, Some(&telemetry));
         if let Some(text) = frames_for_deltas(&mut translator, &deltas) {
-            if sink.send(text.as_bytes()).await.is_err() {
-                return;
-            }
+            sink.send(text.as_bytes()).await
+                .map_err(|error| GatewayError::with_status(499, error))?;
         }
-        if frame.turn_complete {
-            let tail = tail_frames(&mut translator);
-            let _ = sink.send(tail.as_bytes()).await;
-            return;
-        }
+        if frame.turn_complete { break; }
     }
-    while let Some(item) = source.next().await {
-        let chunk = match item {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                failed = Some(GatewayError::with_status(
-                    502,
-                    format!("Accio 上游流式传输中断: {error}"),
-                ));
-                break;
-            }
-        };
-        let text = String::from_utf8_lossy(&chunk).to_string();
-        for line in buffer.push(&text) {
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let Some(frame) = stream::parse_frame(data) else {
-                // `[DONE]` 或心跳：`[DONE]` 之前上游一般已经发过 turn_complete，
-                // 这里兜底收尾一次（幂等）
-                continue;
-            };
-            if frame.is_error() {
-                let error = frame_error(&frame);
-                if error.status_code == 429 {
-                    record_limited(ctx, &limit, &error.message).await;
-                }
-                telemetry.note_error(&error.message);
-                failed = Some(error);
-                break;
-            }
-            let deltas = translator.consume(&frame, Some(&telemetry));
-            if let Some(text) = frames_for_deltas(&mut translator, &deltas) {
-                if sink.send(text.as_bytes()).await.is_err() {
-                    // 客户端断开：直接退出，drop 掉 source 等于断开上游
-                    return;
-                }
-            }
-            if frame.turn_complete {
-                let tail = tail_frames(&mut translator);
-                let _ = sink.send(tail.as_bytes()).await;
-                return;
-            }
-        }
+    if !translator.has_output() {
+        let error = empty_response_error();
+        let _ = sink.send(failure_frames(&translator, &error).as_bytes()).await;
+        return Err(error);
     }
-    // 上游在 turn_complete 之前断了：把已经拿到的内容按正常收尾下发
-    // （与通用层「流中断仍给客户端一个 finish 帧」的取向一致），错误只记日志
-    if let Some(error) = failed {
-        telemetry.note_error(&error.message);
-        logging::verbose("[Accio]", &format!("流中途失败：{}", error.message));
-    }
-    let tail = tail_frames(&mut translator);
-    let _ = sink.send(tail.as_bytes()).await;
+    sink.send(tail_frames(&mut translator).as_bytes()).await
+        .map_err(|error| GatewayError::with_status(499, error))
 }
 
 /// 非流式：拉完整条流再聚合成一个 `chat.completion`。
@@ -499,39 +467,20 @@ pub async fn drive_aggregate(
     telemetry: std::sync::Arc<RequestTelemetry>,
     limit: &LimitContext,
 ) -> Result<Value, GatewayError> {
-    let mut source = response.bytes_stream();
-    let mut buffer = LineBuffer::new();
-    loop {
-        let Some(item) = source.next().await else {
-            break;
-        };
-        let chunk = item.map_err(|error| {
-            GatewayError::with_status(
-                502,
-                format!("Accio 上游流式传输中断: {}", egress::describe_chain(&error)),
-            )
-        })?;
-        let text = String::from_utf8_lossy(&chunk).to_string();
-        for line in buffer.push(&text) {
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let Some(frame) = stream::parse_frame(data) else {
-                continue;
-            };
-            if frame.is_error() {
-                let error = frame_error(&frame);
-                if error.status_code == 429 {
-                    record_limited(ctx, limit, &error.message).await;
-                }
-                // 非流式这条路还没有下发任何内容，直接交回编排层换号
-                return Err(error);
+    let mut source = FrameStream::new(response);
+    while let Some(frame) = source.next().await? {
+        if frame.is_error() {
+            let error = frame_error(&frame);
+            if error.status_code == 429 {
+                record_limited(ctx, limit, &error.message).await;
             }
-            translator.consume(&frame, Some(&telemetry));
-            if frame.turn_complete {
-                return Ok(completion_body(&translator));
-            }
+            return Err(error);
         }
+        translator.consume(&frame, Some(&telemetry));
+        if frame.turn_complete { break; }
+    }
+    if !translator.has_output() {
+        return Err(empty_response_error());
     }
     Ok(completion_body(&translator))
 }

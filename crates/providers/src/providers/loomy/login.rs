@@ -134,7 +134,7 @@ fn extract_msgid(payload: &Value) -> String {
 /// 发送短信验证码。返回 `{msgid}`（前端随登录请求带回）。
 pub async fn send_code(proxy: &str, phone: &str) -> Result<Value, String> {
     let phone = normalize_phone(phone)?;
-    let client = crate::http::client(None, proxy);
+    let client = crate::http::control_client(None, proxy);
     let body = json!({
         "base": make_base(),
         "param": { "ccode": "86", "phone": phone, "expire": 300 },
@@ -178,7 +178,7 @@ pub async fn login_with_code(
             "缺少 msgid：请先点「发送验证码」，用本次发码返回的 msgid 登录".to_string(),
         );
     };
-    let client = crate::http::client(None, proxy);
+    let client = crate::http::control_client(None, proxy);
     let body = json!({
         "base": make_base(),
         "param": {

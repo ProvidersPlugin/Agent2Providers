@@ -8,11 +8,11 @@
 //! ```text
 //!   1. 请求头是 Cookie 形态（X-Passport-Token）而不是 Bearer（§9.1）；
 //!   2. 短响应要过 unwrapApiData（上游把业务码写在 code 字段里）；
-//!   3. turn 是 SSE：不读体、总超时 15 分钟（见 turn_request）。
+//!   3. turn 是 SSE：不读体，只按建连与读取空闲设限。
 //! ```
 //!
 //! ── 出网（账号级代理在这里生效）─────────────────────────────
-//! 全部经 `core::egress::client(proxy, "direct")`：账号级出网代理（`ResolvedProxy`）
+//! 全部经 `core::egress::control_client(proxy, "direct")`：账号级出网代理（`ResolvedProxy`）
 //! 由此生效，同一出口共用一个连接池，连接/读取超时旋钮也复用那边。
 //! 本文件不做代理的选择与缓存 —— 那是 egress 的职责（架构文档 §2 的
 //! 「账号级代理对所有 provider 生效」）。
@@ -39,13 +39,6 @@ pub(super) const REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 /// `turn/stop` 的超时（原实现 `STOP_TIMEOUT_MS = 3000`）
 pub(super) const STOP_TIMEOUT_MS: u64 = 3_000;
-
-/// turn 的 SSE 超时（原实现 `SSE_TIMEOUT_MS = 15 * 60 * 1000`）。
-///
-/// 为什么是 15 分钟而不是更短：带工具循环的长回答可能跑很久，而这是**总超时**
-/// （reqwest 的 `.timeout()` 覆盖整个响应体），设短了会把正在推进的长回答掐断 ——
-/// 客户端一边收到内容一边被断流。
-pub(super) const SSE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// 上游请求头集合（架构文档 §9.1 / 原实现 `createHeaders`）。
 ///
@@ -110,7 +103,7 @@ pub(super) async fn post_json(
     let url = format!("{}{path}", base_url.trim_end_matches('/'));
     let payload = serde_json::to_string(body)
         .map_err(|error| CatPawError::upstream(format!("请求体序列化失败: {error}")))?;
-    let client = egress::client(proxy, "direct");
+    let client = egress::control_client(proxy, "direct");
     let mut builder = client
         .post(&url)
         .timeout(Duration::from_millis(timeout_ms))
@@ -257,9 +250,8 @@ pub(super) async fn stop_turn(
 
 /// 发 turn 请求（SSE）。
 ///
-/// 与 `post_json` 的差别只有两点：Accept 是 `text/event-stream`、**不读响应体**
-/// （`bytes_stream()` 交给执行层逐 chunk 消费）；总超时用 `SSE_TIMEOUT_MS`
-/// 而不是 30 秒 —— 长回答的 SSE 流会被 30 秒超时掐断。
+/// 与 `post_json` 的差别是 Accept 为 `text/event-stream`，且不设总超时。
+/// `bytes_stream()` 交给执行层消费，连接与读取空闲使用本次请求的超时设置。
 ///
 /// HTTP 非 2xx 在这里就失败（上游拒绝执行轮次，比如会话状态不对）：那时响应体
 /// 是错误 JSON 而不是 SSE，读出来当文案比让执行层去解析它更清楚。
@@ -271,11 +263,8 @@ pub(super) async fn turn_request(
     let url = format!("{}/api/agent/conversation/turn", request.base_url.trim_end_matches('/'));
     let payload = serde_json::to_string(body)
         .map_err(|error| CatPawError::upstream(format!("请求体序列化失败: {error}")))?;
-    let client = egress::client(request.proxy.as_ref(), "direct");
-    let mut builder = client
-        .post(&url)
-        .timeout(Duration::from_millis(SSE_TIMEOUT_MS))
-        .body(payload);
+    let client = egress::stream_client(request.proxy.as_ref(), "direct");
+    let mut builder = client.post(&url).body(payload);
     for (key, value) in request_headers(&ctx.credentials, "text/event-stream") {
         builder = builder.header(key, value);
     }

@@ -15,20 +15,16 @@
 //! 其中的 `enabled` 是**会变的**：上游今天关掉验证、明天打开，都不需要提前发版。
 //! 所以它必须被周期性读回来，而不是编译期写死。
 //!
-//! `skip_model_request` 曾经被当成「推理请求免码」的判据，现已不参与结论
-//! （长期回 `true`，照它停铸会让池子永远是空的，免码头实测会间歇 502；
-//! 见 [`captcha::apply_config`]）。这一格仍随配置解析出来，只用于展示与排障。
+//! `enabled` 与 `skip_model_request` 共同决定推理是否需要令牌；配置缺失不放行，
+//! 实际收到 3007 后恢复验证要求，不被后续缓存配置覆盖。
 //!
 //! 端点映射（第 2 份）是同一类东西：上游通过它把推理端点在平面间迁移
 //! （`open.bigmodel.cn` → `zcode.z.ai`，见 `endpoint_mapping` 的模块头），表随
 //! 服务端变。两条配置的性质相同 —— 低频、与账号无关、会反转 —— 就共用这一条
 //! 5 分钟的循环（各自挑各自的代表账号、各自失败互不影响）。
 //!
-//! ── 为什么不懒在请求路径上取 ────────────────────────────────
-//! `ZcodeAdapter::build_chat_request` 是**同步**函数（转发层在构造请求计划时不
-//! await），拿不到「现在就问一次上游」的能力；而把这次往返塞进 `ensure_access_token`
-//! 那类异步钩子，会让第一条请求替所有人付掉这份延迟 —— 用户看到的是「切到活动套餐
-//! 后第一条特别慢」。独立循环把代价挪到后台，代价只有每 5 分钟一次 GET。
+//! 首个套餐池请求等待风控配置同步，避免默认要码状态提前拦下合法免码请求。
+//! 后续请求复用缓存；端点映射仍在后台同步，不阻塞推理。
 //!
 //! ── 三条口径 ────────────────────────────────────────────────
 //!   1. **没有账号走活动套餐就一次都不问**：这份配置只对那条通道有意义，问了也
@@ -66,20 +62,32 @@ pub const SYNC_INTERVAL_MS: u64 = 5 * 60_000;
 // 与网关那份逐条对照：它解释「网关重启后多久恢复活动套餐通道」。
 const FIRST_DELAY_MS: u64 = 3_000;
 
-/// 到点就同步一轮（**非阻塞**：网络往返在后台任务里）。
-///
-/// ── 与网关那份的差别（迁移时改的）──────────────────────────
-/// 网关那版是常驻循环（`spawn(store)`），每 5 分钟自己读账号表。插件没有库
-/// 句柄，账号要走 `store.*` 回调 —— 而 [`PluginCtx`] **不是** `'static`
-/// （它借用 `serve()` 的运行时），不能捕获进 `tokio::spawn`。
-///
-/// 所以拆成两段：**取数据在这一侧**（几次本地 RPC，很快），**打上游在后台**
-/// （只捕获取出来的 `String`）。这样第一条请求不会替所有人付掉一次跨网往返，
-/// 也不必把 ctx 塞进 `'static` 任务。
-///
-/// 谁调用它：`ensure_token` 与 `refresh_models` 这两个异步钩子（它们本来就要
-/// 读账号，顺带一次「到点没」的判定）。没有请求就一直不同步 —— 那也没有读者
-/// （模块头第一条口径）。
+/// 首次套餐池请求先取得风控配置，避免后台同步尚未完成时误判令牌池为空。
+pub async fn ensure_captcha_config(region: Region, proxy: Option<&ResolvedProxy>) {
+    use std::sync::OnceLock;
+
+    static SYNC: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let fresh = || captcha::last_sync_at() > 0
+        && logging::now_ms().saturating_sub(captcha::last_sync_at()) < SYNC_INTERVAL_MS as i64;
+    if fresh() { return; }
+    let _guard = SYNC.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    if fresh() { return; }
+    match claim::captcha_config(region, proxy).await {
+        Ok(Some(config)) => captcha::apply_config(&config),
+        Ok(None) => {
+            captcha::note_synced();
+            captcha::set_required(true);
+        }
+        Err(error) => {
+            captcha::set_required(true);
+            logging::verbose(
+                "[ZCode]",
+                &format!("获取套餐池的风控配置失败（保持验证要求）: {}", error.message),
+            );
+        }
+    }
+}
+
 pub async fn maybe_sync(ctx: &PluginCtx) {
     if !due() {
         return;

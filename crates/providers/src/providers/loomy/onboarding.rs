@@ -221,7 +221,7 @@ pub async fn get_tasks(ctx: &PluginCtx, account: &str, refresh: bool) -> Result<
         }
     }
     let credentials = load_credentials(ctx, account).await?;
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let done = fetch_done(&client, &credentials).await?;
     let unclaimed = done.iter().filter(|done| !**done).count();
     let mut payload = json!({
@@ -272,7 +272,7 @@ pub async fn claim(ctx: &PluginCtx, account: &str, only: &str) -> Result<Value, 
         return Ok(settled_claim_response(&snapshot));
     }
     let credentials = load_credentials(ctx, account).await.map_err(|(_, message)| message)?;
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let before = fetch_done(&client, &credentials).await.map_err(|(_, message)| message)?;
 
     let mut rows = Vec::new();

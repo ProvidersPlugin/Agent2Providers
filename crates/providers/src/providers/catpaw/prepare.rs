@@ -23,7 +23,7 @@
 use serde_json::Value;
 
 use super::image_compress::compress_if_needed;
-use super::messages::{normalize_messages, NormalizeOptions};
+use super::messages::{message_type, normalize_messages, synthetic_continue_message, NormalizeOptions};
 use super::models::{
     resolve_context_window, resolve_effort, resolve_model_request, CatPawError, ModelResolution,
 };
@@ -56,6 +56,11 @@ pub(super) struct Prepared {
     /// 400 而不是「先建了会话再失败」。放到后面会让一次错误请求在上游留下一个
     /// 刚创建就被判失败的 conversation。
     pub selected_tools: Vec<Value>,
+    /// 末尾那条 user 消息是**本地补的**（客户端历史以 tool 结果结尾）。
+    ///
+    /// 调用方据此把它排除在指纹链之外：它不在客户端历史里，写进链会让下一轮
+    /// `locate_increment` 定位不到、误判「历史被改写」而反复全量重建。
+    pub synthetic_tail: bool,
 }
 
 impl Prepared {
@@ -94,7 +99,17 @@ pub(super) async fn prepare(request: &ConversationRequest) -> Result<Prepared, C
     // 只对「工具续接」那条路径有意义，而它由 conversation.rs 自己从原始消息里切片段）
     let normalized = normalize_messages(messages, NormalizeOptions::default())?;
     // 归一化后的内联图片过压缩（见 `compress_images` 的说明）
-    let messages = compress_images(normalized.messages).await;
+    let mut messages = compress_images(normalized.messages).await;
+    // 上游硬性要求 round/turn 的消息列表以 user 收尾（UPSTREAM_PROTOCOL §3.1）。
+    // 客户端重放一段「以 tool 结果结尾」的历史时会撞上这条 —— 典型场景是网关
+    // 重启后注册表丢了、或客户端换了模型重发上一轮。这里补一条合成 user 消息
+    // 满足约束：它只进本轮提交，不写回客户端、也不进指纹链（见下方 `synthetic`）。
+    let synthetic_tail = if messages.last().and_then(message_type) == Some("tool") {
+        messages.push(synthetic_continue_message());
+        true
+    } else {
+        false
+    };
     let final_message = messages
         .last()
         .cloned()
@@ -103,6 +118,7 @@ pub(super) async fn prepare(request: &ConversationRequest) -> Result<Prepared, C
         resolution,
         messages,
         final_message,
+        synthetic_tail,
         system_prompt: normalized.system_prompt,
         rules_message: normalized.rules_message,
         effort,

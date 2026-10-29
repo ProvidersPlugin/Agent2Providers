@@ -38,7 +38,7 @@
 use serde_json::Value;
 
 use crate::errors::GatewayError;
-use crate::http::{client, describe_chain};
+use crate::http::{control_client, describe_chain};
 
 use super::USER_AGENT;
 
@@ -69,7 +69,7 @@ pub async fn exchange_genflowpro_stoken(
     // 那个函数的 body 是 `Option<&Value>`，会按 JSON 发；passport 只认
     // `application/x-www-form-urlencoded`（发错编码的表现是 400
     // `invalid_request`，与「凭证不对」难以区分）。这里直发一次。
-    let response = client(None, "direct")
+    let response = control_client(None, "direct")
         .post(PASSPORT_AUTH_URL)
         .header("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
         .header("Referer", format!("{}/genflowpro", super::BASE_URL))

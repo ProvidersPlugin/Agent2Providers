@@ -113,7 +113,7 @@ async fn send(plan: &Plan, proxy: Option<&ResolvedProxy>) -> Result<reqwest::Res
     // **不设 reqwest 总超时**：`timeout(0)` 不是"不限时"而是"立刻超时"
     // （实测报 operation timed out，症状是随机 502），而不带总超时的长流
     // 才符合本家的形状 —— 读空闲由下面的 `idle_guard` 管，整流时长不该被截。
-    let mut request = egress::client(proxy, "direct")
+    let mut request = egress::stream_client(proxy, "direct")
         .post(&plan.url)
         .header("User-Agent", format!("Trae/{IDE_VERSION} antigravity-cockpit-tools"));
     for (name, value) in &plan.headers {
@@ -225,7 +225,7 @@ async fn frame_error(code: i64, message: &str, limit: &Limit<'_>) -> GatewayErro
 pub(crate) async fn prefetch_head(
     response: reqwest::Response,
     limit: &Limit<'_>,
-) -> Result<(Vec<Frame>, futures::stream::BoxStream<'static, Result<bytes::Bytes, io::Error>>, SoloStream), GatewayError> {
+) -> Result<(Vec<Frame>, futures::stream::BoxStream<'static, Result<bytes::Bytes, io::Error>>, SoloStream, ByteLines), GatewayError> {
     let source = response.bytes_stream().map(|item| item.map_err(|error| io::Error::other(egress::describe_chain(&error))));
     let mut source = stall::idle_guard(Box::pin(source), stream_idle());
     let mut scanner = ByteLines::default();
@@ -249,53 +249,21 @@ pub(crate) async fn prefetch_head(
                 }
                 frames.push(frame);
             }
+            if stream.completed() { break; }
+        }
+        if stream.completed() {
+            return Ok((frames, Box::pin(futures::stream::empty()), stream, scanner));
         }
         if !frames.is_empty() {
-            // 半行换手：缓冲区里还没成行的尾巴要拼回流头（见 `take_pending`）——
-            // 不做这一步，被切在 chunk 边界的那一帧会静默丢内容。
-            let leftover = scanner.take_pending();
-            let rest: futures::stream::BoxStream<'static, Result<bytes::Bytes, io::Error>> = if leftover.is_empty() {
-                source
-            } else {
-                Box::pin(futures::stream::once(async move { Ok(bytes::Bytes::from(leftover)) }).chain(source))
-            };
-            return Ok((frames, rest, stream));
+            return Ok((frames, source, stream, scanner));
         }
     }
     // 流在没有任何内容帧之前就结束了：交给下游按「空回答」收尾（不假装成功
     // 也不报错 —— 真异常在 HTTP 状态那一层已经判过了）。
-    Ok((frames, source, stream))
+    Ok((frames, source, stream, scanner))
 }
 
-/// 逐行切分（**按字节缓冲**，只在完整行上解码 UTF-8）。
-///
-/// 为什么不直接把 chunk 转成 String 再切：一个多字节字符被切在 chunk 边界时
-/// `from_utf8_lossy` 会就地吐出 U+FFFD，中文回答就会偶发变成乱码 —— 本家的
-/// 上游正文里中文占比很高，这不是理论问题。
-#[derive(Default)]
-pub struct ByteLines {
-    pending: Vec<u8>,
-}
-
-impl ByteLines {
-    /// 喂一段字节，返回其中**完整**的行（不含结尾换行）。
-    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        let mut lines = Vec::new();
-        self.pending.extend_from_slice(chunk);
-        while let Some(index) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let raw: Vec<u8> = self.pending.drain(..=index).collect();
-            let raw = raw[..raw.len() - 1].to_vec(); // 去掉 '\n'
-            let raw = if raw.last() == Some(&b'\r') { raw[..raw.len() - 1].to_vec() } else { raw };
-            lines.push(String::from_utf8_lossy(&raw).into_owned());
-        }
-        lines
-    }
-
-    /// 还没成行的尾巴（换手用）。
-    pub fn take_pending(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending)
-    }
-}
+use crate::sse_events::ByteLines;
 
 /// 把一帧写成对客户端可见的 SSE 字节。
 ///
@@ -419,7 +387,7 @@ pub(crate) async fn forward_at(
         return Ok(());
     }
 
-    let (prefetched, source, mut solo) = prefetch_head(response, &limit).await?;
+    let (prefetched, source, mut solo, scanner) = prefetch_head(response, &limit).await?;
     // 先报头（协议里没有「返回一个流」的槽位）
     sink.head(proto::StreamHead {
         status: 200,
@@ -434,7 +402,7 @@ pub(crate) async fn forward_at(
     .await
     .map_err(|error| GatewayError::with_status(499, error))?;
     let requested = plan.requested_model.clone();
-    drive_stream(source, &mut solo, prefetched, &requested, &telemetry, sink).await;
+    drive_stream(source, &mut solo, scanner, prefetched, &requested, &telemetry, sink).await;
     Ok(())
 }
 
@@ -442,12 +410,12 @@ pub(crate) async fn forward_at(
 async fn drive_stream(
     mut source: futures::stream::BoxStream<'static, Result<bytes::Bytes, io::Error>>,
     solo: &mut SoloStream,
+    mut scanner: ByteLines,
     prefetched: Vec<Frame>,
     requested: &str,
     telemetry: &RequestTelemetry,
     sink: &mut ConversationSink<'_>,
 ) {
-    let mut scanner = ByteLines::default();
     let mut usage_seen: Option<Value> = None;
     for frame in prefetched {
         note(&frame, telemetry, &mut usage_seen);
@@ -457,11 +425,29 @@ async fn drive_stream(
             }
         }
     }
+    if solo.completed() { return; }
     while let Some(item) = source.next().await {
         match item {
             Err(error) => {
-                telemetry.note_error(&format!("Trae 上游流中断: {error}"));
-                // 传输中断：客户端已收到部分内容，只能在流里收尾
+                if let Some(line) = scanner.finish() {
+                    for frame in solo.feed_line(&line) {
+                        note(&frame, telemetry, &mut usage_seen);
+                        if let Some(text) = render(&frame, requested) {
+                            if sink.send(text.as_bytes()).await.is_err() { return; }
+                        }
+                    }
+                }
+                for frame in solo.flush_pending() {
+                    note(&frame, telemetry, &mut usage_seen);
+                    if let Some(text) = render(&frame, requested) {
+                        if sink.send(text.as_bytes()).await.is_err() { return; }
+                    }
+                }
+                let message = format!("Trae 上游流中断: {error}");
+                telemetry.note_error(&message);
+                let failure = crate::sse::error_bytes(&message);
+                let _ = sink.send(&failure).await;
+                let _ = sink.send(&crate::sse::done_bytes()).await;
                 return;
             }
             Ok(chunk) => {
@@ -474,7 +460,16 @@ async fn drive_stream(
                             }
                         }
                     }
+                    if solo.completed() { return; }
                 }
+            }
+        }
+    }
+    if let Some(line) = scanner.finish() {
+        for frame in solo.feed_line(&line) {
+            note(&frame, telemetry, &mut usage_seen);
+            if let Some(text) = render(&frame, requested) {
+                if sink.send(text.as_bytes()).await.is_err() { return; }
             }
         }
     }
@@ -526,12 +521,28 @@ async fn drive_aggregate(
     let mut source = stall::idle_guard(Box::pin(source), stream_idle());
     let mut scanner = ByteLines::default();
     let mut text = String::new();
-    while let Some(item) = source.next().await {
-        let chunk = item.map_err(|error| GatewayError::with_status(502, format!("Trae 上游流式传输中断: {error}")))?;
+    let mut observer = SoloStream::new(request_id(), logging::now_ms() / 1000);
+    let mut failure = None;
+    'read: while let Some(item) = source.next().await {
+        let chunk = match item {
+            Ok(chunk) => chunk,
+            Err(error) => { failure = Some(error); break; }
+        };
         for line in scanner.push(&chunk) {
             text.push_str(&line);
             text.push('\n');
+            observer.feed_line(&line);
+            if observer.completed() { break 'read; }
         }
+    }
+    if !observer.completed() {
+        if let Some(line) = scanner.finish() {
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    if let Some(error) = failure {
+        return Err(GatewayError::with_status(502, format!("Trae 上游流式传输中断: {error}")));
     }
     match super::stream::aggregate(&text, &request_id(), logging::now_ms() / 1000) {
         Ok(mut completion) => {

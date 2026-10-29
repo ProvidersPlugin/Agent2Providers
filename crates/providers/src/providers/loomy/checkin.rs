@@ -35,7 +35,7 @@ pub async fn claim_daily_login(
     ctx: &PluginCtx,
     account: &str,
 ) -> Result<proto::CheckinReport, String> {
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let credentials = credentials::snapshot(ctx, account).await?;
     let payload = client::token_request(
         &client,

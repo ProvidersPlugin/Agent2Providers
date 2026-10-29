@@ -588,7 +588,7 @@ pub async fn report_desktop_events(account: &GrowthAccount, events: &[Value]) ->
 }
 
 /// 常规事件上报：billing 域（`{bill}/v2/report`）。
-async fn report_regular(account: &GrowthAccount, event: &Value) -> Result<(), String> {
+pub(super) async fn report_regular(account: &GrowthAccount, event: &Value) -> Result<(), String> {
     let call = bill_call(
         account,
         "POST",

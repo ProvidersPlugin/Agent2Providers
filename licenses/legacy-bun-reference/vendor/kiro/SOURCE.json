@@ -1,0 +1,80 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-kiro-auth",
+    "version": "0.1.17",
+    "directory": "packages/kiro"
+  },
+  "derived": true,
+  "derivation": "Structural module split of the upstream index.mjs; protocol, plugin-owned OAuth refresh/concurrency, public exports and account limit classification retained. Intentional local-source-only security change: Kiro CLI/IDE references are read-only and client-managed, with no plugin refresh, CLI execution or credential writeback.",
+  "localSourceContract": {
+    "sources": ["kiro-cli", "kiro-ide"],
+    "reads": "Only the explicitly associated client's credential is reread. Legacy source kiro must be associated again with an explicit source; no fallback to another source or copied auth token. CLI SQLite is always opened read-only.",
+    "identityBinding": "The pure reference contains source, actual management email/accountId and localIdentity.email. Email comes from Get-Usage-Limits for the freshly read token and is compared case-insensitively on every local load, ensure, usage, model fetch and forward. Bare historical email bindings may be checked; generic names, loginProvider/channel uid, token hashes and host account IDs are never identities.",
+    "ownership": "Only the original client refreshes and syncs these credentials. The plugin never redeems their refresh tokens, runs a refresh CLI, writes credential databases/cache files, or consults its held/after credential mirrors for a local reference. References store no token, refresh, expiry, registration or profile credential copies.",
+    "unavailableExpiredOrRefused": "Missing or changed identity and forced automatic rotation fail closed with code local_precondition; unavailable/expired/refused credentials use status 401 and code expired. Failed verification is not ignored, models do not fall back after local failure, and chat uses exactly the management-verified token without self-refresh or retry. Existing usage-limit/error classification remains.",
+    "ensure": "auth.ensure(authSnapshot, info, {getAuth, force, signal}) verifies the actual local identity and, when supplied, the live reference before and after verification, then returns the same complete pure reference. It never uses info/scope host account IDs. Nonlocal returns undefined and is not marked validated by this local-only hook.",
+    "independentOAuth": "Plugin-initiated OAuth refresh protocols, shared refresh lock, replacement-token cache and auth store/CAS boundary are unchanged. The existing oauth:own held/cache account partition concern is reported separately, not repaired in this local-only revision."
+  },
+  "hostAdaptation": {
+    "files": ["login.mjs"],
+    "scope": "Per-authorization browser OAuth listener lifetime and local sign-in result only; public browserSignIn/ownSignIn exports, upstream commit, MIT notice, PKCE/state, redirect/protocol fields and independent OAuth refresh remain unchanged.",
+    "managerHooks": "authorize(inputs, scope) accepts the non-enumerable inputs.signal and scope.signal; scope.login.registerCleanup(cancel) is registered before any timer/server/listen await. HTTP request callbacks use scope.login.bind to restore the detached flow's auth/proxy scope and catch stale-flow binding rejection. Authorization exposes async cancel returning a shutdown-certifying boolean; no loginCleanup adapter or global dispose is required.",
+    "cleanup": "Each round owns its candidate listeners, accepted sockets and ten-minute timer. Cancellation/timeout settles failed, aborts this round and clears its timer immediately; pending listen awaits are settled too. Cleanup awaits actual server close and socket close, checks listening/address/socket count, is idempotent and reports false rather than certifying an unclosed resource. Bun 1.3.14 force-closes native connections before close because close clears its native-server reference; Node closes first to invalidate pending numeric-host listens. Success reaches the callback only after listener shutdown, with no delayed-close timer.",
+    "callbackSafety": "Explicit 127.0.0.1 listeners; exact localhost/127.0.0.1 Host and request-origin validation, bounded GET callback paths/headers/responses, no request body or upgrade/CONNECT sockets. Kiro/AWS state is validated before error settlement, duplicate in-flight callbacks cannot exchange twice, asynchronous transitions recheck cancellation. Exchanges use host-patched fetch with the round signal and original deadline; response bodies are bounded and raw upstream/error/query credentials are never returned to UI or logged.",
+    "ownSignIn": "The selected CLI/IDE credentials are live-verified with localWhoIs(c,{signal}). Missing/unverifiable/generic identity fails; success contains only type, provider, explicit source, actual email/accountId and lower-case localIdentity.email. No access, refresh, expires, profile or registration snapshot is returned.",
+    "validation": "Syntax check only; no tests, real OAuth/API calls, CLI execution, credential writes, documentation, version changes or commit/push/tag operations. Devin/Zed changes are outside this revision."
+  },
+  "files": [
+    {
+      "source": "packages/kiro/package.json",
+      "destination": "package.json",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "index.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "common.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "auth.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "local-auth.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "login.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "models-usage.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "request.mjs",
+      "derived": true
+    },
+    {
+      "source": "packages/kiro/index.mjs",
+      "destination": "eventstream.mjs",
+      "derived": true
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ]
+}

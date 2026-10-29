@@ -229,7 +229,14 @@ async fn daily_report(account: &GrowthAccount) -> Value {
 
 /// 把扁平 secret 折成会话，再派生 growth 上下文。
 fn growth_account_of(record: &Value) -> Result<GrowthAccount, GatewayError> {
-    let session = super::session_of_record(record, Region::Cn);
+    let mut session = super::session_of_record(record, Region::Cn);
+    match crate::proxy_util::resolve_account_proxy(record.get("proxy")) {
+        Some(crate::proxy_util::ProxyResolution::Resolved(proxy)) => session["proxy"] = json!(proxy),
+        Some(crate::proxy_util::ProxyResolution::Failed(error)) => {
+            return Err(GatewayError::with_status(502, error));
+        }
+        None => {}
+    }
     GrowthAccount::from_session(&session).ok_or_else(|| {
         GatewayError::with_status(400, "账号没有可用凭证，请先刷新登录态")
     })

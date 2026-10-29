@@ -42,15 +42,10 @@ impl SessionRegistry {
     /// 按 conversationId 作废（工具会话的清理路径；原实现
     /// `forgetClientToolSession` 按 conversationId 删 pending 表）。
     ///
-    /// ── 为什么 W5-T-d4 之后仍无人调用 ─────────────────────────
-    /// `conversation.rs` 的作废路径都按 `x-session-id` 走（`invalidate`）：
-    /// 它手上总有会话 id，且 call 索引与匿名表由 `Inner::invalidate` 统一清。
-    /// 本方法服务的是「只拿得到 conversationId」的入口 —— 原实现的
-    /// `forgetClientToolSession` 就是那种形态（工具会话的收尾只知道
-    /// conversationId）。本网关的失败路径不需要它（客户端会重发完整历史，
-    /// 规则 3 自然接手），保留是为了与账号切换/工具会话收尾的将来入口对齐，
-    /// 以及排障时手工清一条会话。摘除条件：明确决定只按 session-id 作废时删掉。
-    #[allow(dead_code)]
+    /// 服务的是「只拿得到 conversationId」的入口：`decision.rs` 在工具续接的
+    /// tool_result 集合对不上时用它作废 —— 那条记录可能是匿名工具会话
+    /// （`session_id` 为空串），按 session-id 走 `invalidate` 什么都不会删。
+    /// 排障时手工清一条会话也走这里。
     pub fn invalidate_by_conversation(
         &self,
         conversation_id: &str,

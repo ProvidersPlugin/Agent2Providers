@@ -33,7 +33,9 @@ use serde_json::Value;
 use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 
 use crate::ctx::{CallGateway, PluginCtx, StoreError};
+pub use crate::errors::{control_error_with_sign_in, control_error_with_timing};
 use crate::provider::{BoxProvider, ConversationSink, Provider, SinkInner};
+pub use crate::serve_options::{serve_blocking, serve_blocking_with, ServeOptions};
 
 /// 全局宿主句柄（供 `log_info!` 这类宏在任意位置打日志）。
 static HOST: OnceLock<Arc<Serve>> = OnceLock::new();
@@ -42,24 +44,13 @@ static HOST: OnceLock<Arc<Serve>> = OnceLock::new();
 ///
 /// 正常退出（stdin EOF 或收到 `shutdown`）返回 `Ok(())`。
 pub async fn serve(providers: Vec<BoxProvider>) -> std::io::Result<()> {
-    let host = Arc::new(Serve::new(providers));
-    let _ = HOST.set(host.clone());
-    host.run().await
+    serve_with(providers, ServeOptions::default()).await
 }
 
-/// 启动插件主循环（自己建运行时，给 `fn main()` 用）。
-pub fn serve_blocking(providers: Vec<BoxProvider>) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("provider host: 建 tokio 运行时失败: {e}");
-            std::process::exit(2);
-        }
-    };
-    if let Err(e) = runtime.block_on(serve(providers)) {
-        eprintln!("provider host: 主循环异常退出: {e}");
-        std::process::exit(1);
-    }
+pub async fn serve_with(providers: Vec<BoxProvider>, options: ServeOptions) -> std::io::Result<()> {
+    let host = Arc::new(Serve::new(providers, options));
+    let _ = HOST.set(host.clone());
+    host.run().await
 }
 
 /// 打一条日志到网关（由 `log_info!` 等宏调用）。
@@ -111,10 +102,14 @@ impl Cancel {
 
     /// 等到被取消（已经取消时立刻返回）。
     pub async fn cancelled(&self) {
+        // 先登记等待者再读 flag，避免 notify_waiters 在两者之间发生而丢失唤醒。
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if self.is_cancelled() {
             return;
         }
-        self.notify.notified().await;
+        notified.await;
     }
 }
 
@@ -130,10 +125,12 @@ pub(crate) struct Serve {
     next_id: AtomicI64,
     /// 运行环境（`init` 时填）。
     env: RwLock<Option<proto::HostEnv>>,
+    options: ServeOptions,
     /// 在途的流式调用：id → (取消信号, 额度池)。
     running: Mutex<HashMap<i64, Running>>,
     /// 正在关闭。
     closing: AtomicBool,
+    cleanup: Mutex<Option<Result<(), String>>>,
 }
 
 /// 一条在途流式调用的状态。
@@ -143,15 +140,17 @@ struct Running {
 }
 
 impl Serve {
-    fn new(providers: Vec<BoxProvider>) -> Self {
+    fn new(providers: Vec<BoxProvider>, options: ServeOptions) -> Self {
         Self {
             providers: providers.into_iter().map(Arc::from).collect(),
             out: Mutex::new(tokio::io::stdout()),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
             env: RwLock::new(None),
+            options,
             running: Mutex::new(HashMap::new()),
             closing: AtomicBool::new(false),
+            cleanup: Mutex::new(None),
         }
     }
 
@@ -160,14 +159,63 @@ impl Serve {
         proto::write_frame(&mut *out, &frame).await
     }
 
+    async fn write_stream_frame(
+        self: &Arc<Self>, frame: proto::Frame, cancel: Arc<Cancel>,
+    ) -> std::io::Result<()> {
+        // 取消前已开始的帧写完；尚未开始的帧跳过，不能迟到在 ABORTED 后面。
+        let host = self.clone();
+        tokio::spawn(async move {
+            let mut out = host.out.lock().await;
+            if cancel.is_cancelled() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "调用已被取消"));
+            }
+            proto::write_frame(&mut *out, &frame).await
+        }).await.map_err(std::io::Error::other)?
+    }
+
+    /// 回一个成功应答。
+    ///
+    /// ── 写失败为什么要降级成 error 帧再试一次 ────────────────────
+    /// 原先这里 `let _ = self.write(frame).await;` 把错误整个丢掉，于是
+    /// 「结果帧太大写不出去」在插件侧完全静默 —— 网关等不到应答，最后
+    /// 表现为一条超时，与真正的原因（帧超限）毫无关系（issue #15 的排查
+    /// 成本主要就花在这上面）。
+    ///
+    /// 现在分两步：写成功就结束；写失败时**换一条 error 帧重试** —— 错误
+    /// 帧只有一个短文案，体积恒定，几乎不可能再超限，于是网关能收到一句
+    /// 「为什么失败」而不是干等到超时。两次都失败（管道真的断了）就只能
+    /// 放弃：那种情况下对端已经不在了，再试也没有接收方。
     async fn reply(&self, id: i64, result: Value) {
         let frame = proto::Frame { id, result: Some(result), ..Default::default() };
-        let _ = self.write(frame).await;
+        if let Err(error) = self.write(frame).await {
+            let fallback = proto::Frame {
+                id,
+                error: Some(proto::WireError::with_code(
+                    format!("插件无法回写应答：{error}"),
+                    proto::WireError::INTERNAL,
+                )),
+                ..Default::default()
+            };
+            let _ = self.write(fallback).await;
+        }
     }
 
     async fn reply_err(&self, id: i64, error: proto::WireError) {
         let frame = proto::Frame { id, error: Some(error), ..Default::default() };
         let _ = self.write(frame).await;
+    }
+
+    async fn shutdown_providers(&self) -> Result<(), String> {
+        let mut cleanup = self.cleanup.lock().await;
+        if let Some(result) = cleanup.as_ref() { return result.clone(); }
+        self.closing.store(true, Ordering::Release);
+        for running in self.running.lock().await.values() { running.cancel.cancel(); }
+        let mut result = Ok(());
+        for provider in &self.providers {
+            if let Err(error) = provider.shutdown().await { if result.is_ok() { result = Err(error); } }
+        }
+        *cleanup = Some(result.clone());
+        result
     }
 
     async fn run(self: &Arc<Self>) -> std::io::Result<()> {
@@ -199,12 +247,13 @@ impl Serve {
                 Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                     // 帧坏了：不能信任后续字节边界，退出让网关重启我们
                     eprintln!("provider host: 帧格式错误，退出: {e}");
+                    let _ = self.shutdown_providers().await;
                     return Err(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => { let _ = self.shutdown_providers().await; return Err(e); }
             }
         }
-        Ok(())
+        self.shutdown_providers().await.map_err(std::io::Error::other)
     }
 
     /// 派发一个请求到独立 task。
@@ -239,8 +288,14 @@ impl Serve {
         }
 
         let context = crate::log_context::capture(id, &method, &params);
+        let timeouts = serde_json::from_value::<crate::timeouts::Timeouts>(
+            params.get("timeouts").cloned().unwrap_or(Value::Null),
+        ).unwrap_or_default();
         tokio::spawn(async move {
-            crate::log_context::scope(context, host.handle(id, &method, params)).await;
+            crate::timeouts::scope(
+                timeouts,
+                crate::log_context::scope(context, host.handle(id, &method, params)),
+            ).await;
         });
     }
 
@@ -250,15 +305,13 @@ impl Serve {
             proto::methods::gateway::INIT => self.handle_init(id, params).await,
             proto::methods::gateway::PING => self.reply(id, Value::Null).await,
             proto::methods::gateway::SHUTDOWN => {
-                self.closing.store(true, Ordering::Release);
-                self.reply(id, Value::Null).await;
-                // 让在途的流式调用收尾
-                let running: Vec<Arc<Cancel>> =
-                    self.running.lock().await.values().map(|r| r.cancel.clone()).collect();
-                for cancel in running {
-                    cancel.cancel();
+                match self.shutdown_providers().await {
+                    Ok(()) => {
+                        self.reply(id, Value::Null).await;
+                        std::process::exit(0);
+                    }
+                    Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
                 }
-                std::process::exit(0);
             }
             proto::methods::gateway::CONVERSATION => self.handle_conversation(id, params).await,
             other => self.handle_control(id, other, params).await,
@@ -282,6 +335,23 @@ impl Serve {
                 return;
             }
         };
+        if let Some(on_init) = self.options.on_init {
+            let initialized = tokio::task::spawn_blocking({
+                let env = env.clone();
+                move || on_init(&env)
+            }).await;
+            let error = match initialized {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(error) = error {
+                self.reply_err(id, proto::WireError::with_code(
+                    format!("插件运行环境初始化失败: {error}"), proto::WireError::INTERNAL,
+                )).await;
+                return;
+            }
+        }
         *self.env.write().await = Some(env);
         let infos: Vec<proto::ProviderInfo> = self
             .providers
@@ -441,9 +511,7 @@ impl Serve {
             ),
             proto::methods::gateway::MODELS_REFRESH => {
                 let force = params.get("force").and_then(Value::as_bool).unwrap_or(false);
-                provider.refresh_models(&ctx, &account, force).await.and_then(|outcome| {
-                    serde_json::to_value(outcome).map_err(|e| format!("刷新结果无法序列化: {e}"))
-                })
+                provider.refresh_models_snapshot(&ctx, &account, force).await
             }
             proto::methods::gateway::USAGE_QUERY => provider.usage(&ctx, &account).await.map(|mut report| {
                 let sources = provider.quota_sources(&report);
@@ -531,19 +599,7 @@ impl Serve {
 
         match outcome {
             Ok(value) => self.reply(id, value).await,
-            Err(message) => {
-                // 能力缺失必须与内部失败区分；普通业务错误仍归 INTERNAL。
-                let error = if let Some(detail) = crate::provider::split_local_precondition(&message) {
-                    proto::WireError::with_code(detail, proto::WireError::LOCAL_PRECONDITION)
-                } else if let Some(detail) = crate::provider::split_unsupported(&message) {
-                    proto::WireError::with_code(detail, proto::WireError::UNSUPPORTED)
-                } else if let Some(error) = crate::errors::split_control_error(&message) {
-                    error
-                } else {
-                    proto::WireError::with_code(message, proto::WireError::INTERNAL)
-                };
-                self.reply_err(id, error).await;
-            }
+            Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
         }
     }
 
@@ -592,20 +648,23 @@ impl Serve {
         };
         let result = {
             let view = ConversationSink::new(&mut sink);
-            provider.conversation(&ctx, req, view).await
+            // 不依赖 provider 自觉观察取消：drop Future 后清 running 与回调等待者。
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err("调用已被取消".to_string()),
+                result = provider.conversation(&ctx, req, view) => result,
+            }
         };
 
         self.running.lock().await.remove(&id);
         match result {
+            _ if cancel.is_cancelled() => {
+                self.reply_err(id, proto::WireError::with_code(
+                    "调用已被取消", proto::WireError::ABORTED,
+                )).await;
+            }
             Ok(()) => self.reply(id, Value::Null).await,
-            Err(message) if cancel.is_cancelled() => {
-                self.reply_err(id, proto::WireError::with_code(message, proto::WireError::ABORTED))
-                    .await
-            }
-            Err(message) => {
-                self.reply_err(id, proto::WireError::with_code(message, proto::WireError::INTERNAL))
-                    .await
-            }
+            Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
         }
     }
 
@@ -648,6 +707,24 @@ impl Serve {
     }
 }
 
+/// 在调用方取消回调 Future 时也清理 pending，避免子进程 abort 留下等待者。
+struct CallbackWaitGuard {
+    host: Arc<Serve>,
+    id: i64,
+}
+
+impl Drop for CallbackWaitGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.host.pending.try_lock() {
+            pending.remove(&self.id);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let host = self.host.clone();
+            let id = self.id;
+            runtime.spawn(async move { host.pending.lock().await.remove(&id); });
+        }
+    }
+}
+
 /// 回调发送端：`PluginCtx` 用它把请求发给网关并等应答。
 struct CallHandle {
     host: Option<Arc<Serve>>,
@@ -679,15 +756,24 @@ impl CallGateway for CallHandle {
             let id = host.next_id.fetch_add(1, Ordering::Relaxed);
             let (tx, rx) = oneshot::channel();
             host.pending.lock().await.insert(id, tx);
+            let _waiter = CallbackWaitGuard { host: host.clone(), id };
             let frame = proto::Frame {
                 id,
                 method: Some(method.to_string()),
                 params: Some(params),
                 ..Default::default()
             };
-            if let Err(e) = host.write(frame).await {
-                host.pending.lock().await.remove(&id);
-                return Err(StoreError::Unavailable(format!("写网关失败: {e}")));
+            // 回调 Future 可能被取消；实际写帧独立完成，不能留下半行 JSON。
+            let writing = {
+                let host = host.clone();
+                tokio::spawn(async move { host.write(frame).await })
+            };
+            match writing.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    return Err(StoreError::Unavailable(format!("写网关失败: {error}")));
+                }
+                Err(_) => return Err(StoreError::Unavailable("写网关任务退出".into())),
             }
             match rx.await {
                 Ok(Ok(value)) => Ok(value),
@@ -714,8 +800,15 @@ struct StreamSink {
 }
 
 impl SinkInner for StreamSink {
+    fn cancellation(&self) -> Arc<Cancel> {
+        self.cancel.clone()
+    }
+
     fn send_head<'a>(&'a mut self, head: proto::StreamHead) -> crate::provider::SendFuture<'a, ()> {
         Box::pin(async move {
+            if self.cancel.is_cancelled() {
+                return Err("调用已被取消".to_string());
+            }
             if self.head_sent {
                 return Err("head 只能发一次".to_string());
             }
@@ -736,7 +829,8 @@ impl SinkInner for StreamSink {
                 upstream,
                 ..Default::default()
             };
-            self.host.write(frame).await.map_err(|e| format!("写 head 失败: {e}"))
+            // 写帧不能中途取消，否则半行 JSON 会破坏其它请求的管道边界。
+            self.host.write_stream_frame(frame, self.cancel.clone()).await.map_err(|e| format!("写 head 失败: {e}"))
         })
     }
 
@@ -755,9 +849,12 @@ impl SinkInner for StreamSink {
                     return Err("调用已被取消".to_string());
                 }
                 let cost = piece.len() + proto::FRAME_OVERHEAD_BYTES;
-                let permit = match self.credit.clone().acquire_many_owned(cost as u32).await {
-                    Ok(permit) => permit,
-                    Err(_) => return Err("调用已被取消".to_string()),
+                let permit = tokio::select! {
+                    biased;
+                    _ = self.cancel.cancelled() => return Err("调用已被取消".to_string()),
+                    acquired = self.credit.clone().acquire_many_owned(cost as u32) => {
+                        acquired.map_err(|_| "调用已被取消".to_string())?
+                    }
                 };
                 // ── 为什么是 `forget()` 而不是 drop ─────────────────
                 // drop 会把额度**立刻还回信号量**，于是窗口永远是满的 ——
@@ -772,7 +869,7 @@ impl SinkInner for StreamSink {
                     data: Some(proto::encode_chunk(piece)),
                     ..Default::default()
                 };
-                self.host.write(frame).await.map_err(|e| format!("写 chunk 失败: {e}"))?;
+                self.host.write_stream_frame(frame, self.cancel.clone()).await.map_err(|e| format!("写 chunk 失败: {e}"))?;
             }
             Ok(())
         })

@@ -583,9 +583,9 @@ export async function runGrowth(id, mode) {
   const current = growthOf(id);
   if (current.running) return;
   const targets = current.tasks.filter(task => {
-    if (!task.supported || task.unforgeable || task.locked) return false;
-    if (mode === 'claim') return task.status === 'completed' || (task.current >= task.target && task.status !== 'claimed');
-    return task.status !== 'claimed';
+    if (!task.supported || task.locked || task.status === 'claimed') return false;
+    const completed = task.status === 'completed' || (task.target > 0 && task.current >= task.target);
+    return mode === 'claim' ? completed : !task.unforgeable || completed;
   });
   if (!targets.length) {
     toast('没有需要执行的任务');

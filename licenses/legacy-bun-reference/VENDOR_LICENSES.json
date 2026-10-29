@@ -1,0 +1,517 @@
+{
+  "schemaVersion": 1,
+  "scope": "The eleven vendored provider directories under runtime/vendor in the unpublished legacy-bun-reference branch only. They are no longer present in the shipping tree; this record is retained for provenance.",
+  "pathBase": "All local paths refer to the legacy-bun-reference branch tree unless they point at a file in this licenses/ directory.",
+  "provenanceRules": {
+    "upstreamInputs": "Files at the recorded original upstream commit, before local module splits or security changes. gitBlobSha256 hashes raw git-show bytes, not the current derived files or Windows checkout line endings.",
+    "secondLevelSources": "Conservative attribution from explicit port declarations or named Magpie implementation references in the pinned upstream runtime source. References are evidence, not instructions.",
+    "unknownCommits": "A null commit means the exact historical second-level import commit was not supplied or established. A licenseSnapshotCommit identifies only the snapshot used to verify the license text; it is not an inferred historical import commit.",
+    "emptySecondLevelSources": "No Magpie code-port or named-implementation evidence was found in the pinned runtime source. Magpie hook names alone do not establish a code dependency; an empty array is not a claim of independently verified authorship.",
+    "deferredSourceUpdates": "Per-provider SOURCE.json files are left untouched while other owners modify them. These secondLevelSources arrays can be merged later without replacing existing copy, derivation or security metadata.",
+    "excludedNotices": "Existing EchoBird, doubaowork and other independently sourced notices are outside this inventory and must not be deleted or replaced by it."
+  },
+  "licenseSources": [
+    {
+      "id": "magpie-community-MIT",
+      "repository": "https://github.com/magpie-community/plugins.git",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2026 magpie-community contributors"
+      ],
+      "sourceFile": "LICENSE",
+      "licenseSnapshotCommit": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "sourceWorkingTreePath": "Acankao/magpie-plugins/LICENSE",
+      "noticeFile": "plugin/Agent2Providers/licenses/magpie-community-MIT.txt",
+      "noticeSha256": "bebc3d1ec74f197b010ed6f6b6743dbae73fe4865d71bd0670b0a4e203056679",
+      "gitBlobSha256": "5e8730b694ba31696dd68d693f8bf5e2c75f7e40fd5f6fbc3f067cf9490b24fb",
+      "textVerification": "Byte-identical to the local upstream LICENSE and all eleven vendor LICENSE files. The local upstream checkout uses CRLF; its only difference from the pinned git blob is line endings."
+    },
+    {
+      "id": "magpie-MIT",
+      "repository": "https://github.com/yetone/magpie.git",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2026 yetone"
+      ],
+      "sourceFile": "LICENSE",
+      "licenseSnapshotCommit": "88ac42843dbc1c6d4a028a6fd8c7aecb7a781985",
+      "sourceWorkingTreePath": "Acankao/magpie/LICENSE",
+      "noticeFile": "plugin/Agent2Providers/licenses/magpie-MIT.txt",
+      "noticeSha256": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
+      "gitBlobSha256": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
+      "textVerification": "Byte-identical to the local upstream LICENSE and the pinned license git blob. This snapshot commit does not establish the historical Magpie commit ported by a provider."
+    },
+    {
+      "id": "CLIProxyAPI-MIT",
+      "repository": "https://github.com/ufec/CLIProxyAPI",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2025-2005.9 Luis Pater",
+        "Copyright (c) 2025.9-present Router-For.ME"
+      ],
+      "sourceFile": "packages/qoder/LICENSE-CLIProxyAPI",
+      "licenseSnapshotRepository": "https://github.com/magpie-community/plugins.git",
+      "licenseSnapshotCommit": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "sourceWorkingTreePath": "plugin/Agent2Providers/runtime/vendor/qoder/LICENSE-CLIProxyAPI",
+      "upstreamWorkingTreePath": "Acankao/magpie-plugins/packages/qoder/LICENSE-CLIProxyAPI",
+      "noticeFile": "plugin/Agent2Providers/licenses/CLIProxyAPI-MIT.txt",
+      "noticeSha256": "93df585e5fa07ead6d47a3ab2dbdf0255782a39fe830022c0274a70394223cc8",
+      "gitBlobSha256": "879792e89cf1bdd6a8d446033ec87e30496f97dcafc4656dc53f641509b346a6",
+      "textVerification": "Byte-identical to Qoder's existing secondary license and the upstream package copy, including CRLF and no final newline. The copyright spelling is preserved verbatim; the exact CLIProxyAPI import commit is unknown."
+    }
+  ],
+  "vendors": [
+    {
+      "id": "cursor",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/cursor",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/cursor/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/cursor",
+        "packageName": "@magpie-community/opencode-cursor-auth",
+        "packageVersion": "0.2.23",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/cursor/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/cursor/index.mjs",
+            "gitBlobSha256": "220d41df124a1686959abfb877948f28c952c5ea271731b37a73603f5926152a"
+          },
+          {
+            "file": "packages/cursor/native-session.mjs",
+            "gitBlobSha256": "0fb04b22ea9e22000e1f5c6fdf47e0d98e51bfb614955d2cfa1f93d670d54ee4"
+          },
+          {
+            "file": "packages/cursor/package.json",
+            "gitBlobSha256": "6311c4fd08943a028a61cc8a2a3509ade29d7a67e651cdb3a543f6da121c87c5"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "declared-port",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/cursor/index.mjs",
+            "lines": [
+              1,
+              3
+            ]
+          },
+          "basis": "The pinned source explicitly says it was ported from Magpie's built-in Cursor account, naming internal/provider/cursor*.go and internal/gateway/cursor.go. No historical Magpie commit is given."
+        }
+      ]
+    },
+    {
+      "id": "devin",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/devin",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/devin/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/devin",
+        "packageName": "@magpie-community/opencode-devin-auth",
+        "packageVersion": "0.1.24",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/devin/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/devin/index.mjs",
+            "gitBlobSha256": "3708f5b3d015ac997fed6dd55122c1c0aa639352bafa483d62ab41eadcd716cb"
+          },
+          {
+            "file": "packages/devin/package.json",
+            "gitBlobSha256": "8ceeadf54f3a9d6d86ec5a113b5c7556cadebf81263bb5676892f8578245b8eb"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "declared-port",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/devin/index.mjs",
+            "lines": [
+              1,
+              6
+            ]
+          },
+          "basis": "The pinned source explicitly names Magpie's built-in Devin account and internal/provider/devin*.go plus internal/gateway/devin.go as its port source. No historical Magpie commit is given."
+        }
+      ]
+    },
+    {
+      "id": "factory",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/factory",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/factory/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/factory",
+        "packageName": "@magpie-community/opencode-factory-auth",
+        "packageVersion": "0.1.38",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/factory/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/factory/index.mjs",
+            "gitBlobSha256": "54153cf4ee779a2d45b62d458ed713f70254cc0bbcb338542cbd143c835cec11"
+          },
+          {
+            "file": "packages/factory/anthropic-tools.mjs",
+            "gitBlobSha256": "126ce93ce459b5a0f83788eba07b6df179528251d15ed905d7c68230f0531e44"
+          },
+          {
+            "file": "packages/factory/client-phrases.json",
+            "gitBlobSha256": "a48d33fb7f0f9918c321b108cdc4a65a16ffb3b124c848c2554666c340fec73e"
+          },
+          {
+            "file": "packages/factory/package.json",
+            "gitBlobSha256": "179289dd9d87bdb0a0bed6c525801caa32b9c4c1d274790b0aa59298af5a8a0a"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "declared-port",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/factory/index.mjs",
+            "lines": [
+              1,
+              4
+            ]
+          },
+          "basis": "The pinned source explicitly declares a port from Magpie's built-in Factory account, internal/provider/factory*.go. The separate client-phrases data remains attributed to the pinned plugin package; this inventory makes no claim about its behavior."
+        }
+      ]
+    },
+    {
+      "id": "grok",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/grok",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/grok/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/grok",
+        "packageName": "@magpie-community/opencode-grok-auth",
+        "packageVersion": "0.2.1",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/grok/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/grok/index.mjs",
+            "gitBlobSha256": "7d92205acc2d29446edde89b16e456bb3bbbee8befa594e58202936a09020025"
+          },
+          {
+            "file": "packages/grok/package.json",
+            "gitBlobSha256": "1b09a00d949b26c4a7d5e6bde36a1d008a48497fe4693c2ad19ce9d10ded3789"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "inferred-from-named-implementation-references",
+          "evidence": [
+            {
+              "repository": "https://github.com/magpie-community/plugins.git",
+              "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+              "file": "packages/grok/index.mjs",
+              "lines": [
+                323,
+                330
+              ]
+            },
+            {
+              "repository": "https://github.com/magpie-community/plugins.git",
+              "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+              "file": "packages/grok/index.mjs",
+              "lines": [
+                768,
+                771
+              ]
+            }
+          ],
+          "basis": "objectRoot names Magpie's provider.ObjectRoot, and the usage implementation names internal/provider/grok_usage.go. Preserve Magpie attribution conservatively; these references do not establish an exact code-copy extent or historical commit."
+        }
+      ]
+    },
+    {
+      "id": "kimi-work",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/kimi-work",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/kimi-work/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/kimi-work",
+        "packageName": "@magpie-community/opencode-kimi-work-auth",
+        "packageVersion": "0.1.11",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/kimi-work/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/kimi-work/index.mjs",
+            "gitBlobSha256": "6d6fd1539569b6b19affb045d9fed13b12c05ab0c35d70731db8729549b662cc"
+          }
+        ]
+      },
+      "secondLevelSources": [],
+      "secondLevelReview": "No Magpie port declaration or named Magpie source implementation found in the pinned runtime input. Kimi desktop protocol references are not treated as copied client software."
+    },
+    {
+      "id": "kiro",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/kiro",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/kiro/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/kiro",
+        "packageName": "@magpie-community/opencode-kiro-auth",
+        "packageVersion": "0.1.17",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/kiro/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/kiro/index.mjs",
+            "gitBlobSha256": "4e16e76994d004499d0d910ceebcfe37ebea431148f7877adaa87078edb834fe"
+          },
+          {
+            "file": "packages/kiro/package.json",
+            "gitBlobSha256": "fb258e1520f23e680a7560312c91787e169828d105118a832f3e4934a8695a1c"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "inferred-from-named-implementation-references",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/kiro/index.mjs",
+            "lines": [
+              1215,
+              1223
+            ]
+          },
+          "basis": "The pinned runtime source names Magpie's internal/gateway/fallback.go as the source of quotaWords and describes failedBefore as matching Magpie's built-in relay. Attribution is conservative; no exact historical import commit is established."
+        }
+      ]
+    },
+    {
+      "id": "minimax",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/minimax",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/minimax/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/minimax",
+        "packageName": "@magpie-community/opencode-minimax-auth",
+        "packageVersion": "0.1.7",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/minimax/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/minimax/index.mjs",
+            "gitBlobSha256": "89f9b8b19cf6fd1afb84d3131661d29de85ff74bf8613d3b73ee0db356a65b70"
+          }
+        ]
+      },
+      "secondLevelSources": [],
+      "secondLevelReview": "No Magpie port declaration or named Magpie source implementation found in the pinned runtime input. Magpie hook compatibility alone is not used to infer a second-level code source."
+    },
+    {
+      "id": "nous",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/nous",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/nous/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/nous",
+        "packageName": "@magpie-community/opencode-nous-auth",
+        "packageVersion": "0.1.1",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/nous/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/nous/index.mjs",
+            "gitBlobSha256": "27db196df06827e72e340dcf3afc95f4a192ac22e4730784e3ddcb54bbe4edd8"
+          },
+          {
+            "file": "packages/nous/oauth.mjs",
+            "gitBlobSha256": "9dacc487c6cbf457978b95eeb4fb04517729d22a214115321e70ad43b8550d46"
+          }
+        ]
+      },
+      "secondLevelSources": [],
+      "secondLevelReview": "No Magpie port declaration or named Magpie source implementation found in the pinned runtime inputs. References to Hermes's public device flow do not establish a copied Hermes code dependency."
+    },
+    {
+      "id": "opendesign",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/opendesign",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/opendesign/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/opendesign",
+        "packageName": "@magpie-community/opencode-opendesign-auth",
+        "packageVersion": "0.1.7",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/opendesign/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/opendesign/index.mjs",
+            "gitBlobSha256": "48c144a2ecdddd5eaf3022ce98c0144e57a7862735338f3b6407a8726e3708a8"
+          },
+          {
+            "file": "packages/opendesign/models.mjs",
+            "gitBlobSha256": "d7daeacf4602a43f36171d9347ae17b8d56b4d28f255f192484e390e5630bf1a"
+          },
+          {
+            "file": "packages/opendesign/package.json",
+            "gitBlobSha256": "bbf23751e839e556656373599bd52361625ad99767e74b96215de76e7574ab6d"
+          }
+        ]
+      },
+      "secondLevelSources": [],
+      "secondLevelReview": "No Magpie port declaration or named Magpie source implementation found in the pinned runtime inputs. Magpie allowance/result formatting and plugin hooks alone do not establish a second-level code source."
+    },
+    {
+      "id": "qoder",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/qoder",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/qoder/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/qoder",
+        "packageName": "@magpie-community/opencode-qoder-auth",
+        "packageVersion": "0.2.37",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/qoder/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/qoder/index.mjs",
+            "gitBlobSha256": "79e0e01be9ac6412924e1b710baeb614aef42af40a17a27e9f6e660d9aea2b6c"
+          },
+          {
+            "file": "packages/qoder/package.json",
+            "gitBlobSha256": "105a8cdabb564f5af49cf5cefe68b52c039816291e1b8981851c1795e09fbd01"
+          },
+          {
+            "file": "packages/qoder/LICENSE-CLIProxyAPI",
+            "gitBlobSha256": "879792e89cf1bdd6a8d446033ec87e30496f97dcafc4656dc53f641509b346a6"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "declared-port",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/qoder/index.mjs",
+            "lines": [
+              18,
+              20
+            ]
+          },
+          "basis": "The pinned source explicitly names Magpie's internal/qoder as the port source for endpoints, COSY envelope, body codec and device flow. No historical Magpie commit is supplied."
+        },
+        {
+          "repository": "https://github.com/ufec/CLIProxyAPI",
+          "commit": null,
+          "licenseId": "CLIProxyAPI-MIT",
+          "relationship": "declared-transitive-port-via-magpie",
+          "viaRepository": "https://github.com/yetone/magpie.git",
+          "dependencyDepthFromCopiedPackage": 2,
+          "evidence": [
+            {
+              "repository": "https://github.com/magpie-community/plugins.git",
+              "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+              "file": "packages/qoder/index.mjs",
+              "lines": [
+                18,
+                20
+              ]
+            },
+            {
+              "repository": "https://github.com/magpie-community/plugins.git",
+              "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+              "file": "packages/qoder/LICENSE-CLIProxyAPI",
+              "lines": [
+                1,
+                22
+              ]
+            }
+          ],
+          "basis": "The declared chain is copied plugin package -> Magpie internal/qoder -> CLIProxyAPI Qoder support. Its complete secondary MIT text is already carried by Qoder; the original CLIProxyAPI commit is not recorded."
+        }
+      ]
+    },
+    {
+      "id": "zed",
+      "copyRoot": "plugin/Agent2Providers/runtime/vendor/zed",
+      "sourceMetadataFile": "plugin/Agent2Providers/runtime/vendor/zed/SOURCE.json",
+      "directSource": {
+        "repository": "https://github.com/magpie-community/plugins.git",
+        "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+        "packageRoot": "packages/zed",
+        "packageName": "@magpie-community/opencode-zed-auth",
+        "packageVersion": "0.1.11",
+        "licenseId": "magpie-community-MIT",
+        "localLicense": "plugin/Agent2Providers/runtime/vendor/zed/LICENSE",
+        "upstreamInputs": [
+          {
+            "file": "packages/zed/index.mjs",
+            "gitBlobSha256": "d6c1f630e037ec7a2b24a65487685ead98738a9f39a81fb84a4e491fa7397ea3"
+          },
+          {
+            "file": "packages/zed/package.json",
+            "gitBlobSha256": "1a03f6fc4673804f5a917895fb720d9a7c790ece936f54ed4a22139b30fa64ce"
+          }
+        ]
+      },
+      "secondLevelSources": [
+        {
+          "repository": "https://github.com/yetone/magpie.git",
+          "commit": null,
+          "licenseId": "magpie-MIT",
+          "relationship": "declared-port",
+          "evidence": {
+            "repository": "https://github.com/magpie-community/plugins.git",
+            "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+            "file": "packages/zed/index.mjs",
+            "lines": [
+              1,
+              6
+            ]
+          },
+          "basis": "The pinned source explicitly names Magpie's internal/zed, internal/provider/zed*.go and internal/gateway/zed.go as the port source. Its separate statement that the protocol was read from Zed 1.23.0 is not evidence of copied Zed client code; no Zed relicensing claim is made."
+        }
+      ]
+    }
+  ],
+  "retainedAt": "licenses/legacy-bun-reference/VENDOR_LICENSES.json",
+  "note": "Kept after removing the Bun helper from the shipping build. The removed implementation is archived in the legacy-bun-reference branch of this repository for the planned Rust rewrite."
+}

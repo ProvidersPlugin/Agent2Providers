@@ -185,20 +185,32 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 
 /// 去 `Bearer ` 前缀（大小写不敏感，至少一个空白），不匹配时原样返回
 /// （与源实现 `String.replace(/^Bearer\s+/i, '')` 一致）
+///
+/// ── 为什么循环剥到底（与 `crypto::strip_bearer` 同一取舍）────────
+/// 只剥一次时，存量脏值 `Bearer Bearer eyJ…`（旧版本原样落库的双前缀值）
+/// 会剥成 `Bearer eyJ…`，调用方再拼一个就又是双前缀 —— 与没修一样。
+/// `raccoon/balance.rs` 正是「剥完再拼」的用法，所以这里必须剥干净。
 pub fn strip_bearer(value: &str) -> String {
     const PREFIX: &str = "bearer";
-    let trimmed = value.trim();
-    if trimmed.len() < PREFIX.len() {
-        return trimmed.to_string();
+    let mut current = value.trim();
+    loop {
+        if current.len() < PREFIX.len() {
+            return current.to_string();
+        }
+        let (head, rest) = current.split_at(PREFIX.len());
+        if !head.eq_ignore_ascii_case(PREFIX) {
+            return current.to_string();
+        }
+        // 恰好等于 `Bearer`：只有前缀没有凭证，给空串（见 crypto 同名函数的说明）
+        if rest.is_empty() {
+            return String::new();
+        }
+        if rest.trim_start().len() == rest.len() {
+            // `Bearerxyz`：前缀后没有空白，不构成前缀
+            return current.to_string();
+        }
+        current = rest.trim_start();
     }
-    let (head, rest) = trimmed.split_at(PREFIX.len());
-    if !head.eq_ignore_ascii_case(PREFIX) {
-        return trimmed.to_string();
-    }
-    if rest.trim_start().len() == rest.len() {
-        return trimmed.to_string();
-    }
-    rest.trim_start().to_string()
 }
 
 /// JS `String(x)`（字符串原样、数字/布尔按字面量、null 给空串）

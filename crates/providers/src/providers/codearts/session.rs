@@ -198,7 +198,7 @@ impl Heartbeat {
             true, // 心跳签名带 Host —— 与区域 API 不同，别统一
         )
         .map_err(|reason| GatewayError::with_status(500, reason))?;
-        let mut request = crate::http::client(None, "direct")
+        let mut request = crate::http::control_client(None, "direct")
             .put(&endpoint)
             .timeout(Duration::from_secs(30))
             .body(b"{}".to_vec());

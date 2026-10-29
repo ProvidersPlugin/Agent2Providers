@@ -508,7 +508,7 @@ async fn fetch_signed(
         headers.push(("Agent-Type".to_string(), agent_type.to_string()));
     }
     let signed = signer::sign("GET", url, &headers, b"", &signing, host_signed)?;
-    let mut request = crate::http::client(None, "direct").get(url).timeout(Duration::from_secs(30));
+    let mut request = crate::http::control_client(None, "direct").get(url).timeout(Duration::from_secs(30));
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }

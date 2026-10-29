@@ -30,9 +30,6 @@ use super::credentials::{self, Credentials};
 use super::http::{self, HttpFailure};
 use super::{models, ASSISTANT_QUERY, LIGHTAI_BASE};
 
-/// 上游流空闲兜底（网关侧对出站流有统一 idle_guard；这里是插件自己的兜底）。
-const STREAM_IDLE_MS: u64 = 120_000;
-
 /// 一次 401 自愈重试的上限（每步各一次，不循环）。
 const AUTH_RETRY: usize = 1;
 
@@ -42,7 +39,7 @@ pub async fn run(
     req: proto::ConversationRequest,
     mut sink: ConversationSink<'_>,
 ) -> Result<(), String> {
-    let client = crate::http::client(req.proxy.as_ref(), &ctx.env.proxy);
+    let control_client = crate::http::control_client(req.proxy.as_ref(), &ctx.env.proxy);
     let mut credentials = credentials::snapshot(ctx, &req.account).await?;
     // 临期主动续期（结果回写账号记录；单飞保证并发只刷一次）
     credentials = credentials::refresh(ctx, &credentials, &req.account, false).await?;
@@ -52,7 +49,7 @@ pub async fn run(
     let prompt = build_prompt(req.body.get("messages"));
 
     // ── 建会话（401 自愈：强制续期后重试一次）────────────────
-    let mut conversation = create_conversation(&client, &credentials).await;
+    let mut conversation = create_conversation(&control_client, &credentials).await;
     let mut attempts = 0;
     while let Err(error) = &conversation {
         if !(error.is_auth() && attempts < AUTH_RETRY) {
@@ -62,12 +59,12 @@ pub async fn run(
             break;
         }
         attempts += 1;
-        conversation = create_conversation(&client, &credentials).await;
+        conversation = create_conversation(&control_client, &credentials).await;
     }
     let conversation = conversation.map_err(|error| error.message)?;
 
     // ── 开流（同样 401 自愈）──────────────────────────────────
-    let response = match open_chat_stream(&client, &credentials, &conversation, &model, &prompt).await
+    let response = match open_chat_stream(req.proxy.as_ref(), &ctx.env.proxy, &credentials, &conversation, &model, &prompt).await
     {
         Ok(response) => response,
         Err(error) => {
@@ -75,7 +72,7 @@ pub async fn run(
                 return Err(error.message);
             }
             // 会话可能已在上一步建出（无妨：换 token 后重开流，conversationId 仍有效）
-            open_chat_stream(&client, &credentials, &conversation, &model, &prompt)
+            open_chat_stream(req.proxy.as_ref(), &ctx.env.proxy, &credentials, &conversation, &model, &prompt)
                 .await
                 .map_err(|error| error.message)?
         }
@@ -91,30 +88,18 @@ pub async fn run(
 
     // 逐段推帧。`send` 在背压窗口用完时会挂起 —— 不要自己缓冲整段回答。
     let mut stream = OrcaStream::new(&client_model);
-    let mut source = response.bytes_stream();
+    let mut source = crate::response_stream::sse(response);
     use futures::StreamExt;
-    loop {
-        let next = tokio::time::timeout(
-            std::time::Duration::from_millis(STREAM_IDLE_MS),
-            source.next(),
-        )
-        .await;
-        match next {
-            Err(_) => {
-                // 空闲超时：给客户端一条明确的错误帧，而不是静默断流
-                let frames = stream.finish_with_error("OrcaTerm 上游流空闲超时");
-                push_frames(&mut sink, frames).await?;
-                return Ok(());
-            }
-            Ok(None) => break,
-            Ok(Some(Err(error))) => {
+    while let Some(item) = source.next().await {
+        match item {
+            Err(error) => {
                 let frames = stream.finish_with_error(&format!("OrcaTerm 上游流式传输中断: {error}"));
                 push_frames(&mut sink, frames).await?;
                 return Ok(());
             }
-            Ok(Some(Ok(chunk))) => {
-                let text = String::from_utf8_lossy(&chunk).to_string();
-                push_frames(&mut sink, stream.feed(&text)).await?;
+            Ok(chunk) => {
+                push_frames(&mut sink, stream.feed(&chunk)).await?;
+                if stream.saw_end { return Ok(()); }
             }
         }
     }
@@ -175,7 +160,8 @@ async fn create_conversation(
 
 /// 打开对话 SSE 流。
 async fn open_chat_stream(
-    client: &reqwest::Client,
+    proxy: Option<&proto::WireProxy>,
+    gateway_proxy: &str,
     credentials: &Credentials,
     conversation_id: &str,
     model: &str,
@@ -210,8 +196,9 @@ async fn open_chat_stream(
         },
         "stream": true,
     });
+    let client = crate::http::stream_client(proxy, gateway_proxy);
     http::sse_post(
-        client,
+        &client,
         &url,
         &credentials::lightai_headers(credentials, &seq_id),
         &body,
@@ -291,50 +278,33 @@ enum OrcaEvent {
     Error(String),
 }
 
-/// 按 `\n\n` 分帧、逐帧取 `data:` 载荷的解析器。
+/// 完整 SSE 事件解码，正文内的 DONE 字符串不是终止标记。
 #[derive(Default)]
 struct Scanner {
-    buffer: String,
+    events: crate::sse_events::DataEvents,
 }
 
 impl Scanner {
-    fn push(&mut self, text: &str) -> Vec<OrcaEvent> {
-        self.buffer.push_str(text);
-        let mut events = Vec::new();
-        while let Some(split_at) = self.buffer.find("\n\n") {
-            let raw = self.buffer.drain(..=split_at + 1).collect::<String>();
-            for line in raw.split('\n') {
-                let Some(payload) = line.strip_prefix("data:") else { continue };
-                let payload = payload.trim_start();
-                if payload.is_empty() {
-                    continue;
-                }
-                if payload == "[DONE]" {
-                    events.push(OrcaEvent::Done);
-                    continue;
-                }
-                if let Some(error) = payload.strip_prefix("[ERROR]:") {
-                    events.push(OrcaEvent::Error(error.trim().to_string()));
-                    continue;
-                }
-                let Ok(parsed) = serde_json::from_str::<Value>(payload) else { continue };
-                if parsed.get("type").and_then(Value::as_str) != Some("ai") {
-                    continue;
-                }
-                let content = parsed.get("content").and_then(Value::as_str).unwrap_or("");
-                let reasoning =
-                    parsed.get("reasoningContent").and_then(Value::as_str).unwrap_or("");
-                if parsed.get("reasoning").and_then(Value::as_bool).unwrap_or(false) {
-                    if !reasoning.is_empty() {
-                        events.push(OrcaEvent::Reasoning(reasoning.to_string()));
-                    }
-                } else if !content.is_empty() {
-                    events.push(OrcaEvent::Delta(content.to_string()));
-                }
-            }
-        }
-        events
+    fn push(&mut self, bytes: &[u8]) -> Vec<OrcaEvent> {
+        self.events.push(bytes).into_iter().filter_map(|payload| parse_event(&payload)).collect()
     }
+
+    fn finish(&mut self) -> Vec<OrcaEvent> {
+        self.events.finish().into_iter().filter_map(|payload| parse_event(&payload)).collect()
+    }
+}
+
+fn parse_event(payload: &str) -> Option<OrcaEvent> {
+    if crate::sse_events::is_done(payload.as_bytes()) { return Some(OrcaEvent::Done); }
+    if let Some(error) = payload.trim_start().strip_prefix("[ERROR]:") {
+        return Some(OrcaEvent::Error(error.trim().to_string()));
+    }
+    let parsed: Value = serde_json::from_str(payload).ok()?;
+    if parsed.get("type").and_then(Value::as_str) != Some("ai") { return None; }
+    let reasoning = parsed.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
+    let key = if reasoning { "reasoningContent" } else { "content" };
+    let text = parsed.get(key).and_then(Value::as_str).filter(|text| !text.is_empty())?.to_string();
+    Some(if reasoning { OrcaEvent::Reasoning(text) } else { OrcaEvent::Delta(text) })
 }
 
 // ─── OpenAI 帧产出 ──────────────────────────────────────────
@@ -390,12 +360,15 @@ impl OrcaStream {
     }
 
     /// 喂一段字节，返回该段触发的帧。
-    fn feed(&mut self, text: &str) -> Vec<Frame> {
-        if self.saw_end {
-            return Vec::new();
-        }
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Frame> {
+        let events = self.scanner.push(bytes);
+        self.consume(events)
+    }
+
+    fn consume(&mut self, events: Vec<OrcaEvent>) -> Vec<Frame> {
+        if self.saw_end { return Vec::new(); }
         let mut frames = Vec::new();
-        for event in self.scanner.push(text) {
+        for event in events {
             match event {
                 OrcaEvent::Reasoning(delta) => {
                     frames.push(self.chunk(delta, None, true));
@@ -422,11 +395,13 @@ impl OrcaStream {
                 OrcaEvent::Done => {
                     self.saw_end = true;
                     frames.extend(self.final_frames(Some("stop")));
+                    break;
                 }
                 OrcaEvent::Error(message) => {
                     self.last_error = Some(message);
                     self.saw_end = true;
                     frames.extend(self.final_frames(None));
+                    break;
                 }
             }
         }
@@ -468,27 +443,27 @@ impl OrcaStream {
         frames
     }
 
-    /// 流结束（EOF / 超时）：上游没给过结束帧时补收尾。
-    fn finish(&mut self) -> Vec<Frame> {
-        if self.saw_end {
-            return Vec::new();
-        }
-        self.saw_end = true;
-        self.final_frames(Some("stop"))
+    fn flush_tail(&mut self) -> Vec<Frame> {
+        let events = self.scanner.finish();
+        self.consume(events)
     }
 
-    /// 以错误收尾（上游断了 / 空闲超时）。
-    fn finish_with_error(&mut self, message: &str) -> Vec<Frame> {
-        if self.saw_end {
-            return Vec::new();
-        }
+    fn finish(&mut self) -> Vec<Frame> {
+        let mut frames = self.flush_tail();
+        if !self.saw_end { frames.extend(self.final_frames(Some("stop"))); }
         self.saw_end = true;
-        let mut frames = self.final_frames(None);
-        // `final_frames` 只在正文为空时才写错误帧；断流时正文可能已发过一半，
-        // 客户端仍需要知道「这条流是失败的」
-        if !self.content.is_empty() {
-            frames.insert(frames.len().saturating_sub(1), Frame::Error(message.to_string()));
+        frames
+    }
+
+    fn finish_with_error(&mut self, message: &str) -> Vec<Frame> {
+        let mut frames = self.flush_tail();
+        if self.saw_end { return frames; }
+        self.saw_end = true;
+        let mut tail = self.final_frames(None);
+        if !tail.iter().any(|frame| matches!(frame, Frame::Error(_))) {
+            tail.insert(tail.len().saturating_sub(1), Frame::Error(message.to_string()));
         }
+        frames.extend(tail);
         frames
     }
 

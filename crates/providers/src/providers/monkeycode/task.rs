@@ -196,7 +196,7 @@ pub async fn create_task(
     // 面板。插件的出站抓包由**网关侧**统一记（`HostEnv.debug_traffic` 是开关，
     // 但抓包缓冲区属于网关的 `RequestTelemetry`，插件进程里没有它）。任务流
     // （WS）本身不是 HTTP 往返，本来就没有可采集的请求 / 响应体。
-    let client = egress::client(proxy, "direct");
+    let client = egress::control_client(proxy, "direct");
     let mut builder = client.post(&url).header("Accept", "application/json");
     for (name, value) in &headers {
         builder = builder.header(name.as_str(), value);

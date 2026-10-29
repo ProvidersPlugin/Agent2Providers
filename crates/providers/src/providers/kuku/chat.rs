@@ -42,9 +42,6 @@ const CHANNEL_NAME: &str = "kuku_web_genflowpro_v1";
 /// 建会话请求超时
 const SESSION_TIMEOUT_MS: u64 = 60_000;
 
-/// 上游流空闲兜底（本项目编排层对出站流有统一 idle_guard；这里是兜底值）
-const STREAM_IDLE_MS: u64 = 120_000;
-
 /// 转发入口（有状态路径 `forward_conversation` 转调）。
 pub async fn run_chat(
     ctx: &PluginCtx,
@@ -104,33 +101,19 @@ pub async fn run_chat(
 
     // 逐段推帧。`send` 在背压窗口用完时会挂起 —— 不要自己缓冲整段回答。
     let mut stream = KukuStream::new(&client_model);
-    let mut source = response.bytes_stream();
+    let mut source = crate::response_stream::sse(response);
     use futures::StreamExt;
-    loop {
-        let next = tokio::time::timeout(
-            std::time::Duration::from_millis(STREAM_IDLE_MS),
-            source.next(),
-        )
-        .await;
-        match next {
-            Err(_) => {
-                let frames = stream.finish();
-                push_frames(&mut sink, frames).await?;
+    while let Some(item) = source.next().await {
+        match item {
+            Err(error) => {
+                push_frames(&mut sink, stream.finish_with_error(&format!(
+                    "KukuAI 对话流处理中断：{error}",
+                ))).await?;
                 return Ok(());
             }
-            Ok(None) => break,
-            Ok(Some(Err(error))) => {
-                crate::logging::verbose(
-                    "[Kuku]",
-                    &format!("对话流处理中断：{}", crate::http::describe_chain(&error)),
-                );
-                let frames = stream.finish();
-                push_frames(&mut sink, frames).await?;
-                return Ok(());
-            }
-            Ok(Some(Ok(chunk))) => {
-                let text = String::from_utf8_lossy(&chunk).to_string();
-                push_frames(&mut sink, stream.feed(&text)).await?;
+            Ok(chunk) => {
+                push_frames(&mut sink, stream.feed(&chunk)).await?;
+                if stream.saw_end { return Ok(()); }
             }
         }
     }
@@ -352,27 +335,25 @@ enum KukuEvent {
     Error(String),
 }
 
-/// 按 `\n\n` 分帧、逐帧取 `data: ` 前缀 JSON 的解析器。
+/// 按完整 SSE 事件解析，跨块保留原始字节。
 #[derive(Default)]
 struct SseScanner {
-    buffer: String,
+    events: crate::sse_events::DataEvents,
 }
 
 impl SseScanner {
-    fn push(&mut self, text: &str) -> Vec<KukuEvent> {
-        self.buffer.push_str(text);
-        let mut events = Vec::new();
-        while let Some(split_at) = self.buffer.find("\n\n") {
-            let raw = self.buffer.drain(..=split_at + 1).collect::<String>();
-            for line in raw.split('\n') {
-                let Some(payload) = line.strip_prefix("data: ") else { continue };
-                let Ok(parsed) = serde_json::from_str::<Value>(payload) else { continue };
-                if let Some(event) = event_from_json(&parsed) {
-                    events.push(event);
-                }
-            }
-        }
-        events
+    fn push(&mut self, bytes: &[u8]) -> Vec<KukuEvent> {
+        self.events.push(bytes).into_iter().filter_map(|payload| {
+            if crate::sse_events::is_done(payload.as_bytes()) { return Some(KukuEvent::Done); }
+            serde_json::from_str::<Value>(&payload).ok().as_ref().and_then(event_from_json)
+        }).collect()
+    }
+
+    fn finish(&mut self) -> Vec<KukuEvent> {
+        self.events.finish().into_iter().filter_map(|payload| {
+            serde_json::from_str::<Value>(&payload).ok().as_ref().and_then(event_from_json)
+                .filter(|event| !matches!(event, KukuEvent::Done))
+        }).collect()
     }
 }
 
@@ -411,6 +392,7 @@ fn event_from_json(parsed: &Value) -> Option<KukuEvent> {
 /// 一帧出站内容。
 enum Frame {
     Chunk(Value),
+    Error(String),
     Done,
 }
 
@@ -419,6 +401,9 @@ impl Frame {
     fn wire(&self) -> String {
         match self {
             Frame::Chunk(chunk) => format!("data: {chunk}\n\n"),
+            Frame::Error(message) => format!("data: {}\n\n", json!({
+                "error": { "message": message, "type": "upstream_error" },
+            })),
             Frame::Done => "data: [DONE]\n\n".to_string(),
         }
     }
@@ -448,12 +433,15 @@ impl KukuStream {
     }
 
     /// 喂一段字节，返回该段触发的帧。
-    fn feed(&mut self, text: &str) -> Vec<Frame> {
-        if self.saw_end {
-            return Vec::new();
-        }
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Frame> {
+        let events = self.scanner.push(bytes);
+        self.consume(events)
+    }
+
+    fn consume(&mut self, events: Vec<KukuEvent>) -> Vec<Frame> {
+        if self.saw_end { return Vec::new(); }
         let mut frames = Vec::new();
-        for event in self.scanner.push(text) {
+        for event in events {
             match event {
                 KukuEvent::Delta(delta) => {
                     self.content.push_str(&delta);
@@ -463,27 +451,39 @@ impl KukuStream {
                     self.saw_end = true;
                     frames.push(self.chunk(String::new(), Some("stop")));
                     frames.push(Frame::Done);
+                    break;
                 }
                 KukuEvent::Error(message) => {
-                    crate::logging::verbose(
-                        "[Kuku]",
-                        &format!("上游 ERROR 事件：{message}"),
-                    );
                     self.saw_end = true;
+                    frames.push(Frame::Error(message));
                     frames.push(Frame::Done);
+                    break;
                 }
             }
         }
         frames
     }
 
-    /// 流结束（EOF）：上游没给过结束帧时补 `[DONE]`，保证客户端能收尾。
+    fn flush_tail(&mut self) -> Vec<Frame> {
+        let events = self.scanner.finish();
+        self.consume(events)
+    }
+
     fn finish(&mut self) -> Vec<Frame> {
-        if self.saw_end {
-            return Vec::new();
+        let mut frames = self.flush_tail();
+        if !self.saw_end { frames.push(Frame::Done); }
+        self.saw_end = true;
+        frames
+    }
+
+    fn finish_with_error(&mut self, message: &str) -> Vec<Frame> {
+        let mut frames = self.flush_tail();
+        if !self.saw_end {
+            frames.push(Frame::Error(message.to_string()));
+            frames.push(Frame::Done);
         }
         self.saw_end = true;
-        vec![Frame::Done]
+        frames
     }
 
     fn chunk(&mut self, delta: String, finish_reason: Option<&str>) -> Frame {

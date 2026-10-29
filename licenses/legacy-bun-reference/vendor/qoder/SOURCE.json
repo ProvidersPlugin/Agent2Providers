@@ -1,0 +1,127 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-qoder-auth",
+    "version": "0.2.37",
+    "directory": "packages/qoder"
+  },
+  "files": [
+    {
+      "source": "packages/qoder/package.json",
+      "destination": "package.json"
+    },
+    {
+      "source": "packages/qoder/index.mjs",
+      "destination": "index.mjs"
+    },
+    {
+      "source": "packages/qoder/LICENSE-CLIProxyAPI",
+      "destination": "LICENSE-CLIProxyAPI"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "derivedFiles": [
+    { "source": "packages/qoder/index.mjs", "destination": "index.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "auth.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "regions.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "cosy.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "model-usage.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "conversation.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "tools.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "stream.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "queue.mjs" },
+    { "source": "packages/qoder/index.mjs", "destination": "plugin-factory.mjs" },
+    { "source": "packages/qoder/package.json", "destination": "package.json" }
+  ],
+  "moduleMigration": {
+    "source": "packages/qoder/index.mjs",
+    "sourceSha256": "2441ae037de62a5a414a881fb7f86a24f0fc8636d5f765df540cba8c3f3ac244",
+    "sourceLines": 2834,
+    "lineNumbering": "1-based, inclusive, before the split",
+    "changes": [
+      "Move original implementations verbatim into functional ESM modules; replace the monolithic import prelude with explicit imports and internal named exports.",
+      "Keep QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin, QwenWorkEnterpriseAuthPlugin, protocol and _internal on index.mjs.",
+      "Keep protocol/scenes/identity/COSY/signing/queue/model fallback/enterpriseDomain/same-domain routing/no redirect and refresh cache lifecycle unchanged.",
+      "Keep one TASKS map in conversation.mjs and one QUEUE object in queue.mjs. Keep lock, spent, listings, renewals, unsaid and campaignMachines in the original per-plugin makePlugin closure; no duplicated state, eval or cyclic imports.",
+      "Update package.json files to include derived modules, SOURCE.json and both complete licenses; do not copy tests, fakes or README."
+    ],
+    "modules": [
+      {
+        "destination": "index.mjs",
+        "boundary": "Public plugin entry, enterprise authorization wrapper, protocol and _internal compatibility exports",
+        "sourceLineRanges": [[1, 36], [2771, 2774], [2796, 2824], [2825, 2834]]
+      },
+      {
+        "destination": "auth.mjs",
+        "boundary": "OAuth PKCE/device flow, PAT exchange, token expiry and device/job refresh errors",
+        "sourceLineRanges": [[54, 58], [173, 205], [266, 425], [1978, 2006]]
+      },
+      {
+        "destination": "regions.mjs",
+        "boundary": "Provider sites/scenes, QwenWork RSA key, Qoder VPC routing and enterprise domain validation",
+        "sourceLineRanges": [[206, 265], [2078, 2083], [2142, 2217], [2775, 2795]]
+      },
+      {
+        "destination": "cosy.mjs",
+        "boundary": "Desktop COSY version/identity, RSA/AES envelope, signatures, request IDs and body codec",
+        "sourceLineRanges": [[46, 53], [61, 69], [72, 73], [74, 172]]
+      },
+      {
+        "destination": "model-usage.mjs",
+        "boundary": "Model catalogs/fallback, model metadata, usage/wallet parsing and retained campaign/device identity helpers",
+        "sourceLineRanges": [[45, 45], [59, 60], [426, 671], [1774, 1977], [2007, 2055], [2056, 2077], [2084, 2141]]
+      },
+      {
+        "destination": "conversation.mjs",
+        "boundary": "Conversation/tool history, reasoning/context selection, prompt cache, session/task identity and chat body",
+        "sourceLineRanges": [[70, 71], [672, 953], [990, 1031]]
+      },
+      {
+        "destination": "tools.mjs",
+        "boundary": "Typed object unions, XML/JSON tool calls and incremental text/tool splitting",
+        "sourceLineRanges": [[954, 989], [1268, 1566]]
+      },
+      {
+        "destination": "stream.mjs",
+        "boundary": "SSE events, native tool calls, token usage and streaming/non-streaming OpenAI answers",
+        "sourceLineRanges": [[1567, 1748]]
+      },
+      {
+        "destination": "queue.mjs",
+        "boundary": "Protocol failures, quota/auth/request classification, error responses and bounded queue polling",
+        "sourceLineRanges": [[1032, 1267]]
+      },
+      {
+        "destination": "plugin-factory.mjs",
+        "boundary": "Original plugin factory/hooks with per-plugin refresh lock, caches and request/campaign orchestration",
+        "sourceLineRanges": [[44, 44], [1749, 1773], [2218, 2770]]
+      }
+    ],
+    "removedSourceLineRanges": [
+      { "sourceLineRange": [37, 43], "reason": "Replace original Node import prelude with explicit per-module imports" }
+    ]
+  },
+  "licenses": [
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 magpie-community contributors",
+      "sha256": "bebc3d1ec74f197b010ed6f6b6743dbae73fe4865d71bd0670b0a4e203056679"
+    },
+    {
+      "source": "packages/qoder/LICENSE-CLIProxyAPI",
+      "destination": "LICENSE-CLIProxyAPI",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2025-2005.9 Luis Pater",
+        "Copyright (c) 2025.9-present Router-For.ME"
+      ],
+      "sha256": "93df585e5fa07ead6d47a3ab2dbdf0255782a39fe830022c0274a70394223cc8"
+    }
+  ]
+}

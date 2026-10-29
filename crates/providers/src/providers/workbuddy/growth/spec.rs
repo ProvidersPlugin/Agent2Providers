@@ -63,6 +63,10 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
         "create_canvas" => TaskSpec::new("canvas", 1, "自造 wb- 画布 id", false),
         "template_5" => TaskSpec::new("template", 5, "场景 id（scenes 接口）", true),
         "expert_5" => TaskSpec::new("expert", 5, "专家市场 ex_ id", true),
+        "expert_use_maidehao" | "expert_use_douyinyin" | "expert_use_shangjia_xuanchuan"
+        | "expert_use_bowangwang" | "WorkBuddy_Valorant" => {
+            TaskSpec::new("expert-task", 1, "任务指定专家的真实对话", true)
+        }
         "Expert_team_use_3" => TaskSpec::new("team", 3, "团队专家 id", true),
         "skill_1" => TaskSpec::new("skill", 1, "技能市场 skillId", true),
         "automation_1" => TaskSpec::new("automation", 1, "rrule 虚拟对象", false),
@@ -96,6 +100,7 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
         "school_season" => TaskSpec::new("schoolseason", 1, "校园日活动（mini chat+activityId）", false).with_mp(),
         // ── 需本人操作 ──
         "Expert_Philanthropy" => TaskSpec::unforgeable("真实捐款动作"),
+        "wb_wechat_oa_subscribe_task" => TaskSpec::unforgeable("请本人在微信关注官方公众号"),
         _ => return None,
     };
     Some(spec)
@@ -251,7 +256,7 @@ async fn fetch_scenes(account: &GrowthAccount) -> Vec<ObjectId> {
 
 /// 专家市场清单（POST /v2/operation-platform/market/expert/list，最多 3 页）。
 /// `team_only` 只留 expert_type=team；`keyword` 关键词过滤。COS 静态清单补足。
-async fn fetch_market_experts(
+pub(super) async fn fetch_market_experts(
     account: &GrowthAccount,
     team_only: bool,
     keyword: Option<&str>,
@@ -307,6 +312,8 @@ async fn fetch_market_experts(
                         .or_else(|| expert.get("profession_zh"))
                         .and_then(Value::as_str)
                         .unwrap_or(""),
+                    "displayName": expert.get("display_name_zh").and_then(Value::as_str).unwrap_or(""),
+                    "profession": expert.get("profession_zh").and_then(Value::as_str).unwrap_or(""),
                     "category": expert
                         .get("categories")
                         .and_then(Value::as_array)
@@ -343,6 +350,8 @@ async fn fetch_market_experts(
                         .and_then(|profession| profession.get("zh"))
                         .and_then(Value::as_str)
                         .unwrap_or(""),
+                    "displayName": expert.get("displayName").and_then(|value| value.get("zh")).and_then(Value::as_str).unwrap_or(""),
+                    "profession": expert.get("profession").and_then(|value| value.get("zh")).and_then(Value::as_str).unwrap_or(""),
                     "category": expert.get("categoryId").and_then(Value::as_str).unwrap_or(""),
                     "expertType": expert_type,
                     "version": "",
@@ -372,7 +381,7 @@ async fn fetch_market_experts(
 
 /// COS 静态专家清单（公开对象存储，无需鉴权）。
 async fn fetch_cos_experts() -> Option<Vec<Value>> {
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .get(COS_EXPERT_URL)
         .timeout(std::time::Duration::from_secs(20))
         .send()
@@ -425,7 +434,7 @@ async fn fetch_skills(account: &GrowthAccount) -> Vec<ObjectId> {
 /// 灵感案例注册表（静态 CDN，无需鉴权）。
 async fn fetch_playbook_cases() -> Vec<ObjectId> {
     let url = format!("{PLAYBOOK_BASE}/registry.json");
-    let response = crate::http::client(None, "direct")
+    let response = crate::http::control_client(None, "direct")
         .get(&url)
         .timeout(std::time::Duration::from_secs(20))
         .send()

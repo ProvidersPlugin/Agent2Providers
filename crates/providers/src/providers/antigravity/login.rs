@@ -257,7 +257,7 @@ pub(super) async fn verify_paste(
 /// 发起一次网页登录（或对非 browser 方法给出可照做的拒绝）。
 pub(super) async fn login_start(
     method: &str,
-    _payload: &Value,
+    payload: &Value,
 ) -> Result<proto::LoginStart, String> {
     if method != "browser" {
         return Err(
@@ -265,6 +265,10 @@ pub(super) async fn login_start(
                 .to_string(),
         );
     }
+    // 这一轮登录的出网线路：网关在 `login.start` 的 payload 里给（用户选的
+    // 代理，已解析成 WireProxy）。解析失败要明确拒绝 —— 静默回落直连会让
+    // 无头服务器上的登录挂在「连不上 Google」，而用户以为自己选了代理。
+    let proxy = resolve_login_proxy(payload.get("proxy"))?;
     // 上一轮没收摊的先关掉：端口不释放的话，这一轮的回调可能落到上一轮的
     // 监听器上（授权码一次性，两轮并存等于让其中一轮必输）。
     close_all();
@@ -290,7 +294,13 @@ pub(super) async fn login_start(
             },
         );
     });
-    spawn_completion(flow_id.clone(), Arc::clone(&listener), state, redirect_uri);
+    spawn_completion(
+        flow_id.clone(),
+        Arc::clone(&listener),
+        state,
+        redirect_uri,
+        proxy,
+    );
     logging::log(
         "[Login]",
         &format!(
@@ -312,12 +322,43 @@ pub(super) async fn login_start(
     })
 }
 
+/// 解析 `login.start` 里的登录代理（`payload.proxy`）。
+///
+/// ── 三种输入的语义 ──────────────────────────────────────────
+///   - 缺省 / `null` / `source: "direct"` → `None`：没选代理，跟随系统代理
+///     （`client_for(None)` 的老口径，桌面端照旧）；
+///   - 可解析的代理 → `Some(WireProxy)`：登录链路全程走它；
+///   - 给了但解析不了 → 明确报错。**不静默回落直连**：无头服务器上「连不上
+///     Google」与「选了代理但代理坏了」是两件事，后者用户能自己修。
+fn resolve_login_proxy(raw: Option<&Value>) -> Result<Option<ResolvedProxy>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    // 网关的 `checked_login_proxy` 既可能给解析后的 `WireProxy`，也可能给
+    // 原始配置（`source` / `proxyId` 形态）。先按 WireProxy 认，认不出再走
+    // 账号级代理的解析器（它对 `direct` / `rotate` / 池引用都有明确结论）。
+    if let Ok(proxy) = serde_json::from_value::<ResolvedProxy>(raw.clone()) {
+        if !proxy.host.trim().is_empty() {
+            return Ok(Some(proxy));
+        }
+    }
+    match crate::proxy_util::resolve_account_proxy(Some(raw)) {
+        None => Ok(None),
+        Some(crate::proxy_util::ProxyResolution::Resolved(proxy)) => Ok(Some(proxy)),
+        Some(crate::proxy_util::ProxyResolution::Failed(reason)) => Err(format!(
+            "这一轮登录的代理不可用（{reason}）：请在登录弹窗里换一条代理，或先修好它再重试"
+        )),
+    }
+}
+
 /// 后台那半个登录：等回调 → 换码 → 写状态。
 fn spawn_completion(
     flow_id: String,
     listener: Arc<CallbackListener>,
     state: String,
     redirect_uri: String,
+    proxy: Option<ResolvedProxy>,
 ) {
     tokio::spawn(async move {
         let Some(query) = listener.next_callback().await else {
@@ -333,7 +374,7 @@ fn spawn_completion(
             return;
         };
         set_state(&flow_id, FlowState::Working);
-        let outcome = finish(&query, &state, &redirect_uri).await;
+        let outcome = finish(&query, &state, &redirect_uri, proxy.as_ref()).await;
         with_flows(|table| {
             if let Some(entry) = table.get_mut(&flow_id) {
                 entry.flow_state = match outcome {
@@ -360,6 +401,7 @@ async fn finish(
     query: &str,
     expected_state: &str,
     redirect_uri: &str,
+    proxy: Option<&ResolvedProxy>,
 ) -> Result<super::credentials::AntigravityCredentials, String> {
     let params = parse_query(query);
     let get = |key: &str| {
@@ -384,7 +426,7 @@ async fn finish(
     if code.trim().is_empty() {
         return Err("回调里没有授权码：请重新发起网页登录".to_string());
     }
-    oauth::exchange_code(&code, &callback_state, redirect_uri)
+    oauth::exchange_code(&code, &callback_state, redirect_uri, proxy)
         .await
         .map_err(|error| error.message)
 }

@@ -79,11 +79,13 @@ fn map_entry(row: &Value) -> Option<Value> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    Some(json!({
+    let mut model = json!({
         "id": id,
         "name": id,
         "supportsToolCall": true,
-    }))
+    });
+    super::image_generation::decorate(id, &mut model);
+    Some(model)
 }
 
 /// 解析 `/models` 响应（OpenAI `{data:[...]}` 或裸数组）
@@ -118,9 +120,8 @@ pub fn list(region: Region) -> proto::ModelList {
 /// `force = true`（用户手动刷新）真打上游。
 pub async fn refresh(
     region: Region,
-    token: &str,
+    api: &client::ControlClient,
     force: bool,
-    gateway_proxy: &str,
 ) -> proto::RefreshOutcome {
     let now = http::now_ms();
     if !force {
@@ -133,16 +134,10 @@ pub async fn refresh(
             return proto::RefreshOutcome::unchanged();
         }
     }
-    let (status, payload) =
-        match client::inference_get(region, MODELS_PATH, token, "模型目录查询", gateway_proxy).await {
-            Ok(result) => result,
-            Err(error) => return proto::RefreshOutcome::failed(error),
-        };
-    if !(200..300).contains(&status) {
-        return proto::RefreshOutcome::failed(format!(
-            "ModelScope 模型目录返回 HTTP {status}（保留现有清单）"
-        ));
-    }
+    let payload = match api.models_json(MODELS_PATH).await {
+        Ok(payload) => payload,
+        Err(error) => return proto::RefreshOutcome::failed(error),
+    };
     let models = parse_models(&payload);
     if models.is_empty() {
         return proto::RefreshOutcome::failed(

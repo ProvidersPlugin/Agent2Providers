@@ -25,7 +25,7 @@ const HUNYUAN_FEATURE: &str = "hunyuan_ai";
 
 /// 查询某账号的 AI 配额。
 pub async fn query_usage(ctx: &PluginCtx, account: &str) -> Result<Value, String> {
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let mut credentials = credentials::snapshot(ctx, account).await?;
     credentials = credentials::refresh(ctx, &credentials, account, false).await?;
     let response = credentials::cgi_action(

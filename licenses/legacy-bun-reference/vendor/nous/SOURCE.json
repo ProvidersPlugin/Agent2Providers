@@ -1,0 +1,14 @@
+{
+  "source": "https://github.com/magpie-community/plugins",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-nous-auth",
+    "version": "0.1.1",
+    "path": "packages/nous"
+  },
+  "files": [
+    { "source": "packages/nous/index.mjs", "destination": "index.mjs" },
+    { "source": "packages/nous/oauth.mjs", "destination": "oauth.mjs" },
+    { "source": "LICENSE", "destination": "LICENSE" }
+  ]
+}

@@ -48,6 +48,7 @@
 
 pub mod adapter;
 pub(crate) mod accounts;
+pub(crate) mod authorization;
 pub(crate) mod balance;
 pub(crate) mod callback_server;
 pub(crate) mod chat;

@@ -11,17 +11,13 @@ use crate::sse_events::{is_done, EventDecoder};
 use super::chat::{head_verdict, HeadVerdict};
 use super::tool_names::{Restorer, StreamFixer};
 
-type Source = BoxStream<'static, Result<Bytes, reqwest::Error>>;
-
 pub(crate) struct ResponseStream {
-    source: Option<Source>,
-    events: EventDecoder,
-    ended: bool,
+    source: BoxStream<'static, Result<Bytes, std::io::Error>>,
 }
 
 impl ResponseStream {
     pub(crate) fn new(response: reqwest::Response) -> Self {
-        Self { source: Some(Box::pin(response.bytes_stream())), events: EventDecoder::default(), ended: false }
+        Self { source: crate::response_stream::sse(response) }
     }
 }
 
@@ -29,33 +25,7 @@ impl Stream for ResponseStream {
     type Item = Result<Bytes, std::io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.ended { return Poll::Ready(None); }
-        let polled = match self.source.as_mut() {
-            Some(source) => source.as_mut().poll_next(cx),
-            None => return Poll::Ready(None),
-        };
-        match polled {
-            Poll::Ready(Some(Ok(bytes))) => {
-                let mut done = false;
-                let end = self.events.feed(&bytes, |data| { done = is_done(data); done });
-                if done {
-                    self.ended = true;
-                    self.source = None;
-                }
-                Poll::Ready(Some(Ok(bytes.slice(..end))))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                self.ended = true;
-                self.source = None;
-                Poll::Ready(Some(Err(std::io::Error::other(crate::http::describe_chain(&error)))))
-            }
-            Poll::Ready(None) => {
-                self.ended = true;
-                self.source = None;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        self.source.as_mut().poll_next(cx)
     }
 }
 

@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-zed-auth",
+    "version": "0.1.11",
+    "directory": "packages/zed"
+  },
+  "files": [
+    {
+      "source": "packages/zed/package.json",
+      "destination": "package.json"
+    },
+    {
+      "source": "packages/zed/index.mjs",
+      "destination": "index.mjs"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "derivedFiles": [
+    { "source": "packages/zed/index.mjs", "destination": "index.mjs", "purpose": "Public plugin entry point and original exports" },
+    { "source": "packages/zed/index.mjs", "destination": "statecache.mjs", "purpose": "Shared module-lifetime organization, model token, minting lock, vendor and model list caches" },
+    { "source": "packages/zed/index.mjs", "destination": "identity.mjs", "purpose": "Zed identity, account state, organization selection, status errors and model token minting" },
+    { "source": "packages/zed/index.mjs", "destination": "login.mjs", "purpose": "RSA browser sign-in, callback decryption and initial account model list" },
+    { "source": "packages/zed/index.mjs", "destination": "models.mjs", "purpose": "Static and live model catalogs, provider metadata and request effort variants" },
+    { "source": "packages/zed/index.mjs", "destination": "usage.mjs", "purpose": "Organization plan, billing period and overdue invoice status" },
+    { "source": "packages/zed/index.mjs", "destination": "requests.mjs", "purpose": "Anthropic, Responses, Chat and Gemini request wire translation" },
+    { "source": "packages/zed/index.mjs", "destination": "stream.mjs", "purpose": "NDJSON status handling, provider SSE and whole-reply translation, and cut-short stream errors" },
+    { "source": "packages/zed/index.mjs", "destination": "forward.mjs", "purpose": "Completion forwarding with model token renewal and organization retry" },
+    { "source": "packages/zed/index.mjs", "destination": "pluginfactory.mjs", "purpose": "Plugin factory, config, model, auth and usage hooks with account persistence" }
+  ]
+}

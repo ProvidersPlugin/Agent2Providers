@@ -39,6 +39,8 @@ mod log_context;
 pub mod provider;
 pub mod retry;
 pub mod serve;
+mod serve_options;
+pub mod timeouts;
 
 pub use checkin::CheckinResult;
 pub use ctx::{PluginCtx, StoreAccount, StoreError, StoreProxy};
@@ -49,7 +51,7 @@ pub use provider::{
     SCHEDULES_LIST_METHOD, UNSUPPORTED_PREFIX,
 };
 pub use retry::{RetryDecision, RETRY_DECISION_METHOD};
-pub use serve::{serve, serve_blocking};
+pub use serve::{serve, serve_blocking, serve_blocking_with, serve_with, ServeOptions};
 
 /// 打一条日志到网关的运行日志页。
 ///

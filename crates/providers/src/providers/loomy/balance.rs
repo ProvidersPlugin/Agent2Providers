@@ -39,7 +39,7 @@ fn pick_number(data: &Value, key: &str) -> Option<f64> {
 
 /// 查询某 Loomy 账号的双账户余额。
 pub async fn query_usage(ctx: &PluginCtx, account: &str) -> Result<Value, String> {
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let credentials = credentials::snapshot(ctx, account).await?;
     let payload =
         client::token_request(&client, "GET", RECORDS_PATH, &credentials.session, None, "积分查询")

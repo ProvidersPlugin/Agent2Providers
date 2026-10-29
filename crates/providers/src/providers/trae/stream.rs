@@ -5,10 +5,7 @@
 //!    上游中途断掉（没有 done）也要补，否则客户端永远等在最后一片上。
 //! 2. **业务错误藏在 200 的流里**（`event: error`）。它不是 chunk，
 //!    而是一条 `event: error` + `[DONE]`；分类见 `errors.rs`。
-//! 3. **`token_usage` 是"欠着"的**：读到它并不立刻发帧，而是挂在下一帧
-//!    （正常就是那条 finish 帧）上一起走。所以"usage 之后流就断了"这种
-//!    上游行为会让 usage **静默消失** —— 向量里就有这一例，照抄行为、
-//!    在 M7 的对拍报告里记一笔，不偷偷改。
+//! 3. `token_usage` 随下一帧发送；EOF 或传输失败时仍须冲刷已收到的用量。
 //!
 //! 帧的**键顺序**不是契约（Go 的 map 序列化按 key 排序，serde 按插入顺序），
 //! 所以测试比的是解析后的 JSON；`id` 与 `created` 每次运行都不同，
@@ -104,6 +101,12 @@ impl SseScanner {
         None
     }
 
+    fn finish(&mut self) -> Option<SoloEvent> {
+        let event = parse_solo_event(&self.event, &self.data);
+        self.reset();
+        event.filter(|event| !matches!(event, SoloEvent::Done { .. }))
+    }
+
     fn reset(&mut self) {
         self.event.clear();
         self.data.clear();
@@ -153,15 +156,17 @@ pub struct SoloStream {
     /// `token_usage` 读到后欠着，随下一帧一起发。
     pending_usage: Option<Value>,
     saw_done: bool,
+    completed: bool,
 }
 
 impl SoloStream {
     pub fn new(id: String, created: i64) -> Self {
-        Self { id, created, scanner: SseScanner::default(), pending_usage: None, saw_done: false }
+        Self { id, created, scanner: SseScanner::default(), pending_usage: None, saw_done: false, completed: false }
     }
 
     /// 喂一行，返回该行产生的帧。
     pub fn feed_line(&mut self, line: &str) -> Vec<Frame> {
+        if self.completed { return Vec::new(); }
         let Some(event) = self.scanner.feed_line(line) else {
             return Vec::new();
         };
@@ -191,28 +196,39 @@ impl SoloStream {
                 Vec::new()
             }
             SoloEvent::Done { finish_reason } => {
+                self.completed = true;
+                let sent = self.saw_done;
                 self.saw_done = true;
-                vec![self.chunk(json!({}), Some(finish_reason)), Frame::Done]
+                let mut frames = vec![self.chunk(json!({}), Some(finish_reason))];
+                if !sent { frames.push(Frame::Done); }
+                frames
             }
             SoloEvent::Error { code, message } => {
                 let kind = stream_error_kind(code, &message);
-                self.saw_done = true;
-                // 注意：这里**不终止读取**，所以后面再来 `done` 会再发一整套
-                // 帧（向量 `流内错误 4008` 记的就是这个形状）。转发层在首包门
-                // 之前看到这条 error 就会改判成 HTTP 错误，正常不会走到第二步。
-                vec![Frame::Error { code, message, kind }, Frame::Done]
+                // error 后仍读取可能到来的用量；只有完整 done 事件结束读取。
+                vec![Frame::Error { code, message, kind }]
             }
             SoloEvent::Other => Vec::new(),
         }
     }
 
-    /// 流结束（EOF）。上游没给过 `done` 时补一个 `[DONE]`，保证客户端能收尾。
+    pub fn completed(&self) -> bool { self.completed }
+
+    pub fn flush_pending(&mut self) -> Vec<Frame> {
+        let mut frames = match self.scanner.finish() {
+            Some(event) => self.apply(event),
+            None => Vec::new(),
+        };
+        if self.pending_usage.is_some() { frames.push(self.chunk(json!({}), None)); }
+        frames
+    }
+
+    /// EOF 时保留已收到的尾数据与用量，结束标记只发一次。
     pub fn finish(&mut self) -> Vec<Frame> {
-        if self.saw_done {
-            return Vec::new();
-        }
+        let mut frames = self.flush_pending();
+        if !self.saw_done { frames.push(Frame::Done); }
         self.saw_done = true;
-        vec![Frame::Done]
+        frames
     }
 
     fn chunk(&mut self, delta: Value, finish_reason: Option<String>) -> Frame {

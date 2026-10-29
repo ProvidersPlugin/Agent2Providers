@@ -182,7 +182,7 @@ pub async fn refresh(api_key: &str, force: bool, gateway_proxy: &str) -> proto::
     }
     let mut headers = endpoints::cli_headers();
     headers.extend(endpoints::auth_headers(api_key));
-    let client = http::client(None, gateway_proxy);
+    let client = http::control_client(None, gateway_proxy);
     let (status, payload) = match http::get_json(
         &client,
         &endpoints::url(endpoints::MODELS_PATH),

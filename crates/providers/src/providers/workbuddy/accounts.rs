@@ -226,6 +226,7 @@ pub(super) fn account_view(secret: &Value, region: Region) -> Value {
     let expires_at = secret.get("expiresAt").cloned().unwrap_or(Value::Null);
     if let Some(object) = view.as_object_mut() {
         object.insert("expiresAt".to_string(), expires_at);
+        object.insert("refreshTokenExpiresAt".to_string(), secret.get("refreshExpiresAt").cloned().unwrap_or(Value::Null));
     }
     view
 }

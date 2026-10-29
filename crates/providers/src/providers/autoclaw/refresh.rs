@@ -277,7 +277,19 @@ pub(super) fn signed_auth_headers(token: &str) -> Vec<(String, String)> {
         ),
     ];
     if !token.is_empty() {
-        headers.push(("authorization".to_string(), format!("Bearer {token}")));
+        // ── 必须剥一次前缀再拼（issue #386）────────────────────────
+        // 登录拿到的 `access_token` 本身可能已经带 `Bearer `，直接拼会得到
+        // `Bearer Bearer eyJ…`，上游按空格切分后拿到字面量 `Bearer …`
+        // （不是合法 JWT）→ 恒定 401 `Invalid token`。
+        //
+        // 剥在这里而不是各个调用方：本函数是**全仓唯一**一份鉴权头实现
+        // （刷新 / 余额 / 签到 / 目录都走它），在出口统一收口才不会漏掉
+        // 某条链路。`strip_bearer` 对不带前缀的裸 token 是恒等变换，
+        // 因此对本来正常的账号零影响。
+        let token = crate::crypto::strip_bearer(token);
+        if !token.is_empty() {
+            headers.push(("authorization".to_string(), format!("Bearer {token}")));
+        }
     }
     headers
 }

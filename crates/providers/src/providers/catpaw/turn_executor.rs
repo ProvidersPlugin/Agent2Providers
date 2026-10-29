@@ -16,11 +16,8 @@
 //! 拆文件的唯一原因是单文件行数约定（架构文档 §8 第 1 条）。
 //!
 //! ── 为什么流式分支要起一个后台任务（而不是把 SSE 包成 Stream）──
-//! §9.3 的硬约束要求「turn 的 SSE **必须消费到服务端关闭连接**」，而 `[DONE]`
-//! 与 finish_reason 只能在**整个流读完之后**才下发（`message.finished=true`
-//! ≠ turn 结束）。若把上游字节流直接用 `Stream` 适配器转发，客户端一断开流就被
-//! drop，上游那次 turn 就再也没人读完 —— 上游侧停在「执行中」，下一轮 round
-//! 直接被拒。
+//! turn SSE 必须消费至完整 DONE 或 HTTP EOF，`message.finished=true` 只结束
+//! 当前消息，不能结束轮次。客户端断开后仍须读取剩余事件并回报终态。
 //!
 //! 因此这里的结构是：起一个后台任务**独立地**把上游 SSE 读到底。客户端断开只
 //! 表现为「发送失败」，消费继续，读完照常收尾（注册表写回 + 终态上报 +
@@ -54,7 +51,6 @@ use serde_json::{json, Value};
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::telemetry::RequestTelemetry;
-use crate::http as egress;
 use crate::logging;
 
 use super::conversation::{short_id, CatPawCredentials};
@@ -363,13 +359,13 @@ pub(super) async fn drive_stream(
     let mut interrupted = InterruptedNote { telemetry: ctx.telemetry.clone(), armed: true };
 
     let mut reader = SseReader::new();
-    let mut stream = response.bytes_stream();
+    let mut stream = crate::response_stream::sse(response);
     let mut outcome: Result<TurnResult, CatPawError> =
         Err(CatPawError::upstream("上游没有返回消息"));
     let mut finished = false;
     while !finished {
         match futures::StreamExt::next(&mut stream).await {
-            // ── 服务端关闭连接 = turn 真正结束（硬约束 2）──────────────
+            // HTTP EOF 是未发送 DONE 时的收尾兜底。
             None => {
                 if let Some(event) = reader.finish() {
                     if let Err(error) = handle_event(&mut translator, event, &mut pending) {
@@ -382,14 +378,20 @@ pub(super) async fn drive_stream(
                 finished = true;
             }
             Some(Err(error)) => {
-                outcome = Err(CatPawError::upstream(format!(
-                    "上游流式传输中断: {}",
-                    egress::describe_chain(&error),
-                )));
+                if let Some(event) = reader.finish() {
+                    let _ = handle_event(&mut translator, event, &mut pending);
+                }
+                if let Some(usage) = translator.usage_frame() { pending.push(usage); }
+                outcome = Err(CatPawError::upstream(format!("上游流式传输中断: {error}")));
                 finished = true;
             }
             Some(Ok(chunk)) => {
                 for event in reader.push(&chunk) {
+                    if matches!(event, SseEvent::Done) {
+                        outcome = translator.finish(&mut pending);
+                        finished = true;
+                        break;
+                    }
                     if let Err(error) = handle_event(&mut translator, event, &mut pending) {
                         outcome = Err(error);
                         finished = true;
@@ -432,7 +434,7 @@ pub(super) async fn drive_aggregate(
     let mut pending: Vec<Bytes> = Vec::new();
 
     let mut reader = SseReader::new();
-    let mut stream = response.bytes_stream();
+    let mut stream = crate::response_stream::sse(response);
     let mut outcome: Result<TurnResult, CatPawError> =
         Err(CatPawError::upstream("上游没有返回消息"));
     let mut finished = false;
@@ -449,14 +451,20 @@ pub(super) async fn drive_aggregate(
                 finished = true;
             }
             Some(Err(error)) => {
-                outcome = Err(CatPawError::upstream(format!(
-                    "上游流式传输中断: {}",
-                    egress::describe_chain(&error),
-                )));
+                if let Some(event) = reader.finish() {
+                    let _ = handle_event(&mut translator, event, &mut pending);
+                }
+                if let Some(usage) = translator.usage_frame() { pending.push(usage); }
+                outcome = Err(CatPawError::upstream(format!("上游流式传输中断: {error}")));
                 finished = true;
             }
             Some(Ok(chunk)) => {
                 for event in reader.push(&chunk) {
+                    if matches!(event, SseEvent::Done) {
+                        outcome = translator.finish(&mut pending);
+                        finished = true;
+                        break;
+                    }
                     if let Err(error) = handle_event(&mut translator, event, &mut pending) {
                         outcome = Err(error);
                         finished = true;
@@ -505,6 +513,7 @@ fn handle_event(
 ) -> Result<(), CatPawError> {
     match event {
         SseEvent::Data(value) => translator.consume(&value, pending),
+        SseEvent::Done => Ok(()),
         SseEvent::Failed(error) => Err(error),
     }
 }

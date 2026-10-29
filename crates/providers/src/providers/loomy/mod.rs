@@ -313,7 +313,7 @@ impl Provider for LoomyProvider {
                     )))
                 }
             };
-            let client = crate::http::client(None, &ctx.env.proxy);
+            let client = crate::http::control_client(None, &ctx.env.proxy);
             Ok(models::refresh(&client, &credentials.session, force).await)
         })
     }

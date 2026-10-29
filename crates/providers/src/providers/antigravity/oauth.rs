@@ -392,14 +392,15 @@ fn classify_exchange_failure(status: u16, text: &str, payload: Option<&Value>) -
 /// None。调用点把它当纯展示 / 身份增强，**绝不因它失败而判登录失败**。
 ///
 /// 日志口径与刷新一致：只记成败，不打印令牌本体。
-async fn fetch_email(access_token: &str) -> Option<String> {
+async fn fetch_email(access_token: &str, proxy: Option<&ResolvedProxy>) -> Option<String> {
     let token = access_token.trim();
     if token.is_empty() {
         return None;
     }
-    // 登录发生在账号存在之前，没有账号级代理可挂 → 跟随系统代理
-    // （与浏览器同口径；口径与理由见 `super::client_for` 的文档）。
-    let client = super::client_for(None);
+    // 有这一轮登录的代理就用它；没有才跟随系统代理（`client_for` 的口径见
+    // 那个函数的文档）。登录发生在账号存在之前，没有账号级代理可挂，所以
+    // 「用户在登录弹窗里选的代理」是这一层唯一能拿到的出口。
+    let client = super::client_for(proxy);
     let (auth_key, auth_value) = endpoints::bearer_header(token);
     for url in [endpoints::USERINFO_URL_V2, endpoints::USERINFO_URL_V1] {
         let response = client
@@ -454,6 +455,7 @@ pub async fn exchange_code(
     code: &str,
     state: &str,
     redirect_uri: &str,
+    proxy: Option<&ResolvedProxy>,
 ) -> Result<super::credentials::AntigravityCredentials, GatewayError> {
     let code = code.trim();
     if code.is_empty() {
@@ -482,10 +484,9 @@ pub async fn exchange_code(
             "这一轮登录的回调地址丢了，请重新发起网页登录",
         ));
     }
-    // 出网跟随系统代理：登录发生在账号存在之前，没有账号级代理可挂
-    // （口径与理由见 `super::client_for` 的文档；与本文件刷新那条的唯一差别，
-    // 其余 client 构造 / 错误处理逐字同款）。
-    let client = super::client_for(None);
+    // 换码走**这一轮登录**的代理（用户在登录弹窗里选的那条）；没选才跟随
+    // 系统代理。无头服务器上没有系统代理，选代理是唯一能出 Google 的路径。
+    let client = super::client_for(proxy);
     let response = client
         .post(endpoints::TOKEN_URL)
         .header("User-Agent", endpoints::oauth_user_agent())
@@ -550,14 +551,14 @@ pub async fn exchange_code(
     };
     let expires_at = logging::now_ms() + expires_in * 1000;
     // email / project 都是 best-effort：失败只告警，不影响账号可用性
-    let email = fetch_email(&access_token).await.unwrap_or_default();
+    let email = fetch_email(&access_token, proxy).await.unwrap_or_default();
     if email.is_empty() {
         logging::verbose(
             "[Antigravity]",
             "网页登录未取到 email（账号照常保存，展示名与身份退到令牌摘要）",
         );
     }
-    let project_id = match project::discover_project(&access_token, None).await {
+    let project_id = match project::discover_project(&access_token, proxy).await {
         Ok(found) => found,
         Err(error) => {
             logging::verbose(

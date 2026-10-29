@@ -180,7 +180,7 @@ fn display_name(credentials: &Credentials) -> String {
 /// 实测该动作匿名可调，凭据就是 `session_id` 本身（一次性、由本进程生成、
 /// 只出现在我们自己窗口的 URL 里）—— 安全性由「不可预测 + 一次性」承担。
 async fn exchange_session(ctx: &PluginCtx, session_id: &str) -> Result<Credentials, String> {
-    let client = crate::http::client(None, &ctx.env.proxy);
+    let client = crate::http::control_client(None, &ctx.env.proxy);
     let response = credentials::cgi_action_anonymous(
         &client,
         "OAuthExchangeToken",

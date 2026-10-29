@@ -118,66 +118,25 @@ pub fn sse_done() -> String {
     "data: [DONE]\n\n".to_string()
 }
 
-/// 线协议解析器：把上游字节流切成一行行的 `data:` 事件。
-///
-/// 按**字节**缓冲而不是 String：思考内容里中文占大头，而 TCP 分片完全可能把
-/// 一个 3 字节的汉字切成两半 —— 逐片解码会把那半个字变成替换字符。
-/// 只在完整行上解码就没有这个问题。
+/// SSE 事件缓冲：完整事件才解码，跨块保留 UTF-8 与半个事件。
 #[derive(Default)]
 pub struct LineBuffer {
-    tail: Vec<u8>,
+    events: crate::sse_events::DataEvents,
 }
 
 impl LineBuffer {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    /// 吃一段上游字节，吐出其中**完整的** `data:` 行（已去掉 `data:` 前缀）。
-    ///
-    /// 非 `data:` 行（注释、心跳）直接忽略：本家的上游只用 `data:` 承载内容。
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.tail.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        let mut start = 0usize;
-        while let Some(offset) = self.tail[start..].iter().position(|byte| *byte == b'\n') {
-            let end = start + offset;
-            let line = String::from_utf8_lossy(&self.tail[start..end]).to_string();
-            let line = line.strip_suffix('\r').unwrap_or(&line).to_string();
-            if let Some(data) = line.strip_prefix("data:") {
-                out.push(data.to_string());
-            }
-            start = end + 1;
-        }
-        self.tail.drain(..start);
-        out
+        self.events.push(chunk)
     }
 
-    /// 流结束：吐出尾行（上游没以换行收尾时的最后一条）。
-    ///
-    /// 与通用 SSE 层「不冲刷 tail」的取向不同：那里的 tail 可能是被切断的
-    /// 残帧，宁可丢掉；而 Qoder 的上游**确实可能不发收尾换行**，
-    /// 丢掉它就会丢掉最后一条内容（含 finish_reason 与 usage）。
     pub fn finish(&mut self) -> Vec<String> {
-        let tail = std::mem::take(&mut self.tail);
-        let line = String::from_utf8_lossy(&tail).to_string();
-        let line = line.strip_suffix('\r').unwrap_or(&line).to_string();
-        if let Some(data) = line.strip_prefix("data:") {
-            if !data.trim().is_empty() {
-                return vec![data.to_string()];
-            }
-        }
-        Vec::new()
+        self.events.finish()
     }
 
-    /// 取走尚未凑成完整行的缓冲字节（**不**当作一行解析）。
-    ///
-    /// 供首帧预读（`piping::prefetch_stream_head`）移交用：预读消费了缓冲，
-    /// `tail` 里可能留着下一条帧的前半（`data: {"statusCodeValue"...` 被
-    /// 网络分片截断的那半）。接管的 `drive_stream` 会新建自己的 LineBuffer，
-    /// 没有这段字节那一条帧就永远拼不回来 —— 调用方把它拼回流头即可无缝续传。
     pub fn take_tail(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.tail)
+        self.events.take_pending()
     }
 }
 

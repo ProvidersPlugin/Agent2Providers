@@ -43,6 +43,7 @@
 
 pub mod daily_activity;
 pub mod events;
+mod expert_tasks;
 pub mod school;
 pub mod spec;
 pub mod streak;
@@ -550,7 +551,7 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
             energy: 0,
         };
     };
-    if spec.unforgeable {
+    if spec.unforgeable && accept_status != "claimed" && accept_status != "completed" && cur < target {
         return TaskReport {
             code: code.to_string(),
             outcome: TaskOutcome::Skipped,
@@ -629,7 +630,12 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
 
     // 对象 id 来源（scenes / 专家 / 技能 / 案例 / 主题；无对象类返回空占位）
     let objects: Vec<ObjectId> = if need > 0 {
-        match ids_for(&spec.kind, account, need as usize, cur.max(0) as usize).await {
+        let resolved = if spec.kind == "expert-task" {
+            expert_tasks::resolve(account, task).await.map(|expert| vec![expert])
+        } else {
+            ids_for(&spec.kind, account, need as usize, cur.max(0) as usize).await
+        };
+        match resolved {
             Ok(list) => list,
             Err(error) => {
                 return TaskReport {
@@ -655,7 +661,14 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
     }
 
     // 按 kind 分派上报（各 kind 的域/指纹/事件形状在 events.rs）
-    let report_error = events::light_up(account, code, &spec.kind, &objects, need as usize).await;
+    let report_error = if spec.kind == "expert-task" {
+        match objects.first() {
+            Some(expert) => expert_tasks::use_expert(account, expert).await.err(),
+            None => Some("任务未提供指定专家".to_string()),
+        }
+    } else {
+        events::light_up(account, code, &spec.kind, &objects, need as usize).await
+    };
     if let Some(error) = report_error {
         logging::log("[Growth]", &format!("{uid8} {code}: 上报失败 {error}"));
         return TaskReport {

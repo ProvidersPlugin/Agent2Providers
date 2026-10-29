@@ -445,14 +445,14 @@ function growthRow(row) {
         }),
         result ? el('span', { class: 'ck-task-pts', text: result.message || '' }) : null,
         el('span', { class: 'ck-task-st' },
-          task.unforgeable
-            ? badge('需真实操作', 'plain')
-            : !task.supported
-              ? badge('暂不支持', 'plain')
-              : task.status === 'claimed'
-                ? badge('已领取', 'ok')
-                : task.status === 'completed'
-                  ? badge('可领取', 'brand')
+          task.status === 'claimed'
+            ? badge('已领取', 'ok')
+            : task.status === 'completed' || (task.target > 0 && task.current >= task.target)
+              ? badge('可领取', 'brand')
+              : task.unforgeable
+                ? badge('需真实操作', 'plain')
+                : !task.supported
+                  ? badge('暂不支持', 'plain')
                   : task.locked
                     ? badge('未解锁', 'plain')
                     : badge('可完成', 'warn')),

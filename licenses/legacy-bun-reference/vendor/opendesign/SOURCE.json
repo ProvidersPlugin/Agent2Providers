@@ -1,0 +1,15 @@
+{
+  "source": "https://github.com/magpie-community/plugins",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-opendesign-auth",
+    "version": "0.1.7",
+    "path": "packages/opendesign"
+  },
+  "files": [
+    { "source": "packages/opendesign/index.mjs", "destination": "index.mjs" },
+    { "source": "packages/opendesign/models.mjs", "destination": "models.mjs" },
+    { "source": "packages/opendesign/package.json", "destination": "package.json" },
+    { "source": "LICENSE", "destination": "LICENSE" }
+  ]
+}

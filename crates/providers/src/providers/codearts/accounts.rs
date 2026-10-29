@@ -206,7 +206,24 @@ pub(super) fn account_view(secret: &Value) -> Value {
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
+    public.insert(
+        "accessTokenExpiresAt".to_string(),
+        credential.as_ref().and_then(Credential::expires_at_ms).map(Value::from).unwrap_or(Value::Null),
+    );
+    public.insert("hasAccessToken".to_string(), Value::Bool(available));
     public.insert("hasRefreshToken".to_string(), Value::Bool(can_refresh));
+    public.insert(
+        "refreshTokenExpiresAt".to_string(),
+        credential.as_ref()
+            .and_then(|value| super::authorization::expires_at_ms(&value.refresh_token))
+            .map(Value::from).unwrap_or(Value::Null),
+    );
+    let relogin = super::authorization::relogin_error(secret);
+    public.insert("needsRelogin".to_string(), Value::Bool(relogin.is_some()));
+    public.insert(
+        "needsReloginReason".to_string(),
+        relogin.map(|error| Value::String(error.message)).unwrap_or(Value::Null),
+    );
     public.insert("available".to_string(), Value::Bool(available));
     // 本家没有版本概念（恒 cn），但前端按 `edition` 分组的地方要能读到空值
     public.insert("edition".to_string(), Value::Null);

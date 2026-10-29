@@ -1,0 +1,22 @@
+{
+  "source": "https://github.com/magpie-community/plugins",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-minimax-auth",
+    "version": "0.1.7",
+    "path": "packages/minimax"
+  },
+  "files": [
+    { "source": "packages/minimax/index.mjs", "destination": "index.mjs" },
+    { "source": "LICENSE", "destination": "LICENSE" }
+  ],
+  "derivedFiles": [
+    { "source": "packages/minimax/index.mjs", "destination": "index.mjs", "purpose": "Public plugin entry point and original exports" },
+    { "source": "packages/minimax/index.mjs", "destination": "identity.mjs", "purpose": "Regional identities, signed account API and value validation" },
+    { "source": "packages/minimax/index.mjs", "destination": "oauth.mjs", "purpose": "Device OAuth, token validation and shared refresh locks" },
+    { "source": "packages/minimax/index.mjs", "destination": "models.mjs", "purpose": "Static and live model catalogs" },
+    { "source": "packages/minimax/index.mjs", "destination": "balance.mjs", "purpose": "Membership, plan allowance and credits ledger" },
+    { "source": "packages/minimax/index.mjs", "destination": "checkin.mjs", "purpose": "Daily check-in requests and result validation" },
+    { "source": "packages/minimax/index.mjs", "destination": "plugin.mjs", "purpose": "Plugin factory, auth persistence, hooks and request handling" }
+  ]
+}

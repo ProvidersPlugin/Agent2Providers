@@ -87,6 +87,89 @@ impl EventDecoder {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct ByteLines {
+    pending: Vec<u8>,
+    skip_lf: bool,
+    first_line_seen: bool,
+}
+
+impl ByteLines {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for &byte in bytes {
+            if self.skip_lf {
+                self.skip_lf = false;
+                if byte == b'\n' { continue; }
+            }
+            if byte == b'\r' || byte == b'\n' {
+                let raw = std::mem::take(&mut self.pending);
+                let raw = if self.first_line_seen { raw.as_slice() }
+                    else { raw.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&raw) };
+                if let Ok(line) = std::str::from_utf8(raw) { lines.push(line.to_string()); }
+                self.first_line_seen = true;
+                self.skip_lf = byte == b'\r';
+            } else {
+                self.pending.push(byte);
+            }
+        }
+        lines
+    }
+
+    pub(crate) fn finish(&mut self) -> Option<String> {
+        let raw = std::mem::take(&mut self.pending);
+        if raw.is_empty() { return None; }
+        std::str::from_utf8(&raw).ok().map(str::to_string)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DataEvents {
+    decoder: EventDecoder,
+    pending: Vec<u8>,
+}
+
+impl DataEvents {
+    pub(crate) fn new() -> Self { Self::default() }
+
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        let previous = self.pending.len();
+        self.pending.extend_from_slice(bytes);
+        let mut events = Vec::new();
+        let mut offset = 0;
+        let mut drained = 0;
+        while offset < bytes.len() {
+            let mut complete = false;
+            offset += self.decoder.feed(&bytes[offset..], |data| {
+                complete = true;
+                if let Ok(text) = std::str::from_utf8(data) { events.push(text.to_string()); }
+                true
+            });
+            if complete { drained = previous + offset; } else { break; }
+        }
+        self.pending.drain(..drained);
+        if self.pending.len() > EventDecoder::MAX_EVENT_BYTES { self.pending.clear(); }
+        events
+    }
+
+    pub(crate) fn finish(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        self.decoder.finish(|data| {
+            if !is_done(data) {
+                if let Ok(text) = std::str::from_utf8(data) { events.push(text.to_string()); }
+            }
+            false
+        });
+        self.pending.clear();
+        events
+    }
+
+    pub(crate) fn take_pending(&mut self) -> Vec<u8> {
+        self.decoder = EventDecoder::default();
+        std::mem::take(&mut self.pending)
+    }
+}
+
 pub(crate) fn is_done(data: &[u8]) -> bool {
     std::str::from_utf8(data).is_ok_and(|text| text.trim() == "[DONE]")
 }

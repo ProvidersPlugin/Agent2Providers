@@ -102,7 +102,7 @@ pub async fn post_form_value(
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
     timeout_ms: Option<u64>,
 ) -> Result<Value, GatewayError> {
-    let client = crate::http::client(proxy, "direct");
+    let client = crate::http::control_client(proxy, "direct");
     let mut builder = client
         .post(url)
         .header("Accept", "application/json, text/plain, */*")
@@ -151,7 +151,7 @@ pub async fn sse_post(
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
     what: &str,
 ) -> Result<reqwest::Response, GatewayError> {
-    let client = crate::http::client(proxy, "direct");
+    let client = crate::http::stream_client(proxy, "direct");
     let mut request = client.post(url).header("Accept", "text/event-stream");
     for (name, value) in headers {
         request = request.header(name.as_str(), value);

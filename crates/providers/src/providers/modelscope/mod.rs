@@ -35,6 +35,8 @@ pub mod errors;
 pub mod models;
 pub mod probe;
 pub mod region;
+mod transactions;
+mod image_generation;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture};
@@ -134,8 +136,8 @@ impl Provider for ModelScopeProvider {
             // 账号行：两个站点同一份申报（账号字段、余额形态、签到链路两地
             // 完全一致，差别只在域名）。
             //   `usage` —— 额度是魔粒钱包（`available_balance`），外加「今日已用
-            //     调用数」一行；`credit_detail` 让余额格挂出「积分明细」
-            //     （可用 / 冻结 / 今日已用三行）。
+            //     调用数」一行；`credit_detail` 挂出余额详情，三条 snapshot 读数
+            //     不作为积分包计算耗尽、到期或剩余比例。
             //   `edition: false` —— 地区由 provider id 直接表达（两家 provider、
             //     两个分组），不需要再渲染一个地区列。
             //   `identifier: userId` —— 身份键存的是上游的 HavanaId。
@@ -262,6 +264,17 @@ impl Provider for ModelScopeProvider {
         content_or_fatal(status, body, message, upstream_code)
     }
 
+    fn supports_image_generation(&self) -> bool { true }
+    fn supports_image_editing(&self) -> bool { true }
+
+    fn build_image<'a>(&'a self, ctx: &'a PluginCtx, req: agent2api_provider_sdk::images::ImageRequest) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build(ctx, req, self.region, false))
+    }
+
+    fn build_image_edit<'a>(&'a self, ctx: &'a PluginCtx, req: agent2api_provider_sdk::images::ImageRequest) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build(ctx, req, self.region, true))
+    }
+
     // ── 凭证 ──────────────────────────────────────────────────
 
     /// 取可用令牌。本家**没有续期**：这里只做「记录里有没有令牌」的检查，
@@ -304,25 +317,19 @@ impl Provider for ModelScopeProvider {
     ) -> SendFuture<'a, proto::RefreshOutcome> {
         Box::pin(async move {
             let region = self.region;
-            let token = match ctx.store_get(region.provider_id(), account).await {
-                Ok(found) => match credentials::token_of(&found.secret) {
-                    Ok(token) => token,
-                    Err(reason) => return Ok(proto::RefreshOutcome::failed(reason)),
+            let api = match ctx.store_get(region.provider_id(), account).await {
+                Ok(found) => match client::ControlClient::from_store(ctx, region, &found) {
+                    Ok(api) => api,
+                    Err(error) => return Ok(proto::RefreshOutcome::failed(error)),
                 },
-                Err(_) if account.is_empty() => {
-                    agent2api_provider_sdk::log_info!(
-                        "[Models] ModelScope {}模型目录刷新跳过：尚未添加账号",
-                        region.label()
-                    );
+                Err(agent2api_provider_sdk::StoreError::NotFound) if account.is_empty() => {
                     return Ok(proto::RefreshOutcome::unchanged());
                 }
                 Err(error) => {
-                    return Ok(proto::RefreshOutcome::failed(format!(
-                        "读取 ModelScope 账号失败：{error}"
-                    )))
+                    return Ok(proto::RefreshOutcome::failed(format!("读取 ModelScope 账号失败：{error}")));
                 }
             };
-            Ok(models::refresh(region, &token, force, &ctx.env.proxy).await)
+            Ok(models::refresh(region, &api, force).await)
         })
     }
 
@@ -339,13 +346,8 @@ impl Provider for ModelScopeProvider {
         account: &'a str,
     ) -> SendFuture<'a, proto::UsageReport> {
         Box::pin(async move {
-            let region = self.region;
-            let found = ctx
-                .store_get(region.provider_id(), account)
-                .await
-                .map_err(|error| format!("读取 ModelScope 账号失败：{error}"))?;
-            let token = credentials::token_of(&found.secret)?;
-            balance::query_usage(region, &token, &ctx.env.proxy).await
+            let api = client::ControlClient::for_account(ctx, self.region, account).await?;
+            balance::query_usage(&api).await
         })
     }
 
@@ -356,13 +358,8 @@ impl Provider for ModelScopeProvider {
         account: &'a str,
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(async move {
-            let region = self.region;
-            let found = ctx
-                .store_get(region.provider_id(), account)
-                .await
-                .map_err(|error| format!("读取 ModelScope 账号失败：{error}"))?;
-            let token = credentials::token_of(&found.secret)?;
-            checkin::claim(region, &token, &ctx.env.proxy).await
+            let api = client::ControlClient::for_account(ctx, self.region, account).await?;
+            checkin::claim(&api).await
         })
     }
 
@@ -408,8 +405,8 @@ impl Provider for ModelScopeProvider {
             if token.is_empty() {
                 return Err("缺少令牌（accessToken / apiKey / token / session）".to_string());
             }
-            // 探活：拿身份 + 顺带触发当日签到（见 `probe.rs` 的模块头）
-            let identity = probe::identify(region, &token, &ctx.env.proxy).await?;
+            let api = client::ControlClient::new(region, token.clone(), input.proxy.as_ref(), &ctx.env.proxy)?;
+            let identity = probe::identify(&api, region).await?;
             let user_id = identity.user_id.trim().to_string();
             let id = format!("{}{user_id}", region.account_id_prefix());
             let display = input

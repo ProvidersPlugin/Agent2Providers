@@ -92,16 +92,9 @@ fn wallets(provider: &str, report: &Value, unit: &str, output: &mut Vec<Value>) 
 fn codearts(provider: &str, report: &Value, output: &mut Vec<Value>) {
     for row in report.get("wallets").and_then(Value::as_array).into_iter().flatten() {
         let kind = text(row, "type");
-        let benefit = kind == "benefit_daily_tokens";
-        let mut source = source(provider, kind, text(row, "displayName"), if benefit { "Token" } else { "积分" },
-            number(row.get(if benefit { "balance" } else { "creditRemaining" })),
-            number(row.get(if benefit { "allowanceTokens" } else { "creditTotal" })),
-            number(row.get(if benefit { "usedTokens" } else { "creditUsed" })));
-        if benefit {
-            source["models"] = report.get("quotaBenefitModels").cloned().unwrap_or(json!([]));
-            source["window"] = json!({ "reset": "daily", "utcOffsetMinutes": 480 });
-            source["unlimited"] = row.get("unlimited").cloned().unwrap_or(json!(false));
-        }
+        if !kind.starts_with("meter:") { continue; }
+        let source = source(provider, kind, text(row, "displayName"), "积分",
+            number(row.get("creditRemaining")), number(row.get("creditTotal")), number(row.get("creditUsed")));
         if number(source.get("remaining")).is_some() || number(source.get("used")).is_some() { output.push(source); }
     }
 }

@@ -20,6 +20,8 @@
 //! 见 `plugin_accounts::plugin_update_secret` 的说明：两个并发刷新会互相覆盖。
 //! [`save`] 强制调用方传入**读到时的那份 secret**，网关只在值没变时才写。
 
+use std::borrow::Cow;
+
 use agent2api_provider_sdk::{PluginCtx, StoreAccount, StoreProxy};
 use serde_json::{Map, Value};
 
@@ -37,6 +39,7 @@ pub async fn record(
     let found = ctx.store_get(provider, account).await.map_err(|error| {
         GatewayError::with_status(401, format!("读取账号失败：{error}"))
     })?;
+    validate_secret(&found.secret)?;
     Ok(record_of(&found))
 }
 
@@ -61,19 +64,21 @@ pub async fn list(
 /// `id` / `provider` 与运行时出口以网关为准；被覆盖的凭证字段保留原值供条件更新。
 pub fn record_of(account: &StoreAccount) -> Value {
     let mut merged = Map::new();
-    if let Some(object) = account.public.as_object() {
+    let public = object_view(&account.public);
+    let secret = object_view(&account.secret);
+    if let Some(object) = public.as_ref() {
         if let Some(name) = object.get("name") {
             merged.insert("name".to_string(), name.clone());
         }
     }
-    if let Some(object) = account.secret.as_object() {
-        for (key, value) in object {
+    if let Some(object) = secret.as_ref() {
+        for (key, value) in object.iter() {
             merged.insert(key.clone(), value.clone());
         }
     }
     let mut originals = Map::new();
     for (key, value) in [("id", &account.id), ("provider", &account.provider)] {
-        if let Some(original) = account.secret.get(key) {
+        if let Some(original) = secret.as_ref().and_then(|fields| fields.get(key)) {
             originals.insert(key.to_string(), original.clone());
         }
         merged.insert(key.to_string(), Value::String(value.clone()));
@@ -83,10 +88,10 @@ pub fn record_of(account: &StoreAccount) -> Value {
     }
     let mut injected: Vec<&str> = ["id", "provider", "name"]
         .into_iter()
-        .filter(|key| account.secret.get(*key).is_none())
+        .filter(|key| secret.as_ref().and_then(|fields| fields.get(*key)).is_none())
         .collect();
     if let Some(proxy) = &account.proxy {
-        if let Some(original) = account.secret.get("proxy") {
+        if let Some(original) = secret.as_ref().and_then(|fields| fields.get("proxy")) {
             merged.insert("_agent2apiOriginalProxy".to_string(), original.clone());
         } else {
             injected.push("proxy");
@@ -107,11 +112,39 @@ pub fn record_of(account: &StoreAccount) -> Value {
         "_agent2apiRecordKeys".to_string(),
         serde_json::json!(injected),
     );
+    if account.secret.is_string() {
+        // 旧宿主的条件写回按原始 JSON 字符串比较，不能只带解析后的对象。
+        merged.insert("_agent2apiOriginalSecret".to_string(), account.secret.clone());
+    }
     Value::Object(merged)
+}
+
+fn object_view(value: &Value) -> Option<Cow<'_, Map<String, Value>>> {
+    match value {
+        Value::Object(fields) => Some(Cow::Borrowed(fields)),
+        Value::String(text) => match serde_json::from_str::<Value>(text).ok()? {
+            Value::Object(fields) => Some(Cow::Owned(fields)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn validate_secret(value: &Value) -> Result<(), GatewayError> {
+    if object_view(value).is_some() {
+        return Ok(());
+    }
+    Err(GatewayError::with_status(
+        400,
+        "账号凭据存储形态异常：pluginSecret 必须是对象或包含对象的 JSON 字符串；请检查导入记录，不要反复重新登录",
+    ))
 }
 
 /// 只移除记录投影补入的字段；凭证本来含有的 name 等字段必须参与比较再写。
 pub fn secret_view(record: &Value) -> Value {
+    if let Some(original) = record.get("_agent2apiOriginalSecret") {
+        return original.clone();
+    }
     let mut secret = record.clone();
     if let Some(object) = secret.as_object_mut() {
         let injected = object.remove("_agent2apiRecordKeys");
@@ -175,7 +208,8 @@ pub async fn save(
 /// AtomCode 的 userId…）。续期只该动令牌那几个键 —— 整份替换会把身份件丢掉，
 /// 而丢了它们账号就永远续不了期。
 pub fn with_fields(secret: &Value, fields: &[(&str, Value)]) -> Value {
-    let mut next = secret.clone();
+    let Some(object) = object_view(secret) else { return secret.clone() };
+    let mut next = Value::Object(object.into_owned());
     let Some(object) = next.as_object_mut() else {
         return next;
     };

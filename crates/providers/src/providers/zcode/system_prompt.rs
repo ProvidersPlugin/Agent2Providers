@@ -1,5 +1,5 @@
 //! Start Plan 的系统提示词、缓存断点和上下文前缀。
-//! 装配开启时固定三块，客户端系统正文合入第三块；关闭时保留客户端正文。
+//! 装配开启时固定官方三块，客户端系统正文合入已有用户消息。
 
 use std::sync::OnceLock;
 
@@ -83,8 +83,11 @@ pub(super) fn apply_start_plan(
     })?;
     if let Some(data) = data {
         let texts = merged_texts(data, model, region, override_blocks);
-        let blocks = system_blocks(&texts, object.get("system"));
-        object.insert("system".to_string(), Value::Array(blocks));
+        let custom = custom_system_text(object.get("system"));
+        object.insert("system".to_string(), Value::Array(system_blocks(&texts)));
+        if let Some(custom) = custom {
+            prepend_folded_system(object, custom)?;
+        }
         if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
             if !messages.is_empty() {
                 messages.insert(0, context_prefix_message(data));
@@ -180,17 +183,12 @@ fn substitute(text: &str, values: &[(&'static str, String)]) -> String {
     out
 }
 
-fn system_blocks(texts: &GatewayBlocks, existing: Option<&Value>) -> Vec<Value> {
+fn system_blocks(texts: &GatewayBlocks) -> Vec<Value> {
     let ephemeral = json!({ "type": "ephemeral" });
-    let mut dynamic = format!("\n\n{}", texts.dynamic);
-    if let Some(custom) = custom_system_text(existing) {
-        dynamic.push_str("\n\n");
-        dynamic.push_str(&custom);
-    }
     vec![
         text_block(texts.identity.clone(), Some(ephemeral.clone())),
         text_block(texts.stable.clone(), Some(ephemeral.clone())),
-        text_block(dynamic, Some(ephemeral)),
+        text_block(format!("\n\n{}", texts.dynamic), Some(ephemeral)),
     ]
 }
 
@@ -219,6 +217,37 @@ fn user_system_blocks(existing: Option<&Value>) -> Vec<Value> {
         })?;
         (!text.trim().is_empty()).then(|| text_block(text.to_string(), None))
     }).collect()
+}
+
+const FOLDED_SYSTEM_MARKER: &str = "请依据下面的会话要求处理用户消息。两者冲突时，以会话要求为准。\n\n会话要求：\n\n";
+
+fn prepend_folded_system(object: &mut Map<String, Value>, custom: String) -> Result<(), GatewayError> {
+    let message = object.get_mut("messages").and_then(Value::as_array_mut)
+        .and_then(|messages| messages.iter_mut().find(|message| {
+            message.get("role").and_then(Value::as_str) == Some("user")
+        })).ok_or_else(|| GatewayError::with_status(
+            400,
+            "套餐池请求带有系统提示词，但没有用户消息可承载会话要求；请至少保留一条用户消息",
+        ))?;
+    let prefix = format!("{FOLDED_SYSTEM_MARKER}{custom}\n\n用户消息：\n\n");
+    // 上游按会话结构校验；折叠只能修改已有消息，不能再增加一条 user。
+    match message.get_mut("content") {
+        Some(Value::String(text)) => *text = format!("{prefix}{text}"),
+        Some(Value::Array(blocks)) => {
+            if let Some(Value::Object(block)) = blocks.iter_mut().find(|block| {
+                block.get("type").and_then(Value::as_str) == Some("text")
+                    && block.get("text").and_then(Value::as_str).is_some()
+            }) {
+                if let Some(Value::String(text)) = block.get_mut("text") {
+                    *text = format!("{prefix}{text}");
+                }
+            } else {
+                blocks.push(text_block(prefix, None));
+            }
+        }
+        _ => message["content"] = Value::Array(vec![text_block(prefix, None)]),
+    }
+    Ok(())
 }
 
 fn text_block(text: String, cache_control: Option<Value>) -> Value {

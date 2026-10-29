@@ -1,0 +1,120 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-factory-auth",
+    "version": "0.1.38",
+    "directory": "packages/factory"
+  },
+  "files": [
+    {
+      "source": "packages/factory/anthropic-tools.mjs",
+      "destination": "anthropic-tools.mjs"
+    },
+    {
+      "source": "packages/factory/client-phrases.json",
+      "destination": "client-phrases.json"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "LICENSE"
+    }
+  ],
+  "derivedFiles": [
+    {
+      "destination": "index.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": [
+        "Replaced extracted top-level definitions with static local module imports; retained the FactoryAuthPlugin entry point and narrowed _internal to protocol helpers without importing disabled identity adapters.",
+        "The refresh lock, renewed-token cache and whoami timestamp cache remain in the original single FactoryAuthPlugin invocation scope, shared by all its accounts and loaders; the synthetic session ID and message metadata were removed.",
+        "Forwarding now uses only protocol, tool-schema, Fast Mode and request-size helpers; it does not call droidBody, anthropicBody, sanitizeBody or any client-context helper.",
+        "Every forwarded upstream 403 is returned as the original Response without reading its body, rebuilding its error, adding sign-in headers or retrying under another organization; a 403 after the permitted 413 size retry is preserved too.",
+        "Removed synthetic factory-cli, fixed OpenAI organization, routing-source and placeholder Anthropic key metadata; real caller client headers are preserved and only loader placeholder API keys are stripped."
+      ]
+    },
+    {
+      "destination": "constants.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Extracted existing provider identity, endpoints, OAuth client identity and refresh timing constants without changing values. Marked the retained Droid VERSION constant as historical reference only; default requests do not advertise that client build."]
+    },
+    {
+      "destination": "models.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Extracted existing model metadata, promotions, prices and catalog builders; model arrays and lookup maps remain single module instances. Updated the sampling compatibility comment to reference the protocol-only openaiBody helper."]
+    },
+    {
+      "destination": "http.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Extracted existing FactoryStatus, refusal classification, upstream identifiers, error messages and response helpers. The historical explain helper is no longer exported from the entry or used to rewrite 403 responses; its generic wording now accurately says identity rewriting and access-restriction bypass are disabled."]
+    },
+    {
+      "destination": "auth.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Extracted existing token, WorkOS device sign-in, organization reconciliation and API-key helpers; stateful refresh coordination remains in index.mjs. factoryHeaders now supplies only account bearer authentication and selected organization, without fabricating Factory CLI client, version or User-Agent headers."]
+    },
+    {
+      "destination": "usage.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Extracted existing usage windows, timestamp and currency formatting and standard_only option without changing their bodies or values."]
+    },
+    {
+      "destination": "client-context.mjs",
+      "sources": ["packages/factory/index.mjs", "packages/factory/client-phrases.json"],
+      "changes": [
+        "Retained the extracted upstream client-context routines as licensed historical reference only; default Factory forwarding intentionally does not import, execute or expose them.",
+        "The retained reference uses a static JSON import in place of readFileSync(new URL(..., import.meta.url)); its original JSON values, filtering and FALLBACK_PHRASES are unchanged, but neither JSON nor fallback participates in default forwarding.",
+        "Added an explicit reference-only header; no default identity replacement, reminder rewriting, compaction rewriting or refused-phrase Unicode/JSON encoding remains connected."
+      ]
+    },
+    {
+      "destination": "requests.mjs",
+      "sources": ["packages/factory/index.mjs"],
+      "changes": ["Retained Fast Mode and attachment-size handling. Replaced droidBody/anthropicBody with protocol-only openaiBody/anthropicProtocolBody, limited to unsupported sampling or streaming-option removal. geminiBody now changes model/stream/systemInstruction shape only and preserves all text and part order. Removed promptOpenings, droidChat, sanitizeBody and every client-context import; no Droid preamble, identity substitution or phrase escaping is performed."]
+    },
+    {
+      "destination": "package.json",
+      "sources": ["packages/factory/package.json"],
+      "changes": ["Updated only the files list to include all split runtime modules, LICENSE and SOURCE.json and omit the uncopied README.md; package name, version and entry point are unchanged."]
+    }
+  ],
+  "intentionallyDisabled": [
+    {
+      "feature": "Automatic Droid identity and caller-text rewriting",
+      "scope": "All default model-forwarding routes",
+      "details": [
+        "No Droid fixed-line insertion, identity substitution, billing-line removal or system/history/tool-text rewriting.",
+        "client-context.mjs, client-phrases.json and FALLBACK_PHRASES are retained as reference only and unreachable from the entry dependency graph.",
+        "No refused-phrase Unicode escaping, JSON-string wrapping, reminder rewriting or compaction rewriting."
+      ]
+    },
+    {
+      "feature": "Synthetic client metadata",
+      "scope": "Model forwarding and shared authenticated Factory headers",
+      "details": [
+        "No synthesized Factory CLI identity/version/User-Agent, session/message/routing-source identifiers, OpenAI organization marker or Anthropic placeholder key.",
+        "The caller's real client headers stay intact; account authentication, selected organization and model-provider routing remain active.",
+        "The upstream WorkOS device-flow client_id is retained as its OAuth protocol parameter, not copied into model-request identity metadata."
+      ]
+    },
+    {
+      "feature": "Rewriting or retrying model-access refusals",
+      "scope": "Every upstream model HTTP 403, including one received after a 413 size retry",
+      "details": [
+        "Status, statusText, headers, original error code/message and response body stream are returned unchanged.",
+        "No refusal-text parsing, new permission_error envelope, added explanation, sign-in header or organization retry is performed.",
+        "Refresh coordination and billing-usage organization reconciliation remain account-management functions; they do not retry a refused model request."
+      ]
+    }
+  ],
+  "defaultSupportRestrictions": {
+    "policy": "Forward caller identity and content faithfully; Factory's actual client, plan, organization, region and usage-policy decisions determine access. There is no compatibility promise based on hiding refused text or impersonating Droid.",
+    "thirdPartyScenariosNotPromised": [
+      "Claude Code or Claude Agent SDK identity/system prompts, attribution/billing text and generated environment/model/skill reminders rejected by Factory.",
+      "pi identity/system prompts and compaction or branch-summary text rejected by Factory.",
+      "Codex, Grok Build or other non-Factory clients on subscription routes that require Factory's own client identity or metadata.",
+      "History, user messages, tool output, tool arguments, restored skills or file text containing client phrases that Factory rejects."
+    ],
+    "nativeFactoryRequests": "Requests already carrying the caller's genuine Factory/Droid identity and client metadata are not replaced or fabricated; only declared protocol, schema, Fast Mode and request-size adaptations remain.",
+    "verification": "Static dependency/source checks and pure Bun compilation only; no runtime, credential, test or upstream-request validation."
+  }
+}

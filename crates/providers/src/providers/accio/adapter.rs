@@ -223,9 +223,9 @@ impl Provider for AccioProvider {
                 // 直接 await：插件的 `conversation` 本身就是 async 函数、sink 是
                 // 借用 —— 不必再绕一层通道（网关那版的 mpsc 是为了
                 // `ForwardOutcome::Stream` 那个 Stream 类型）。语义不变。
-                chat::drive_stream(ctx, source, translator, telemetry, limit, &mut sink, prefetched)
-                    .await;
-                return Ok(());
+                return chat::drive_stream(ctx, source, translator, telemetry, limit, &mut sink, prefetched)
+                    .await
+                    .map_err(GatewayError::into_message);
             }
             // 非流式：上游只支持流式，因此内部仍走流式拉取再聚合成完整响应
             let body = chat::drive_aggregate(ctx, response, translator, telemetry, &limit)

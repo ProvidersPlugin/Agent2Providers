@@ -20,6 +20,12 @@
 //! 全量重开一轮，用户无感（只是那一轮多传一次历史）。报错会让「客户端做了一件
 //! 合理的事」变成用户可见的失败。
 //!
+//! 同一条原则也管工具续接（规则 1）：客户端把上游返回的**一个** `tool_call`
+//! 批次展开成多个子调用、并给子调用 2+ 合成自己的 id（Hermes 的
+//! `expand_local_tool_batches` 就是这样），是完全合法的改写 —— 注册表里从来
+//! 没有那些 id。此时若按「集合必须严格相等」报 400，这个客户端会话会在 TTL
+//! 内**所有**重试上撞同一堵墙。所以集合对不上时同样作废会话、落规则 3 全量重建。
+//!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! 纯判定：不发网络请求、不持锁、不读盘；零 unwrap/expect/panic。
 
@@ -102,14 +108,34 @@ pub(super) fn decide(
         return Err(CatPawError::bad_request("tool_call_id 命中多个待处理工具会话"));
     }
     if let Some(session) = hits.into_iter().next() {
-        let continuation = continuation_message(raw_messages, &session)?;
-        return Ok(Decision {
-            mode: TurnMode::ToolContinuation,
-            conversation_id: session.conversation_id.clone(),
-            round_messages: None,
-            session: Some(session),
-            continuation: Some(continuation),
-        });
+        match continuation_message(raw_messages, &session) {
+            Ok(continuation) => {
+                return Ok(Decision {
+                    mode: TurnMode::ToolContinuation,
+                    conversation_id: session.conversation_id.clone(),
+                    round_messages: None,
+                    session: Some(session),
+                    continuation: Some(continuation),
+                });
+            }
+            Err(Diverged::Mismatch) => {
+                // 客户端改写了 tool_call_id（把一批展开成多个子调用、或上游发过
+                // 空 id 的 tool_use 块）：注册表里没有那些合成 id，续接无从谈起。
+                // 与 sync-mismatch 同一处置 —— 作废映射，交给规则 2/3 重建。
+                logging::verbose(
+                    "[CatPaw]",
+                    &format!(
+                        "会话 {} 的 tool_result 集合与待处理 tool_calls 不一致（tool-diverged），作废后重建",
+                        short_id(&session.conversation_id),
+                    ),
+                );
+                registry.invalidate_by_conversation(
+                    &session.conversation_id,
+                    InvalidationReason::SyncMismatch,
+                );
+            }
+            Err(Diverged::Malformed(error)) => return Err(error),
+        }
     }
 
     // ── 规则 2：长会话新轮次（x-session-id 命中注册表）────────────
@@ -245,14 +271,17 @@ pub(super) fn pending_call_ids(messages: &[Value]) -> Vec<String> {
 /// 上一轮上游返回、被客户端回显的），而本次请求的值不会过期。
 /// 回填是必需的：toolName 进指纹（`fingerprint.rs`），缺了会让客户端下一轮回显
 /// 的 tool 消息与注册表指纹对不上，误判「历史被改写」而全量重建。
-pub(super) fn continuation_message(
+///
+/// 出参区分「客户端改写了历史」（[`Diverged::Mismatch`]，调用方作废重建）与
+/// 「请求本身不合法」（[`Diverged::Malformed`]，照旧 400）。
+fn continuation_message(
     raw_messages: &[Value],
     session: &SessionRecord,
-) -> Result<Value, CatPawError> {
+) -> Result<Value, Diverged> {
     let Some(start) = pending_tool_call_start(raw_messages) else {
-        return Err(CatPawError::bad_request(
+        return Err(Diverged::Malformed(CatPawError::bad_request(
             "工具结果续接请求缺少对应的 assistant tool_calls",
-        ));
+        )));
     };
     let names: Vec<(String, String)> = raw_messages[start]
         .get("tool_calls")
@@ -272,7 +301,8 @@ pub(super) fn continuation_message(
                 .collect()
         })
         .unwrap_or_default();
-    let mut continuation = normalize_continuation_messages(&raw_messages[start + 1..])?;
+    let mut continuation = normalize_continuation_messages(&raw_messages[start + 1..])
+        .map_err(|error| Diverged::Malformed(error.into()))?;
     let is_single_tool = continuation.len() == 1
         && continuation
             .first()
@@ -280,9 +310,9 @@ pub(super) fn continuation_message(
             .and_then(Value::as_str)
             == Some("tool");
     if !is_single_tool {
-        return Err(CatPawError::bad_request(
+        return Err(Diverged::Malformed(CatPawError::bad_request(
             "工具结果续接请求只能包含当前 tool_call 对应的 tool 结果",
-        ));
+        )));
     }
     let message = continuation.remove(0);
     let blocks = message
@@ -314,27 +344,50 @@ pub(super) fn continuation_message(
         }
         rewritten.push(block);
     }
-    // 待响应集合必须与实际提交的 tool_result 完全一致（原实现同）
+    // 待响应集合必须与实际提交的 tool_result 一致。
+    //
+    // 不一致**不是客户端错误**：客户端把上游返回的一个 tool_call 批次展开成多个
+    // 子调用时，子调用 2+ 的 id 是它自己确定性合成的（注册表里从来没有过）；
+    // 上游发过空 toolCallId 的 tool_use 块时，注册集合也会小于客户端可见集合。
+    // 两种都是合法的历史改写 —— 交回调用方作废会话、走全量重建。
     if session.pending_call_ids.len() != seen.len()
         || session.pending_call_ids.iter().any(|id| !seen.contains(id))
     {
-        return Err(CatPawError::bad_request(
-            "tool_result 与待处理的 assistant tool_calls 不一致",
-        ));
+        return Err(Diverged::Mismatch);
     }
     let Some(mut object) = message.as_object().cloned() else {
-        return Err(CatPawError::bad_request("工具结果续接请求缺少 tool 消息"));
+        return Err(Diverged::Malformed(CatPawError::bad_request(
+            "工具结果续接请求缺少 tool 消息",
+        )));
     };
     object.insert("content".to_string(), Value::Array(rewritten));
     Ok(Value::Object(object))
+}
+
+/// 工具续接取不出可提交消息的两种原因（决定调用方是重建还是报错）。
+///
+/// 分开的理由：`Mismatch` 是「客户端做了一件合理的事」（改写 tool_call_id），
+/// 用户的问题本身没问题，作废会话重建即可；`Malformed` 是请求真的不合规
+/// （tool 消息结构不对、角色顺序错乱），照旧 400 让客户端看到原因。
+enum Diverged {
+    Mismatch,
+    Malformed(CatPawError),
 }
 
 /// 本轮「实际提交给上游」的消息指纹（写回指纹链用）。
 ///
 /// 长会话只提交增量、工具续接只提交那条 tool 消息 —— 必须与实际发出去的一致，
 /// 否则下一次  会在客户端历史里定位到错误的位置。
-pub(super) fn submitted_fingerprints(decision: &Decision) -> Vec<String> {
+///
+/// `synthetic_tail` = 末尾那条 user 是本地补的（客户端历史以 tool 结尾）：
+/// 它**不参与指纹**。指纹链的用途是在客户端历史里定位增量，而这条消息压根不在
+/// 客户端历史里 —— 写进链会让下一轮 `locate_increment` 找不到它、判成
+/// 「历史被改写」，于是每轮都全量重建。
+pub(super) fn submitted_fingerprints(decision: &Decision, synthetic_tail: bool) -> Vec<String> {
     let mut submitted = match &decision.round_messages {
+        Some(messages) if synthetic_tail => {
+            super::fingerprint::fingerprints_for(&messages[..messages.len().saturating_sub(1)])
+        }
         Some(messages) => super::fingerprint::fingerprints_for(messages),
         None => Vec::new(),
     };

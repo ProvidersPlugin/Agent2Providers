@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "scope": "Network module only; existing protocol/vendor provenance and all other runtime work are outside this record.",
+  "sources": [
+    {
+      "id": "magpie-network-reference",
+      "repository": "https://github.com/yetone/magpie.git",
+      "commit": "88ac42843dbc1c6d4a028a6fd8c7aecb7a781985",
+      "source": "internal/plugin/host.js",
+      "sourceSha256": "06f5631b4e14299acab803d834598577569409f636fc0563002e092891fd334a",
+      "sourceWorkingTreePath": "Acankao/magpie/internal/plugin/host.js",
+      "license": "MIT",
+      "licenseSource": "LICENSE",
+      "licenseDestination": "LICENSE-magpie",
+      "licenseSha256": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
+      "referenceLineRanges": [[124, 161], [225, 277], [338, 478], [553, 698]],
+      "derivation": "Network-only functional adaptation; not a copy of host main, account storage, login, provider hooks or RPC bootstrap."
+    }
+  ],
+  "derivedFiles": [
+    { "sourceId": "magpie-network-reference", "destination": "network.mjs", "boundary": "Explicit once-only installation and exported network scope/lifecycle API" },
+    { "sourceId": "magpie-network-reference", "destination": "network/common.mjs", "boundary": "Single ALS and inflight registry, safe errors, bounded lifecycles, proxy routing" },
+    { "sourceId": "magpie-network-reference", "destination": "network/fetch.mjs", "boundary": "Original Bun fetch, scoped proxy/signal, headers/idle deadlines, original-reader cancellation and redirect rerouting" },
+    { "sourceId": "magpie-network-reference", "destination": "network/http2.mjs", "boundary": "HTTP/2 CONNECT/SOCKS tunnel-to-TLS, scoped stream cancellation and bounded waits" },
+    { "sourceId": "magpie-network-reference", "destination": "network/tunnel.mjs", "boundary": "Bounded HTTP CONNECT and SOCKS5 negotiation, backpressured Duplex transport" },
+    { "sourceId": "magpie-network-reference", "destination": "network/bridge.mjs", "boundary": "New authenticated ephemeral loopback HTTP/CONNECT-to-SOCKS5 bridge; raw sockets avoid Bun Agent direct fallback" },
+    { "sourceId": "magpie-network-reference", "destination": "network/children.mjs", "boundary": "Scoped spawn/execFile/Bun child environment, stdio protection, deadlines and safe cancellation" }
+  ],
+  "implementationNotes": [
+    "Importing network.mjs does not install hooks, contact a vendor or execute a CLI. installNetwork(scopeGetter) installs only once and does not replace a previously selected getter.",
+    "networkScope.run and an optional host scopeGetter provide provider/owner/proxy/signal, optional control.signal and network timeout fields. Missing/initialization scopes fail closed. All outbound fetch signals are merged; caller-supplied deadlines remain effective.",
+    "Scope authorization: normal request scopes require a provider, valid owner and signal. Background login owner=null requires login/flow/control. Host-validated noSTORE commands require kind:command, commandAllowed:true, command:claude, provider:claude-subscription, fixed nonempty account (=storeID), and signal===control.signal; only child operations are allowed. Host-validated kind:normalize/networkAllowed:true/account:null/valid owner/signal/control/storeAllowed:false permits only fetch/HTTP2 validation, never children or store access. Owner activity and authority fields must be verified/constructed by the host, not copied from caller input.",
+    "Cross-origin redirects retain only standard accept/content headers and remove all custom/provider authentication headers, cookies, authorization, proxy headers and TLS server-name overrides. The same rule also removes future unknown authentication headers rather than relying on a short denylist.",
+    "Full-body convenience consumers enforce bufferedBody=8<<20 with pre-append remaining-byte checks, own byte-array copies and an exact-length final array; total retained payload never exceeds 8 MiB. Streaming has per-read bounds/backpressure, not a total size or duration limit.",
+    "scope.network.observer receives only frozen {method,status,ok,attempted} events with no URLs, headers, bodies, proxy settings or error causes. Observation cannot delay or reject an operation.",
+    "scopeCommandEnvironment(options,scope) reuses childOptions and returns {env,managedEnvironment,options,close}, creates no process, and releases owned bridges through close/signal. A long-lived ClaudeRun must supply its own Run control signal/time budget and retain/call close; a transient MCP/RPC request signal must not terminate the Run. This module does not change the Claude consumer's existing unsupported-SOCKS environment mapping or claim that consumer has completed SOCKS support.",
+    "Explicit direct and loopback routes never fall back to automatic environment proxies. Explicit account proxies ignore NO_PROXY and never retry direct after proxy failure.",
+    "Bun 1.3.14 does not implement proxy:false or respectNoProxy:false. Installation snapshots the proxy environment in memory and removes the automatic proxy variables once, as the Magpie host does. Every call receives an explicit route; reinjected automatic variables cause a safe failure.",
+    "SOCKS5/socks5h uses remote domain resolution, no-auth or RFC1929 username/password authentication. HTTP(S) fetch and async children use bounded loopback bridges; HTTP/2 uses the SOCKS tunnel directly. Bridges bind to numeric loopback and carry random in-memory authentication only.",
+    "HTTP/2 keeps target TLS verification and ALPN h2. No custom connection may bypass proxy scope, and a session cannot be reused across different proxy routes.",
+    "Header, handshake, idle, cancellation cleanup, inflight, bridge and child limits are bounded. Streaming bodies have no overall runtime-imposed deadline, only idle waits and supplied cancellation.",
+    "Child stdio never inherits host stdin/stdout/stderr, gateway base URL and Bun/Node options are removed, and PATH/HOME/provider CLI locations are retained. Errors do not include command arguments, proxy credentials, headers, response bodies or cause objects.",
+    "ChildProcess.prototype.spawn and Bun.spawn guard already captured Node child process functions; protected synchronous native delegation avoids double wrapping. Once-only Bun object-loader bindings return the actual guarded child_process/http2 exports to subsequent vendor imports without strings/eval. Installation must precede vendor import for fetch/HTTP2 captures.",
+    "Synchronous spawnSync/execFileSync with SOCKS5 fails explicitly because an in-process bridge cannot make progress while the event loop is blocked. No unsupported proxy is silently downgraded to direct.",
+    "HTTP/HTTPS proxy custom headers are supported for fetch/CONNECT; CLI environment proxy authentication is restricted to URL username/password. HTTP bridge rejects malformed or ambiguous HTTP framing and upgrades.",
+    "Controlled response clone/tee/preconnect and custom HTTP/2 connections are rejected to avoid unbounded buffering or cancellation/proxy bypass. Full-body convenience consumers are capped at 8 MiB; incremental streams are not capped in total. HTTP/HTTPS only; not a sandbox for arbitrary socket libraries or third-party CLIs that ignore proxy environment variables.",
+    "No credential files, tests, fakes, README, host/main/accounts/login/providers/protocol/vendor changes, version/CI operations, commits or pushes were created by this network task. Independent copying to desktop-tauri/subscription-runtime/shared is pending and owned by the separate copy task; no shared files were copied or modified here."
+  ],
+  "apiEvidence": [
+    {
+      "repository": "https://github.com/oven-sh/bun",
+      "ref": "bun-v1.3.14",
+      "source": "src/runtime/webcore/fetch.zig",
+      "lines": [675, 767],
+      "finding": "Original fetch supports string and object HTTP proxy options; false is not interpreted as an explicit no-proxy value in this release."
+    },
+    {
+      "repository": "https://github.com/oven-sh/bun",
+      "ref": "bun-v1.3.14",
+      "source": "src/runtime/webcore/fetch/FetchTasklet.zig",
+      "lines": [1108, 1139],
+      "finding": "NO_PROXY is applied even to explicit proxies; an absent parsed proxy falls back to environment resolution."
+    },
+    {
+      "repository": "https://github.com/oven-sh/bun",
+      "ref": "bun-v1.3.14",
+      "source": "src/js/node/_http_client.ts",
+      "lines": [277, 414],
+      "finding": "Bun HTTP client uses internal native fetch/agent.proxy, not the supplied already-open Agent.createConnection socket. Bridge implementation therefore uses raw net sockets only."
+    },
+    {
+      "repository": "https://github.com/oven-sh/bun",
+      "ref": "bun-v1.3.14",
+      "source": "src/js/node/child_process.ts",
+      "lines": [1290, 1365],
+      "finding": "ChildProcess.prototype.spawn enters Bun.spawn with its environment and stdio; both boundaries are guarded."
+    },
+    {
+      "repository": "https://github.com/oven-sh/bun",
+      "ref": "bun-v1.3.14",
+      "source": "src/js/node/net.ts",
+      "lines": [2354, 2408],
+      "finding": "Numeric-loopback listen establishes Bun.listen and an address synchronously; child-return contract can carry an already-bound bridge URL."
+    }
+  ]
+}

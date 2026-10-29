@@ -58,6 +58,8 @@ pub mod trae;
 pub mod workbuddy;
 #[cfg(feature = "zcode")]
 pub mod zcode;
+#[cfg(feature = "doubaowork")]
+pub mod doubaowork;
 
 use agent2api_provider_sdk::BoxProvider;
 
@@ -163,6 +165,8 @@ pub fn registry() -> Vec<BoxProvider> {
     list.push(Box::new(codearts::adapter::CODEARTS));
     #[cfg(feature = "antigravity")]
     list.push(Box::new(antigravity::adapter::ANTIGRAVITY));
+    #[cfg(feature = "doubaowork")]
+    list.push(Box::new(doubaowork::DoubaoWorkProvider));
 
     list
 }

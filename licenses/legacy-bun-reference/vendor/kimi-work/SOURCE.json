@@ -1,0 +1,13 @@
+{
+  "source": "https://github.com/magpie-community/plugins",
+  "commit": "0ea458b4a5319f025e0828f2600da57941e28867",
+  "package": {
+    "name": "@magpie-community/opencode-kimi-work-auth",
+    "version": "0.1.11",
+    "path": "packages/kimi-work"
+  },
+  "files": [
+    { "source": "packages/kimi-work/index.mjs", "destination": "index.mjs" },
+    { "source": "LICENSE", "destination": "LICENSE" }
+  ]
+}

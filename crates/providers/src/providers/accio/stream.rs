@@ -25,7 +25,13 @@
 //! ── panic=abort ────────────────────────────────────────────
 //! 本文件在转发热路径上，绝不 unwrap/expect/panic：取值一律走 Option 链。
 
+use std::collections::VecDeque;
+
+use futures::StreamExt;
 use serde_json::{json, Value};
+
+use crate::errors::GatewayError;
+use crate::sse_events::{is_done, EventDecoder};
 
 /// 一帧里解析出的 part
 #[derive(Clone, PartialEq, Debug)]
@@ -54,6 +60,14 @@ pub struct Frame {
 }
 
 impl Frame {
+    pub fn has_output(&self) -> bool {
+        self.parts.iter().any(|part| match part {
+            Part::Text(text) | Part::Thought(text) => !text.trim().is_empty(),
+            Part::FunctionCall { name, .. } => !name.trim().is_empty(),
+            Part::Other => false,
+        })
+    }
+
     /// 业务错误帧（上游用 HTTP 200 + 帧内错误码表达额度/鉴权失败）
     pub fn is_error(&self) -> bool {
         !self.error_code.is_empty() || !self.error_message.is_empty()
@@ -196,37 +210,79 @@ pub fn sse_done() -> String {
     "data: [DONE]\n\n".to_string()
 }
 
-/// 逐行缓冲（跨分片半行拼接）：SSE 的 `data:` 行可能被切在任意位置
-#[derive(Default)]
-pub struct LineBuffer {
-    pending: String,
+pub struct FrameStream {
+    source: futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>,
+    decoder: EventDecoder,
+    pending: VecDeque<Frame>,
+    ended: bool,
+    read_error: Option<std::io::Error>,
 }
 
-impl LineBuffer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 喂一段字节，产出**完整行**
-    pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        self.pending.push_str(chunk);
-        let mut lines = Vec::new();
-        while let Some(index) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=index).collect();
-            let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
-            lines.push(trimmed);
+impl FrameStream {
+    pub fn new(response: reqwest::Response) -> Self {
+        let source = response.bytes_stream().map(|item| {
+            item.map_err(|error| std::io::Error::other(crate::http::describe_chain(&error)))
+        });
+        Self {
+            source: crate::stall::idle_guard(
+                Box::pin(source),
+                std::time::Duration::from_millis(crate::timeouts::current().stream_idle_ms()),
+            ),
+            decoder: EventDecoder::default(),
+            pending: VecDeque::new(),
+            ended: false,
+            read_error: None,
         }
-        lines
     }
 
-    /// 取走还没成行的尾巴（**首帧预读换手时必须做**）。
-    ///
-    /// 预读把一个 chunk 里的完整行解析掉之后，同一 chunk 的末尾可能留着半行
-    /// （`data: {"content":{"pa`）。缓冲区不跟着交给续传方，那半行就永远丢了 ——
-    /// 续传方会把后半截当成一条新行去 JSON 解析，解析失败、**这一帧的内容
-    /// 静默丢掉**（且只在「帧恰好被切在 chunk 边界」时复现，是最难查的那类）。
-    pub fn take_pending(&mut self) -> String {
-        std::mem::take(&mut self.pending)
+    pub async fn next(&mut self) -> Result<Option<Frame>, GatewayError> {
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Ok(Some(frame));
+            }
+            if let Some(error) = self.read_error.take() {
+                return Err(GatewayError::with_status(
+                    502,
+                    format!("Accio 上游流式传输中断: {error}"),
+                ));
+            }
+            if self.ended {
+                return Ok(None);
+            }
+            match self.source.next().await {
+                Some(Ok(bytes)) => {
+                    let pending = &mut self.pending;
+                    let mut done = false;
+                    self.decoder.feed(&bytes, |data| {
+                        if is_done(data) || std::str::from_utf8(data).is_ok_and(|text| text.trim() == "[done]") {
+                            done = true;
+                            return true;
+                        }
+                        if let Some(frame) = std::str::from_utf8(data).ok().and_then(parse_frame) {
+                            let terminal = frame.turn_complete || frame.is_error();
+                            pending.push_back(frame);
+                            done = terminal;
+                            return terminal;
+                        }
+                        false
+                    });
+                    self.ended = done;
+                }
+                item => {
+                    self.ended = true;
+                    self.read_error = item.and_then(Result::err);
+                    let interrupted = self.read_error.is_some();
+                    let pending = &mut self.pending;
+                    self.decoder.finish(|data| {
+                        if let Some(mut frame) = std::str::from_utf8(data).ok().and_then(parse_frame) {
+                            if interrupted { frame.turn_complete = false; }
+                            pending.push_back(frame);
+                        }
+                        false
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -315,22 +371,24 @@ impl Translator {
                 Part::FunctionCall { id, name, args } => {
                     let index = self.accumulate_call(id, name, args);
                     // 先取快照再改标记：借用与可变借用分开，避免交叉持有
-                    let (announce, call_id, call_name) = match self.tool_state.get(index as usize) {
-                        Some(entry) => (entry.announced, entry.id.clone(), entry.name.clone()),
-                        None => (true, String::new(), String::new()),
+                    let (announce, call_id, call_name, call_args) = match self.tool_state.get(index as usize) {
+                        Some(entry) => (!entry.announced, entry.id.clone(), entry.name.clone(), entry.args.clone()),
+                        None => (false, String::new(), String::new(), String::new()),
                     };
+                    if announce && call_name.trim().is_empty() {
+                        continue;
+                    }
                     if let Some(entry) = self.tool_state.get_mut(index as usize) {
                         entry.announced = true;
                     }
-                    // 首帧（要报 id/name）或有参数可发时下发；首帧即使参数为空也发，
-                    // 否则客户端拿不到这个工具调用的名字
+                    // 首次具名声明携带已缓冲的参数，后续只下发新增参数。
                     if announce || !args.is_empty() {
                         self.saw_tool_call = true;
                         out.push(Delta::ToolCall {
                             index,
                             id: announce.then(|| call_id.clone()).filter(|value| !value.is_empty()),
                             name: announce.then(|| call_name.clone()).filter(|value| !value.is_empty()),
-                            arguments: Some(args.clone()),
+                            arguments: Some(if announce { call_args } else { args.clone() }),
                         });
                     }
                 }
@@ -404,9 +462,10 @@ impl Translator {
 
     /// 收尾的 finish_reason：上游给了就用它，没给按「有没有工具调用」推断
     pub fn final_finish_reason(&self) -> String {
-        self.finish_reason
-            .clone()
-            .unwrap_or_else(|| if self.saw_tool_call { "tool_calls".to_string() } else { "stop".to_string() })
+        if self.saw_tool_call && self.finish_reason.as_deref().is_none_or(|reason| reason == "stop") {
+            return "tool_calls".to_string();
+        }
+        self.finish_reason.clone().unwrap_or_else(|| "stop".to_string())
     }
 
     /// 收尾的工具调用（非流式聚合用）
@@ -425,6 +484,11 @@ impl Translator {
                 })
             })
             .collect()
+    }
+
+    pub fn has_output(&self) -> bool {
+        !self.content.trim().is_empty() || !self.reasoning.trim().is_empty()
+            || self.tool_state.iter().any(|entry| !entry.name.trim().is_empty())
     }
 
     pub fn content(&self) -> &str {

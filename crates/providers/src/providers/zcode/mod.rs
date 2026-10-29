@@ -51,6 +51,7 @@ pub mod anthropic_outbound;
 pub mod anthropic_shared;
 pub mod balance;
 pub mod captcha;
+pub mod checkin;
 pub mod claim;
 pub mod coding_key;
 pub mod config_sync;
@@ -122,7 +123,7 @@ pub fn plan_label(plan: &str) -> &'static str {
 }
 
 /// 套餐池请求的网关提示词开关说明。
-pub const OFFICIAL_PROMPT_NOTE: &str = "套餐池默认按三块装配：身份句、稳定段、动态段；客户端系统正文合入第三块，不新增第四块，也不会因此改成子代理。手动编辑的段优先于默认模板，未编辑的段随插件更新。关闭开关后只发送客户端正文，能否被接受取决于上游规则。3012 不等于额度耗尽，可能与请求兼容性或账号风控有关。";
+pub const OFFICIAL_PROMPT_NOTE: &str = "套餐池默认按三块装配：身份句、稳定段、动态段；客户端系统正文合入已有的首条用户消息，不追加系统块或独立消息，也不会因此改成子代理。手动编辑的段优先于默认模板，未编辑的段随插件更新。关闭开关后只发送客户端正文，能否被接受取决于上游规则。3012 不等于额度耗尽，可能与请求兼容性或账号风控有关。";
 
 // ── 「插件读网关用户配置」的两个约定键（`settings.get` 的 `key`）──────────
 // ZCode 的官方三段提示词（正文 + 说明）全在本 crate 里，但「装不装」
@@ -171,8 +172,9 @@ impl Provider for ZcodeProvider {
                 model_refresh: false,
                 // 套餐余额（billing + 监控两条通道）
                 usage: true,
-                // 没有签到：本家的运营玩法是「限时套餐领取」，走 claims
-                checkin: false,
+                // 每日签到 = 领当天那份赠送套餐（见 `checkin` 模块头）：
+                // 上游每天下发一份带日期段的新套餐，点一下就领 —— 那就是本家的签到
+                checkin: true,
                 claims: true,
                 // 服务端中介的 CLI 轮询：授权地址由上游给、回调在上游域名终结，
                 // 因此插件声明「轮询型」由网关发起并轮询（见 `login.rs`）
@@ -220,26 +222,25 @@ impl Provider for ZcodeProvider {
                 expiry: vec!["expiresAt".to_string()],
                 ..Default::default()
             })
-            // 签到能力申报：本家 `checkin` 恒 false（没有每日签到），但它有
-            // 「活动福利」——限时套餐领取。网关的签到中心按这一块决定「活动福利」
-            // 那张卡里列哪些账号（见 `api::checkin_center` 的 `plan_rows`），
-            // 不申报的话四个 ZCode 账号一个都不会出现。
+            // 签到能力申报：本家**有**每日签到 —— 就是「领当天那份赠送套餐」
+            // （见 `checkin` 模块头）。上游每天下发一份带日期段的新套餐，点一下
+            // 就领，那一动作就是这一家的签到。
             //
-            // 迁移到插件申报时漏掉了这一处：网关侧原来写死 `provider ==
-            // "zcode" || provider == "zcode-intl"`，改成读插件申报之后这里没有
-            // 对应补上，于是那张卡永远是「没有可领套餐的账号」。
+            // 同时申报 `plans: true`：签到中心「活动福利」那张卡也按这一位列
+            // 账号（见 `api::checkin_center` 的 `plan_rows`），两处展示的是同一
+            // 批账号、同一份活动。
             .with_checkin(proto::CheckinInfo {
                 description: Some(format!(
-                    "限时体验套餐领取 · 每日一份 · {}",
+                    "每日赠送套餐领取（每天 19:00 起可领）· {}",
                     self.region.label()
                 )),
-                // 领取走的是一次独立的「探测 + 领取」，不分档，所以只有一个
-                // `Claim` 档；`Full` 是「签到 + 领取都做」，本家没有签到。
-                modes: vec![proto::CheckinMode::Claim],
-                // **不参与每日签到**：本家没有签到链路（`checkin` 恒 false）。
-                // 不写这一位的话，申报本身会被网关当成「有签到」，四个账号会
-                // 进「每日签到」卡并每天落一条必然失败的记录。
-                daily: false,
+                // 只申报 `Checkin` 一档：签到中心按它给一颗「签到」按钮。
+                // 不再申报 `Claim` —— 那一档也是「探测 + 领取」，与本家的签到
+                // 是同一个动作，两颗按钮并排只会让用户以为它们不一样。
+                modes: vec![proto::CheckinMode::Checkin],
+                // 参与每日签到：定时任务按 `core::auto_checkin::times` 的 19:01
+                // 触发（那个时刻与 `checkin::daily_window_start` 是同一份事实）。
+                daily: true,
                 plans: true,
                 ..Default::default()
             })
@@ -316,12 +317,13 @@ impl Provider for ZcodeProvider {
             claim::refresh_app_version_override(ctx).await;
             let account = crate::store::record(ctx, self.region.provider_id(), &req.account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             if account.is_null() {
                 return Err("没有可用的 ZCode 账号，请先在「账号」页添加".to_string());
             }
             let client_headers = header_map(&req.headers);
             if plan_of(&account) == PLAN_START {
+                config_sync::ensure_captcha_config(self.region, account_proxy(&account).as_ref()).await;
                 // 网关自带提示词的两项用户配置（设置页那一栏）：插件通过
                 // `settings.get` 的约定键读到同一份 —— 否则界面上拨了开关、
                 // 实际发出去的请求不变。读不到时按默认值（装、无覆盖）。
@@ -335,7 +337,7 @@ impl Provider for ZcodeProvider {
                     official_prompt,
                     override_blocks.as_ref(),
                 )
-                .map_err(GatewayError::into_message);
+                .map_err(GatewayError::into_control_message);
             }
             coding_plan_request(self.region, &self.openai_base_url(), &account, &req.body)
         })
@@ -458,7 +460,7 @@ impl Provider for ZcodeProvider {
             claim::refresh_app_version_override(ctx).await;
             let token = session_access_token(ctx, self.region, account)
                 .await
-                .map_err(GatewayError::into_message)?;
+                .map_err(GatewayError::into_control_message)?;
             // 顺带一次「到点没」的配置同步（见 `config_sync::maybe_sync`）
             config_sync::maybe_sync(ctx).await;
             Ok(token)
@@ -517,11 +519,48 @@ impl Provider for ZcodeProvider {
         })
     }
 
+    /// 每日签到：领当天那份赠送套餐（`checkin::claim_daily_checkin`）。
+    ///
+    /// 与 `claim_status` / `claim`（手动领取）走同一条上游链路，差别只在
+    /// 无人值守的处置：拿不到验证码令牌时给中性结果而不是失败，见 `checkin`
+    /// 的模块头。
+    fn checkin<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+    ) -> SendFuture<'a, proto::CheckinReport> {
+        Box::pin(async move {
+            let value = checkin::claim_daily_checkin(ctx, self.region, account)
+                .await
+                .map_err(GatewayError::into_control_message)?;
+            Ok(checkin_report(&value))
+        })
+    }
+
+    /// 带 `manual` 的签到：本家没有写请求限流闸，两档执行体一致，只把
+    /// `retryAt` 透出去（网关的重试链读它）。
+    fn checkin_with_options<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        _manual: bool,
+    ) -> SendFuture<'a, agent2api_provider_sdk::CheckinResult> {
+        Box::pin(async move {
+            let value = checkin::claim_daily_checkin(ctx, self.region, account)
+                .await
+                .map_err(GatewayError::into_control_message)?;
+            Ok(agent2api_provider_sdk::CheckinResult {
+                report: checkin_report(&value),
+                retry_at: value.get("retryAt").and_then(Value::as_i64),
+            })
+        })
+    }
+
     /// 领取类活动的只读状态：探测当前可领的套餐（`GET /preview`）。
     ///
-    /// 本家**没有每日签到**（`checkin` 恒 false），替代它的是「限时套餐领取」：
-    /// 官方定期换一期，活动窗口里账号可以领一份额度。`refresh` 在这家没有意义
-    /// （预览本来就是实时的），签名里保留是为了协议一致。
+    /// 与每日签到是同一份活动（见 `checkin` 模块头），这里给的是「界面上点开
+    /// 活动福利卡时看到的清单」。`refresh` 在这家没有意义（预览本来就是实时的），
+    /// 签名里保留是为了协议一致。
     fn claim_status<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -909,6 +948,33 @@ async fn report_activation(
     }
 }
 
+/// 签到结果（`{success, outcome, msg}` 形状）→ 协议 `CheckinReport`。
+///
+/// 判据与 Qoder 的 `checkin_report` 同序：`alreadyCompleted` 优先于 `success`
+/// （今天已领要说成 `Done` 而不是「刚领到」—— 后者会误导界面播报积分），
+/// 中性未领取走 `inactive`（不落账、按 `retryAt` 重试），其余是 `Failed`。
+fn checkin_report(value: &Value) -> proto::CheckinReport {
+    let outcome = if value.get("alreadyCompleted").and_then(Value::as_bool) == Some(true) {
+        proto::CheckinOutcome::Done
+    } else if value.get("success").and_then(Value::as_bool) == Some(true) {
+        proto::CheckinOutcome::Claimed
+    } else if value.get("outcome").and_then(Value::as_str) == Some("inactive") {
+        proto::CheckinOutcome::Inactive
+    } else {
+        proto::CheckinOutcome::Failed
+    };
+    proto::CheckinReport {
+        outcome,
+        // 收益文案已经是人话（「领到「ZCode 1024 Dev Day」…」），直接透出
+        credit: value
+            .get("planName")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        streak: None,
+        message: value.get("msg").and_then(Value::as_str).map(str::to_string),
+    }
+}
+
 /// 一条可领套餐 → 前端 JSON（字段名与网关 `plan_to_json` 逐字相同）。
 fn plan_to_json(plan: &claim::ClaimablePlan) -> Value {
     serde_json::json!({
@@ -1257,7 +1323,7 @@ async fn session_access_token(
 ) -> Result<String, GatewayError> {
     let record = crate::store::record(ctx, region.provider_id(), account)
         .await
-        .map_err(|error| GatewayError::with_status(401, error.message))?;
+        .map_err(|error| GatewayError::with_status(error.status_code, error.message))?;
     if record.is_null() {
         return Err(GatewayError::with_status(
             401,
@@ -1269,9 +1335,10 @@ async fn session_access_token(
         _ => crate::store::pick(&record, &["accessToken", "access_token"]),
     };
     if token.is_empty() {
+        let field = if plan_of(&record) == PLAN_START { "jwt" } else { "accessToken" };
         return Err(GatewayError::with_status(
-            401,
-            "ZCode 账号缺少当前套餐通道的推理凭证，请重新登录",
+            400,
+            format!("ZCode 账号的 {} 凭据字段缺失（{field}）：请检查导入记录及 pluginSecret 的存储形态；重新登录不能修复字段序列化错误", plan_label(plan_of(&record))),
         ));
     }
     Ok(token)

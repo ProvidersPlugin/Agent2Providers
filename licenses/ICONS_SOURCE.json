@@ -1,0 +1,409 @@
+{
+  "formatVersion": 1,
+  "scope": "Brand-asset source and license inventory only; not runtime provider metadata.",
+  "pathBasis": {
+    "desktopFile": "relative to Agent2API repository root",
+    "pluginFile": "relative to Agent2Providers repository root"
+  },
+  "applicationLicenses": {
+    "Agent2API": {
+      "license": "AGPL-3.0",
+      "licenseFile": "LICENSE"
+    },
+    "Agent2Providers": {
+      "license": "AGPL-3.0",
+      "licenseFile": "LICENSE"
+    }
+  },
+  "licensingNote": "Application AGPL, Magpie MIT, Lobe Icons MIT and official OpenDesign Apache-2.0 are distinct. Not all brand trademarks or existing PNG assets are asserted to be MIT. Names and logos remain marks of their respective owners; software licenses do not grant general trademark rights or imply endorsement.",
+  "sources": {
+    "magpie": {
+      "repository": "https://github.com/yetone/magpie",
+      "revision": "88ac42843dbc1c6d4a028a6fd8c7aecb7a781985",
+      "iconDirectory": "internal/gui/assets/icons",
+      "attributionEvidence": "docs/reference.md:85-86 credits logos to lobehub/lobe-icons",
+      "licenseFile": "LICENSE"
+    },
+    "lobeIcons": {
+      "repository": "https://github.com/lobehub/lobe-icons",
+      "licenseRevisionVerified": "8b7bbc433d38437fa2b0cca58ae896917162b812",
+      "licenseUrl": "https://raw.githubusercontent.com/lobehub/lobe-icons/8b7bbc433d38437fa2b0cca58ae896917162b812/LICENSE",
+      "iconRevision": "copied from pinned local Magpie checkout; no direct Lobe Icons package version asserted"
+    },
+    "openDesign": {
+      "officialFavicon": "https://open-design.ai/favicon.svg",
+      "repository": "https://github.com/nexu-io/open-design",
+      "revision": "26d60298f8129e229a1c10aab4df7ca25b1e9ad3",
+      "repositoryBrandAsset": "https://raw.githubusercontent.com/nexu-io/open-design/26d60298f8129e229a1c10aab4df7ca25b1e9ad3/apps/web/public/brand-icon.svg",
+      "geometryVerified": "official favicon and pinned brand-icon.svg have identical path data and viewBox",
+      "licenseUrl": "https://raw.githubusercontent.com/nexu-io/open-design/26d60298f8129e229a1c10aab4df7ca25b1e9ad3/LICENSE"
+    }
+  },
+  "licenseNotices": {
+    "magpie": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 yetone",
+      "text": "MIT License\n\nCopyright (c) 2026 yetone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n"
+    },
+    "lobeIcons": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023 LobeHub",
+      "text": "MIT License\n\nCopyright (c) 2023 LobeHub\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n"
+    },
+    "openDesign": {
+      "license": "Apache-2.0",
+      "copyright": "Copyright 2026 Open Design contributors",
+      "text": "                                 Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for describing the origin of the Work and\n      reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Support. While redistributing the Work or\n      Derivative Works thereof, You may choose to offer, and charge a\n      fee for, acceptance of support, warranty, indemnity, or other\n      liability obligations and/or rights consistent with this License.\n      However, in accepting such obligations, You may act only on Your\n      own behalf and on Your sole responsibility, not on behalf of any\n      other Contributor, and only if You agree to indemnify, defend,\n      and hold each Contributor harmless for any liability incurred by,\n      or claims asserted against, such Contributor by reason of your\n      accepting any such warranty or support.\n\n   END OF TERMS AND CONDITIONS\n\n   APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright 2026 Open Design contributors\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.\n"
+    }
+  },
+  "svgSafety": {
+    "elements": [
+      "svg",
+      "title",
+      "rect",
+      "g",
+      "path",
+      "defs",
+      "linearGradient",
+      "stop"
+    ],
+    "activeElements": false,
+    "eventHandlers": false,
+    "externalResources": false,
+    "onlyUrlReferences": "fragment-local gradients",
+    "currentColor": false,
+    "pathsChanged": false
+  },
+  "assets": [
+    {
+      "brand": "Cursor",
+      "providerIds": [
+        "cursor"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/cursor.svg",
+      "pluginFile": "assets/cursor.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/cursor.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "0cb51bddf264ae108926fd554c063ef40fc1aac3c5c921ddb39ad184e4e5d0ef",
+      "outputSha256": "99e7ec01ab0018b7dc8ca38b1c0f876c1ca2149c29a754dab3c588d4fc6fd2d9",
+      "unchangedPathSha256": "cdd5e1bfb853a05516afd21f5c47613f780940dde3b2ba4bcddb404491d5cfce",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "Kiro",
+      "providerIds": [
+        "kiro"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/kiro.svg",
+      "pluginFile": "assets/kiro.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/kiro-color.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "4eae4d6e818da7342c32c7d443ab7c97b93c544db9af379d5b5bf7f0a3127d66",
+      "outputSha256": "eea849cfabbdf27539ac4ab2c8a6147ad780f5b756e32741b50b50b94f8418b2",
+      "unchangedPathSha256": "7eb7acedb2d5048fe81a9a9584973ac64ca227470f61590831da5bb8ff101543",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths and palette",
+      "fallback": null
+    },
+    {
+      "brand": "Devin",
+      "providerIds": [
+        "devin"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/devin.svg",
+      "pluginFile": "assets/devin.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/devin.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "8d197b0c31522517ffa896cd4a1ee65719eb73bff9eb9bbf7edf64db6b1a573d",
+      "outputSha256": "884834b89098b3a51116c52bded196fab3b4c47feeefdef7f373ebc08dbc405d",
+      "unchangedPathSha256": "83050892a30b25ffd094b102210900aac4478931f0a41c7a7ce7795cfb9af653",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "Factory",
+      "providerIds": [
+        "factory"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/factory.svg",
+      "pluginFile": "assets/factory.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/factory.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "6a502c844029a326e77aff6554210629ee3e735d81ae42d2b98be0eb20c48bf3",
+      "outputSha256": "55ab1d9b635e391229f1c9ce6f0d91f3759cabc77cf7184cf237f7110b3ec7f4",
+      "unchangedPathSha256": "913cb8bc08cc7d3c09516002a399331d8cf7a64d6a7090d62ace8adb85fea4f1",
+      "originalViewBox": "78 78 352 352",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "Zed",
+      "providerIds": [
+        "zed"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/zed.svg",
+      "pluginFile": "assets/zed.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/zed.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "f0529485410560c5be58f724330c4f61d84537c4ffc1a5099b3bd58062efd58c",
+      "outputSha256": "002def34677e5dff8891fcae9763230510860ecf86197c11c7f62b47301a9bd4",
+      "unchangedPathSha256": "f17e2e9f8d56d9d2f6786170cc65fd195db72dea26e79fc56031b4ce36246718",
+      "originalViewBox": "0 0 96 96",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "Grok",
+      "providerIds": [
+        "grok"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/grok.svg",
+      "pluginFile": "assets/grok.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/grok.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "9175fc90c22655160231976c849f25a03b888d7cc0e04c5f1b987b659bb07c95",
+      "outputSha256": "2860d0e2e7ad6026fb71b38e187d7b556d7456ba15fe8c7e4616e77039b7d893",
+      "unchangedPathSha256": "b1c7535771ab4ca56c3678ac60cdbaccbcf7f7e53c6343717332e20bbb0c546b",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "MiniMax",
+      "providerIds": [
+        "minimax-code",
+        "minimax-code-global"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/minimax-code.svg",
+      "pluginFile": "assets/minimax-code.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/minimax-color.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "7f7187fa6d9b341ac5f22f6c5a970523afb439dc45566d64eb4f4b9b604d6b01",
+      "outputSha256": "9694d7352405cb3a2be4fd5dbca4ea9f4d634de93fbc7b0b8cdb1cd798566316",
+      "unchangedPathSha256": "feb4b3e101899b47720e511179ea5d64cb28c9eb82d6259b688c45288f8a55af",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths and palette",
+      "fallback": null
+    },
+    {
+      "brand": "Qwen",
+      "providerIds": [
+        "qwenwork",
+        "qwenwork-enterprise"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/qwenwork.svg",
+      "pluginFile": "assets/qwenwork.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/qwen-color.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "77f5768c66d08ce1d3d14e73373975c1bc0454be88c81523ddd0ffd7e2974029",
+      "outputSha256": "88d21dc4bab6c9a9f729f8e26b712ecb38b9afd914c7380007ff2a527aabba00",
+      "unchangedPathSha256": "d3955dd900dfc7b9ed9cc091499997871cd29aa3b837e1823a20fe07301f0ee5",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths and palette",
+      "fallback": null
+    },
+    {
+      "brand": "Kimi",
+      "providerIds": [
+        "kimi-work"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/kimi-work.svg",
+      "pluginFile": "assets/kimi-work.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/kimi.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "ed08131b46acf70e6e2144eceb775e74098b58ea65fa21eaee04be7b05cfe63b",
+      "outputSha256": "36fe6faf30675fa53eb089f8a411e8c9ff27f98218be059e5ca6c9aed6595aac",
+      "unchangedPathSha256": "d0f62b661c08ea23f6b5659205d665509f92dce9d9cf9ff95a7173a7a12be7d6",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "OpenDesign",
+      "providerIds": [
+        "opendesign"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/opendesign.svg",
+      "pluginFile": "assets/opendesign.svg",
+      "source": "https://open-design.ai/favicon.svg",
+      "licenseNotices": [
+        "openDesign"
+      ],
+      "sourceSha256": "e5e330a7a8f080b0d305f268fe8d62157d1e82571f8dd8dbd2456aa8cca9e95b",
+      "outputSha256": "a802bc7a1632808c29b9b1dcca711ad08b80c70af7cb56ed51c377974c97402e",
+      "unchangedPathSha256": "8ba6e6c17aeae6bf7343f3f8118d751595e9e87d4aeefd1d9e8b4cf8404b4ddf",
+      "originalViewBox": "0 0.726562 82 82",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths and palette; white background",
+      "fallback": null
+    },
+    {
+      "brand": "Nous Research",
+      "providerIds": [
+        "nous-portal"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/nous-portal.svg",
+      "pluginFile": "assets/nous-portal.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/nousresearch.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "4dc3c7cdf13d2f0bdf16b872d76293f048010a00f580df68a85e1f9c4e500e5d",
+      "outputSha256": "169ceedfe0901fa50a2e38855981b465560a8dcf13ebf908436e430626f1d693",
+      "unchangedPathSha256": "187bd1fc0882eb310c3a6b2eae2ace49889bb8440afec63b5e4b4becacf5cfaa",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "GitHub Copilot",
+      "providerIds": [
+        "copilot-subscription"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/copilot.svg",
+      "pluginFile": "assets/copilot.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/githubcopilot.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "bbc7fddc13448236e5edea8c399d2072dc40aa5da5bca07f7a2f412405c500a3",
+      "outputSha256": "27cee099ff01bc82fe362fae2ddd8055e198e3590e58588f91c7608c4c31359b",
+      "unchangedPathSha256": "dd74f7f7ea818ba430dd8dbf7d2574875efb1283f1dea0545c5fb90182d8f298",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths; fixed white foreground on black background",
+      "fallback": null
+    },
+    {
+      "brand": "Gemini CLI",
+      "providerIds": [
+        "gemini-subscription"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/gemini-cli.svg",
+      "pluginFile": "assets/gemini-cli.svg",
+      "source": "Acankao/magpie/internal/gui/assets/icons/geminicli-color.svg",
+      "licenseNotices": [
+        "magpie",
+        "lobeIcons"
+      ],
+      "sourceSha256": "c2f54ebaa4c3b9191c6a07f7b0c66bc78e4abe486003dc564469cf650672663e",
+      "outputSha256": "747927edf194821a010a675940e1677a143f8cbd48e255c036dc26e166c8179c",
+      "unchangedPathSha256": "238294a76ea7ae78da1180d53ce0a523e5235e3abc720e870dec0728ec968d8e",
+      "originalViewBox": "0 0 24 24",
+      "viewBox": "0 0 24 24",
+      "intrinsicSize": [
+        256,
+        256
+      ],
+      "presentation": "original paths and palette",
+      "fallback": null
+    }
+  ],
+  "reusedExistingAssets": [
+    {
+      "providerIds": [
+        "claude-subscription"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/anthropic.png",
+      "change": "mapping only; existing PNG untouched; no new license asserted"
+    },
+    {
+      "providerIds": [
+        "codex-subscription",
+        "chatgpt-subscription"
+      ],
+      "desktopFile": "desktop-tauri/ui/assets/providers/openai.png",
+      "change": "mapping only; existing PNG untouched; no new license asserted"
+    }
+  ]
+}

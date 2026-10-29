@@ -1,44 +1,82 @@
-//! 插件自己的落盘目录（网关 `config::config_dir()` 的插件侧等价物）。
-//!
-//! ── 为什么用 `HostEnv.data_dir` 而不是自己找 ──────────────────
-//! 网关在握手时把数据目录交给插件（`HostEnv.data_dir`，见协议 crate）。那是
-//! 用户可见的那个目录（配置文件、账号库都在里面），插件在里面建自己的子目录
-//! 就能与网关的备份 / 迁移一起走。
-//!
-//! ── 为什么是进程级 OnceLock 而不是每次从 ctx 读 ────────────────
-//! 搬来的代码（Qoder 的机器标识、UMID 组件缓存）是**同步函数**里的路径拼接，
-//! 拿不到 `&PluginCtx`。进程级缓存一份目录是唯一可行的形态 —— 目录在进程
-//! 生命周期内不变（网关只在 `init` 时给一次）。
-//!
-//! ── 没初始化时返回什么 ──────────────────────────────────────
-//! 退回系统临时目录下的固定子目录（而不是空路径）：搬来的代码会 `create_dir_all`
-//! 并写文件，空路径会写到当前工作目录。退回到临时目录至少是「能跑，但重启
-//! 后丢」—— 而且这个分支只在 `init` 之前被调到，正常流程里不会发生。
+//! 插件自己的落盘目录，由握手时的 `HostEnv.data_dir` 指定。
+//! 机器标识与组件文件必须在握手应答前完成初始化，不能回落到临时目录。
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 记录网关给的数据目录（`main` 在启动时调一次）。
-///
-/// ── 当前没有调用点（等 SDK 的 init 回调）────────────────────
-/// 见 `main.rs` 的 `_document_init_gap`：`serve_blocking` 不暴露「init 完成」
-/// 的钩子，所以这条路径暂时走不到，`data_dir()` 退回临时目录。
-#[allow(dead_code)]
-pub fn init(data_dir: &str) {
+pub fn init(data_dir: &str) -> io::Result<()> {
     let trimmed = data_dir.trim();
     if trimmed.is_empty() {
-        return;
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "宿主未提供插件数据目录"));
     }
-    // 已初始化过就不覆盖：同一进程只会有一个网关
-    let _ = DATA_DIR.set(PathBuf::from(trimmed));
+    let dir = PathBuf::from(trimmed);
+    if !dir.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "插件数据目录必须是绝对路径"));
+    }
+    if let Some(current) = DATA_DIR.get() {
+        return if current == &dir {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::AlreadyExists, "插件数据目录已初始化为其它路径"))
+        };
+    }
+    std::fs::create_dir_all(&dir)?;
+    migrate_legacy(&dir)?;
+    DATA_DIR.set(dir).map_err(|_| {
+        io::Error::new(io::ErrorKind::AlreadyExists, "插件数据目录已初始化")
+    })
 }
 
-/// 插件的数据目录。
-pub fn data_dir() -> PathBuf {
-    match DATA_DIR.get() {
-        Some(dir) => dir.clone(),
-        None => std::env::temp_dir().join("agent2api-providers"),
+pub fn data_dir() -> io::Result<PathBuf> {
+    DATA_DIR.get().cloned().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotConnected, "插件数据目录尚未初始化")
+    })
+}
+
+fn migrate_legacy(dir: &Path) -> io::Result<()> {
+    let legacy = std::env::temp_dir().join("agent2api-providers");
+    if legacy == dir {
+        return Ok(());
     }
+    for name in ["qoder-machine-id", "qoder-umid/runtime-info", "qoder-umid/manifest.json"] {
+        copy_legacy(&legacy.join(name), &dir.join(name))?;
+    }
+    Ok(())
+}
+
+fn copy_legacy(source: &Path, target: &Path) -> io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    match std::fs::symlink_metadata(target) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let Some(parent) = target.parent() else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "迁移目标没有父目录"));
+    };
+    std::fs::create_dir_all(parent)?;
+    let mut input = std::fs::File::open(source)?;
+    let mut output = match std::fs::OpenOptions::new().write(true).create_new(true).open(target) {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let result = (|| {
+        std::io::copy(&mut input, &mut output)?;
+        output.set_permissions(metadata.permissions())?;
+        output.sync_all()
+    })();
+    drop(output);
+    if result.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    result
 }

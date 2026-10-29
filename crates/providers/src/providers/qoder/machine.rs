@@ -39,7 +39,8 @@ pub fn machine_id() -> Result<String, GatewayError> {
     if let Some(value) = cached.as_ref() {
         return Ok(value.clone());
     }
-    let directory = crate::paths::data_dir();
+    let directory = crate::paths::data_dir()
+        .map_err(|error| GatewayError::with_status(500, format!("Qoder 数据目录不可用: {error}")))?;
     let path = directory.join("qoder-machine-id");
     if let Some(value) = read_id(&path) {
         *cached = Some(value.clone());

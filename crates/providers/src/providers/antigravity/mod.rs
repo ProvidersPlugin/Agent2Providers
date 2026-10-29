@@ -29,7 +29,7 @@
 //! | 回调落**网关端口** `/oauth-callback` + `core::login` 任务表 | 插件自绑 loopback 端口（`callback_server`）+ 本目录 `login.rs` |
 //! | 账号记录在 `account_store::antigravity_accounts` | `store.get/update` 回调 + 本目录 `accounts.rs` |
 //! | `catalog_cache` 落盘目录缓存 | 只剩内存（插件侧没有落盘表；重启后首轮真打上游） |
-//! | `egress::client_for` / `client_for_system_proxy` | `crate::http::client` / `crate::http::client_system_proxy` |
+//! | `egress::client_for` / `client_for_system_proxy` | `crate::http::control_client` / `crate::http::control_client_system_proxy` |
 //!
 //! ── 为什么 `stateful = false` ───────────────────────────────
 //! 上游是「一次 HTTP 请求 = 一次生成」，只是响应帧是 v1internal 信封
@@ -109,20 +109,20 @@ use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 /// 本家出网 Client 的选择：**显式配了代理就用它，否则跟随系统代理**。
 ///
 /// ── 为什么与别家不同（别照抄这一条去别家用）────────────────────
-/// 仓内默认口径是「直连就是直连」（`crate::http::client` 的直连分支显式
+/// 仓内默认口径是「直连就是直连」（`crate::http::control_client` 的直连分支显式
 /// `.no_proxy()`）：转发出口由账号的代理配置决定，不被机器环境悄悄改写。
 /// 那对国内可直连的上游是对的；本家的上游是 Google，多数网络里只有经代理
 /// 才可达 —— 而用户机器上「已经能打开 Google 的那个代理」就写在系统设置里
 /// （浏览器能打开授权页正是靠它）。因此本家的口径是**与浏览器一致**：
 ///   1. 账号显式配了代理（`proxy` 为 Some）→ 走它，优先级最高；
-///   2. 没配 → [`crate::http::client_system_proxy`]（系统设置 + 环境变量）；
+///   2. 没配 → [`crate::http::control_client_system_proxy`]（系统设置 + 环境变量）；
 ///   3. 系统也没配代理 → reqwest 探测不到，等价于直连，不引入新的失败面。
 ///
 /// 登录链路（换码 / userinfo / 粘贴校验 / project 发现）同理：此刻账号还不
 /// 存在，`proxy` 恒为 None，走第 2 条。
 pub(crate) fn client_for(proxy: Option<&ResolvedProxy>) -> reqwest::Client {
     match proxy {
-        Some(proxy) => crate::http::client(Some(proxy), "direct"),
-        None => crate::http::client_system_proxy(),
+        Some(proxy) => crate::http::control_client(Some(proxy), "direct"),
+        None => crate::http::control_client_system_proxy(),
     }
 }

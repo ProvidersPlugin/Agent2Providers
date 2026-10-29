@@ -13,8 +13,8 @@
 //!   - Qoder 客户端自带：`<安装目录>/resources/umid/runtime-info(.exe)`；
 //!   - 官方 qodercli 解压：`~/.qoder/.bin/umid-<平台>-<架构>-*/runtime-info`
 //!     （国内版 `~/.qoder-cn/...`）—— 本文件发现顺序的第二优先级；
-//!   - 网关数据目录：Linux/Docker 上前两个都不存在，`install_component`
-//!     从官方 qodercli 的 npm 包里提取一份存到 `{config_dir}/qoder-umid/`。
+//!   - 插件数据目录：Linux/Docker 上前两个都不存在，`install_component`
+//!     从官方 qodercli 的 npm 包里提取一份存到 `{HostEnv.data_dir}/qoder-umid/`。
 //!
 //! 调用方式照抄参考实现：`runtime-info <env>`（Windows / macOS 另带
 //! `--account-stdin` 并把 `{"account":"<uid>"}` 写进 stdin），第一行输出
@@ -27,18 +27,9 @@
 //! 客户端每 60±5 分钟轮换一次身份，这里保守缓存 50 分钟（按 region + uid）。
 //! 进程内缓存足够：身份只在本机使用，重启重新生成一次没有副作用。
 //!
-//! ── 迁移时改了什么（组件安装那一整段没有调用方）────────────────
-//! 网关那份有一组**管理接口**：`status` / `install_component` /
-//! `installing` / `install_supported`（前端「风控组件」卡片据此显示
-//! 「已就绪 / 可安装 / 正在安装」并触发安装）。插件的 `Provider` trait
-//! **没有这类管理钩子**（协议只有 provider.info 的静态能力位），所以这些
-//! 函数在插件里没有调用方。
-//!
-//! 保留它们（而不是删掉）的理由：**生成身份**那条路（`machine_headers`）
-//! 仍会调 `find_component`，而 `find_component` 的三个来源里有「网关数据
-//! 目录」这一档；将来给协议加管理钩子时，安装链可以直接复用。因此本模块
-//! 对「没有调用方的管理面」加了一条模块级 `allow(dead_code)`，逐项说明在
-//! 各函数上。
+//! ── 管理面 ──────────────────────────────────────────────────
+//! `admin.action` 的 `risk.status` / `risk.install` 分别查询与安装机器级组件。
+//! 插件数据目录在握手应答前初始化；未初始化时不读写临时目录。
 //!
 //! ── panic=abort ─────────────────────────────────────────────
 //! 零 unwrap/expect/panic；子进程输出不信任（按行解析 + 长度上限）。
@@ -219,10 +210,10 @@ fn cli_component(region: Region) -> Option<Component> {
     None
 }
 
-/// 网关数据目录里安装的组件（data 来源，Linux/Docker 的
+/// 插件数据目录里安装的组件（data 来源，Linux/Docker 的
 /// `install_component` 落地路径）。env 与 cli 来源一致。
 fn data_component() -> Option<Component> {
-    let exe = crate::paths::data_dir().join("qoder-umid").join("runtime-info");
+    let exe = crate::paths::data_dir().ok()?.join("qoder-umid").join("runtime-info");
     exists(&exe).then(|| Component { exe, env: 4, source: "data" })
 }
 
@@ -503,13 +494,16 @@ pub fn install_supported() -> bool {
 /// 手写（按名字取一个普通文件）；ELF 按 `e_machine` 挑本机架构（x64=62 /
 /// arm64=183）；装好先试跑一次确认能出身份，再原子落地。
 pub async fn install_component() -> Result<serde_json::Value, GatewayError> {
+    let dir = crate::paths::data_dir()
+        .map_err(|error| GatewayError::with_status(500, format!("Qoder 数据目录不可用: {error}")))?
+        .join("qoder-umid");
     if !install_supported() {
         return Err(GatewayError::with_status(400, "当前平台不需要或不支持下载安装 UMID 组件（Windows / macOS 请安装 Qoder 客户端或 qodercli）"));
     }
     if INSTALLING.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return Err(GatewayError::with_status(409, "UMID 组件正在安装中，请稍候"));
     }
-    let result = install_component_inner().await;
+    let result = install_component_inner(&dir).await;
     INSTALLING.store(false, std::sync::atomic::Ordering::Relaxed);
     result
 }
@@ -522,7 +516,7 @@ const BUNDLE_ENTRY: &str = "package/bundle/qodercli.js";
 const DOWNLOAD_TIMEOUT_MS: u64 = 180_000;
 const META_TIMEOUT_MS: u64 = 15_000;
 
-async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
+async fn install_component_inner(dir: &Path) -> Result<serde_json::Value, GatewayError> {
     let fail = |message: String| GatewayError::with_status(502, message);
 
     // ① 权威 integrity（npmjs；拿不到时退回镜像自带的，与旧行为一致）
@@ -598,8 +592,7 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
             continue;
         };
         // ⑤ 落地 + 试跑 + 原子替换
-        let dir = crate::paths::data_dir().join("qoder-umid");
-        if let Err(error) = std::fs::create_dir_all(&dir) {
+        if let Err(error) = std::fs::create_dir_all(dir) {
             return Err(fail(format!("创建组件目录失败: {error}")));
         }
         let final_path = dir.join("runtime-info");
@@ -654,7 +647,7 @@ async fn npm_meta(registry: &str) -> Result<NpmMeta, String> {
 }
 
 async fn http_get(url: &str, timeout_ms: u64) -> Result<Vec<u8>, String> {
-    let client = crate::http::client(None, "direct");
+    let client = crate::http::control_client(None, "direct");
     let response = client
         .get(url)
         .timeout(Duration::from_millis(timeout_ms))

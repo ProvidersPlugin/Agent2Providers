@@ -76,29 +76,8 @@ pub fn parse_identity(payload: &Value) -> Identity {
 }
 
 /// 用令牌探一次身份（同时也是当日签到，见模块头）。
-pub async fn identify(
-    region: Region,
-    token: &str,
-    gateway_proxy: &str,
-) -> Result<Identity, String> {
-    let (status, payload) = client::site_get(region, LOGIN_INFO_PATH, token, "令牌校验", gateway_proxy).await?;
-    if status == 401 || status == 403 {
-        return Err(client::expired_message(region, status, true));
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("ModelScope 令牌校验返回 HTTP {status}"));
-    }
-    if !client::succeeded(&payload) {
-        let message = client::message_of(&payload);
-        return Err(if message.trim().is_empty() {
-            format!(
-                "ModelScope 令牌校验失败（上游 Code={}）",
-                client::code_of(&payload)
-            )
-        } else {
-            format!("ModelScope 令牌校验失败：{message}")
-        });
-    }
+pub async fn identify(api: &client::ControlClient, region: Region) -> Result<Identity, String> {
+    let payload = api.site_json(LOGIN_INFO_PATH, "令牌校验").await?;
     let identity = parse_identity(&payload);
     if !identity.has_user_id() {
         // 读不到身份时不放行：拿令牌尾号当 id 会让同一账号越加越多（见模块头）

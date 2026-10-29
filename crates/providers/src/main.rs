@@ -57,6 +57,7 @@ mod onboarding;
 mod providers;
 mod readiness;
 mod reasoning;
+mod response_stream;
 mod sse;
 mod sse_events;
 mod stall;
@@ -67,19 +68,10 @@ mod timeutil;
 mod workbuddy_shared;
 
 fn main() {
-    agent2api_provider_sdk::serve_blocking(providers::registry());
+    agent2api_provider_sdk::serve_blocking_with(
+        providers::registry(),
+        agent2api_provider_sdk::ServeOptions {
+            on_init: Some(|env| paths::init(&env.data_dir)),
+        },
+    );
 }
-
-/// 网关给的运行环境落地（`paths` 的目录缓存与 `qoder::risk` 的组件安装都读它）。
-///
-/// ── 为什么在 `main` 里没有调用点 ────────────────────────────
-/// `serve_blocking` 是 SDK 的入口，它拿到的 `HostEnv` 只在 `PluginCtx` 上
-/// （每次调用都能读）。而 `paths` / `risk` 里的路径拼接是**同步函数**，
-/// 拿不到 ctx —— 那两处目前走的是「没初始化就退回临时目录」的分支。
-///
-/// 真要接上，需要 SDK 暴露一个「init 回调」（`serve_blocking_with` 之类）。
-/// 在那之前，Qoder 的机器标识与 UMID 组件缓存会落在系统临时目录：功能可用，
-/// 但重启后重新生成 / 重新安装一次。这是**已知的行为差**，写在这里而不是
-/// 藏在 `paths` 的注释里，是因为它的修法在 SDK 侧。
-#[allow(dead_code)]
-fn _document_init_gap() {}

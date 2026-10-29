@@ -3,7 +3,7 @@
   "name": "提供商增强",
   "description": "为 Agent2API 扩展多家 AI 提供商，提供模型调用、账号登录与导入、凭证续期、模型目录、余额查询和签到等能力。具体功能以各提供商的支持情况为准。",
   "license": "AGPL-3.0",
-  "version": "3.3.0-beta.5",
+  "version": "3.3.0-beta.5.1",
   "protocol": 1,
   "providers": [
     {

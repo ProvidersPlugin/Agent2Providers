@@ -265,6 +265,24 @@ fn daily_window_start() -> i64 {
     (crate::http::now_ms() + 8 * 3_600_000).div_euclid(86_400_000) * 86_400_000 + 2 * 3_600_000
 }
 
+/// 「窗口已开、上游还没给这个账号下发活动」时的自动重试间隔。
+///
+/// 不必太短：这个状态要么很快就好，要么永远不会好（见 [`RETRY_GRACE_MS`]），
+/// 密集重试只是在刷签到记录。
+const RETRY_GAP_MS: i64 = 10 * 60_000;
+
+/// 「窗口已开但上游没下发」的自动重试**截止点**：窗口开启后 1 小时。
+///
+/// ── 为什么必须有个头（2026-10 修复）──────────────────────────
+/// 改造前这里无条件返回 `retryAt = max(窗口, now + 10min)`，于是网关会**整天**
+/// 每 10 分钟拿这个账号问一次上游：实测 Qoder 国际版从 10:01 一路试到晚上，
+/// 签到记录里堆了几十条「未领取」，而网关界面写的是「每账号每天最多重试 N 次」。
+///
+/// 实情是「上游当天就是没给这个账号派活动」—— 再问一百次也不会变。所以窗口后
+/// 留 1 小时（足够覆盖上游延迟下发）就给出终态：如实说「今天没有可领的」，
+/// **不再带 `retryAt`**，网关据此把它移出重试名单。
+const RETRY_GRACE_MS: i64 = 60 * 60_000;
+
 fn campaign_time(value: Option<&Value>) -> Option<i64> {
     let value = value?;
     if let Some(number) = value.as_i64().or_else(|| value.as_str()?.parse().ok()) {
@@ -297,11 +315,32 @@ fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
         }
         let now = crate::http::now_ms();
         let window = daily_window_start();
+        // ① 窗口还没开（调用点 `claim_daily_checkin` 已挡了一道，这里兜底）：
+        //    等到窗口开启的那一刻，不是「上游没下发」——这会儿上游还没开活动。
+        if now < window {
+            return json!({
+                "success": false,
+                "outcome": "inactive",
+                "retryAt": window,
+                "msg": "每日积分活动窗口还没开启（每天 10:00 开启），到点自动重试",
+            });
+        }
+        // ② 窗口已开、上游还没给这个账号下发：宽限期内按间隔再问几次。
+        if now < window + RETRY_GRACE_MS {
+            return json!({
+                "success": false,
+                "outcome": "inactive",
+                "retryAt": now + RETRY_GAP_MS,
+                "msg": "上游暂未给该账号下发每日积分活动，稍后自动重试",
+            });
+        }
+        // ③ 宽限期也过了 —— 这就是「**今天**没有可领的」，给出终态：
+        //    有意**不带 `retryAt`**。带了网关就会继续排下一轮，把一整天耗在
+        //    同一个不会变的状态上（2026-10 那批「未领取」刷屏的来源）。
         return json!({
             "success": false,
             "outcome": "inactive",
-            "retryAt": window.max(now + 10 * 60_000),
-            "msg": "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 开启），尚未确认今日领取，稍后重试",
+            "msg": "该账号今天没有可领取的每日积分活动（上游未下发，与本机环境无关），今天不再重试",
         });
     }
     // 中国版没有活动是账号侧状态（实测 Free 套餐账号如此，Pro/试用账号才有），

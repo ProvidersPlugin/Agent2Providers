@@ -37,6 +37,8 @@
 // 确实需要的地方用 `guard()` 显式兜住并记日志。
 
 mod beijing;
+mod catalog_backoff;
+mod catalog_ledger;
 mod content_block;
 mod crypto;
 mod dpop;

@@ -6,6 +6,12 @@
 //!   2. **远程刷新**：`GET {gateway}algo/api/v2/model/list?Encode=1`（COSY 签名，
 //!      缓存 1 小时）。失败保留现有清单 —— 与源实现 `refreshModels` 的两级兜底
 //!      逐条一致。
+//!   3. **账号台账**：刷新成功时把两个地区的清单写进账号台账
+//!      （[`crate::catalog_ledger`]，kind = [`LEDGER_KIND`]），进程重启后由转发
+//!      链路读回来。**为什么需要它**：兜底表是"照客户端内置抄的"一份旧清单，
+//!      上游新加的模型不在里面 —— 而 `resolve` 找不到就给 400「模型不存在」，
+//!      于是重启后到那轮刷新成功之间，界面列得出来（网关那份是从它的库里恢复
+//!      的）、一调却说没有。
 //!
 //! ── 为什么按地区分开缓存（与其它四家不同）─────────────────────
 //! Qoder 分国际版（`api3.qoder.sh`）与中国版（`gateway.qoder.com.cn`），
@@ -287,16 +293,81 @@ fn catalog() -> &'static RwLock<CatalogState> {
     CATALOG.get_or_init(|| RwLock::new(restored_state()))
 }
 
-/// 首次初始化的状态：**空**（插件里没有落盘缓存）。
+/// 首次初始化的状态：**空**。
 ///
-/// ── 迁移时改了什么 ────────────────────────────────────────
-/// 网关那份先从 `providers::catalog_cache` 读回两个地区的落盘清单。插件
-/// **没有那份缓存**（`catalog_cache` 是网关的状态，插件进程重启后由网关的
-/// 目录刷新重新拉一遍）。所以这里返回空状态：空状态的读取语义就是「回落到
-/// 静态兜底清单」（见 `list_for`），功能不受影响，只是重启后第一轮刷新会
-/// 真打一次上游。
+/// ── 恢复在哪里发生 ──────────────────────────────────────────
+/// 网关那份先从 `providers::catalog_cache` 读回两个地区的落盘清单；插件侧那份
+/// 在**账号台账**里（[`crate::catalog_ledger`]），读它是异步的，所以恢复不在
+/// 本函数里：转发链路由 `ensure_catalog` 补（内存空了先读台账、再就地补拉），
+/// 刷新链路在成功那一步写台账。空状态的读取语义是「回落到静态兜底清单」——
+/// 那条路仍然在（网络不通 / 没账号时界面照样有内容），只是不再是唯一一条。
 fn restored_state() -> CatalogState {
     CatalogState::default()
+}
+
+/// 账号台账里那份目录的 kind（网关存成 `pluginLedger.qoder-catalog`）。
+pub const LEDGER_KIND: &str = "qoder-catalog";
+
+/// 台账 payload：两个地区各一份远程清单 + 各自拉到的时刻。
+///
+/// 两个地区都写进去（哪怕本次只刷新了一边）：台账按**账号**存，读回来时装进
+/// 两格缓存，于是重启后两边都不必等刷新。
+pub fn saved_payload() -> Value {
+    let state = read_state();
+    json!({
+        "global": state.global,
+        "globalFetchedAt": state.global_fetched_at,
+        "cn": state.cn,
+        "cnFetchedAt": state.cn_fetched_at,
+    })
+}
+
+/// 从台账恢复两格缓存，返回是否装进了东西。
+///
+/// **只填空格**：某个地区内存里已经有远程清单就不覆盖它 —— 恢复只该补上
+/// 「进程重启后丢掉的那部分」，不该拿旧数据盖掉刚拉到的新数据。
+pub fn restore_from_saved(payload: &Value) -> bool {
+    let mut restored = false;
+    let mut state = read_state();
+    for (region, key, at_key) in [
+        (Region::Global, "global", "globalFetchedAt"),
+        (Region::Cn, "cn", "cnFetchedAt"),
+    ] {
+        let Some(models) = payload
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+            .cloned()
+        else {
+            continue;
+        };
+        let filled = match region {
+            Region::Global => !state.global.is_empty(),
+            Region::Cn => !state.cn.is_empty(),
+        };
+        if filled {
+            continue;
+        }
+        let fetched_at = payload.get(at_key).and_then(Value::as_i64).unwrap_or(0);
+        match region {
+            Region::Global => {
+                state.global = models;
+                state.global_fetched_at = fetched_at;
+            }
+            Region::Cn => {
+                state.cn = models;
+                state.cn_fetched_at = fetched_at;
+            }
+        }
+        restored = true;
+    }
+    if restored {
+        match catalog().write() {
+            Ok(mut guard) => *guard = state,
+            Err(poisoned) => *poisoned.into_inner() = state,
+        }
+    }
+    restored
 }
 
 fn read_state() -> CatalogState {

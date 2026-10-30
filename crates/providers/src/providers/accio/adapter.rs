@@ -51,6 +51,95 @@ pub struct AccioProvider {
     region: Region,
 }
 
+impl AccioProvider {
+    /// 转发前的**目录准备**（本地区）：内存里没有远程清单时先读账号台账，
+    /// 再退到就地补拉一次。
+    ///
+    /// ── 为什么这里不是"拿不到就拒发" ────────────────────────────
+    /// Accio 有静态兜底表，拿不到远程清单也能解析一部分模型 —— 拒发反而更糟。
+    /// 但兜底表是「照客户端内置抄的」一份旧清单，上游新加的模型不在里面：
+    /// `resolve` 找不到就报 400「模型不存在」，而界面里那个模型是列着的
+    /// （网关那份是从它自己的落盘缓存恢复的，与插件这份不通）。所以本函数做的是
+    /// **尽力补全**：补到了就用真的，补不到仍旧走既有的兜底 + 400 那条路
+    /// （行为不倒退，只是多了一次能成的机会）。
+    ///
+    /// 放在 `chat::build_plan` 之前：那一层的模型解析是同步的，读台账塞不进去。
+    async fn ensure_catalog(
+        &self,
+        ctx: &PluginCtx,
+        account: &str,
+        credentials: &Credentials,
+        proxy: Option<&ResolvedProxy>,
+    ) {
+        if !models::remote_models(self.region).is_empty() {
+            return;
+        }
+        let provider = self.region.provider_id();
+        if let Some(payload) = crate::catalog_ledger::load(ctx, account, models::LEDGER_KIND).await {
+            if models::restore_from_saved(&payload) {
+                crate::catalog_backoff::clear(provider, account);
+                logging::log(
+                    "[Models]",
+                    &format!(
+                        "Accio {}模型目录从台账恢复（转发可直接使用）",
+                        self.region.label()
+                    ),
+                );
+                if !models::remote_models(self.region).is_empty() {
+                    return;
+                }
+            }
+        }
+        // 刚刚试过、又失败了：这一轮不再打上游（见 `catalog_backoff`），
+        // 继续走静态兜底那条既有路径
+        if let Some(cooling) =
+            crate::catalog_backoff::cooling(provider, account, logging::now_ms())
+        {
+            logging::verbose(
+                "[Models]",
+                &format!(
+                    "Accio {}模型目录补拉冷却中（{} 秒后自动重试）：{}",
+                    self.region.label(),
+                    crate::catalog_backoff::seconds_left(cooling.ms_left),
+                    cooling.reason
+                ),
+            );
+            return;
+        }
+        // 台账没有（或只补上了另一个地区）：就地补拉一次本地区
+        let outcome = models::refresh(credentials, proxy, false).await;
+        if outcome.refreshed {
+            crate::catalog_backoff::clear(provider, account);
+            return;
+        }
+        let reason = outcome.message.unwrap_or_else(|| "未知原因".to_string());
+        crate::catalog_backoff::hold(provider, account, &reason, logging::now_ms());
+        logging::verbose(
+            "[Models]",
+            &format!("Accio {}模型目录就地补拉未成功：{reason}", self.region.label()),
+        );
+    }
+}
+
+/// 把两个地区的远程清单写进账号台账（刷新成功后调用）。
+///
+/// 失败只记一行 verbose：台账决定的是「下次重启能不能提前恢复」，写不进去不影响
+/// 这一次刷新，也不该把一次成功的刷新变成失败。
+async fn persist_catalog(ctx: &PluginCtx, account: &str) {
+    if account.trim().is_empty() {
+        return;
+    }
+    let payload = models::saved_payload();
+    if let Err(error) =
+        crate::catalog_ledger::save(ctx, account, models::LEDGER_KIND, &payload).await
+    {
+        logging::verbose(
+            "[Models]",
+            &format!("Accio 目录台账写入失败（不影响本次刷新）：{error}"),
+        );
+    }
+}
+
 impl Provider for AccioProvider {
     fn meta(&self) -> ProviderMeta {
         ProviderMeta::new(self.region.provider_id(), format!("Accio {}", self.region.label()))
@@ -158,9 +247,12 @@ impl Provider for AccioProvider {
             // 思考档位：客户端显式指定 > 映射绑定（`body` 里已由网关的 payload
             // 层注入 —— `reasoning_patch` 在网关侧调用，注入的是同一个键）
             let effort = protocol::client_effort(&req.body);
+            let effective_proxy = req.proxy.clone().or(context.proxy);
+            // 目录准备（见 `ensure_catalog`）：重启后内存为空时先读台账，再就地补拉一次
+            self.ensure_catalog(ctx, &account_id, &context.credentials, effective_proxy.as_ref())
+                .await;
             let plan = chat::build_plan(&context.credentials, &req.body, &model_name, effort.as_deref())
                 .map_err(GatewayError::into_message)?;
-            let effective_proxy = req.proxy.clone().or(context.proxy);
 
             logging::verbose(
                 "[Accio]",
@@ -383,7 +475,17 @@ impl Provider for AccioProvider {
                 Ok(proxy) => proxy,
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
             };
-            Ok(models::refresh(&credentials, proxy.as_ref(), force).await)
+            let account_id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let outcome = models::refresh(&credentials, proxy.as_ref(), force).await;
+            // 顺带落一份进账号台账：下次进程重启后不必等这一轮刷新
+            if outcome.refreshed {
+                persist_catalog(ctx, &account_id).await;
+            }
+            Ok(outcome)
         })
     }
 

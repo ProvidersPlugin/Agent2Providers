@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-providers"
-version = "3.3.0-beta.5.1"
+version = "3.3.0-beta.6"
 dependencies = [
  "aes",
  "aes-gcm",

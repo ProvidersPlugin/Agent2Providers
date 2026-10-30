@@ -402,7 +402,17 @@ impl Provider for QoderProvider {
                 Ok(proxy) => proxy,
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
             };
-            Ok(models::refresh(&credentials, proxy.as_ref(), force).await)
+            let account_id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let outcome = models::refresh(&credentials, proxy.as_ref(), force).await;
+            // 顺带落一份进账号台账：下次进程重启后不必等这一轮刷新
+            if outcome.refreshed {
+                persist_catalog(ctx, &account_id).await;
+            }
+            Ok(outcome)
         })
     }
 
@@ -553,6 +563,88 @@ impl Provider for QoderProvider {
     }
 }
 
+/// 把当前两个地区的远程清单写进账号台账（刷新成功后调用）。
+///
+/// 失败只记一行 verbose：台账决定的是「下次重启能不能提前恢复」，写不进去不影响
+/// 这一次刷新，也不该把一次成功的刷新变成失败。
+async fn persist_catalog(ctx: &PluginCtx, account: &str) {
+    if account.trim().is_empty() {
+        return;
+    }
+    let payload = models::saved_payload();
+    if let Err(error) =
+        crate::catalog_ledger::save(ctx, account, models::LEDGER_KIND, &payload).await
+    {
+        logging::verbose(
+            "[Models]",
+            &format!("Qoder 目录台账写入失败（不影响本次刷新）：{error}"),
+        );
+    }
+}
+
+/// 转发前的**目录准备**（本地区）：内存里没有远程清单时先读账号台账，
+/// 再退到就地补拉一次。
+///
+/// ── 为什么这里不是"拿不到就拒发" ────────────────────────────
+/// Qoder 有静态兜底表，拿不到远程清单也能解析一部分模型 —— 拒发反而更糟。
+/// 但兜底表是「照客户端内置抄的」一份旧清单，上游新加的模型不在里面：
+/// `resolve` 找不到就报 400「模型不存在」，而界面里那个模型是列着的
+/// （网关那份是从它自己的落盘缓存恢复的，与插件这份不通）。所以本函数做的是
+/// **尽力补全**：补到了就用真的，补不到仍旧走既有的兜底 + 400 那条路
+/// （行为不倒退，只是多了一次能成的机会）。
+async fn ensure_catalog(
+    ctx: &PluginCtx,
+    region: Region,
+    account: &str,
+    credentials: &credentials::Credentials,
+    proxy: Option<&proto::WireProxy>,
+) {
+    if models::remote_refreshed(region) {
+        return;
+    }
+    let provider = region.provider_id();
+    if let Some(payload) = crate::catalog_ledger::load(ctx, account, models::LEDGER_KIND).await {
+        if models::restore_from_saved(&payload) {
+            crate::catalog_backoff::clear(provider, account);
+            logging::log(
+                "[Models]",
+                &format!("Qoder {}模型目录从台账恢复（转发可直接使用）", region.label()),
+            );
+            if models::remote_refreshed(region) {
+                return;
+            }
+        }
+    }
+    // 刚刚试过、又失败了：这一轮不再打上游（见 `catalog_backoff`），
+    // 继续走静态兜底那条既有路径
+    if let Some(cooling) =
+        crate::catalog_backoff::cooling(provider, account, logging::now_ms())
+    {
+        logging::verbose(
+            "[Models]",
+            &format!(
+                "Qoder {}模型目录补拉冷却中（{} 秒后自动重试）：{}",
+                region.label(),
+                crate::catalog_backoff::seconds_left(cooling.ms_left),
+                cooling.reason
+            ),
+        );
+        return;
+    }
+    // 台账没有（或只补上了另一个地区）：就地补拉一次本地区
+    let outcome = models::refresh(credentials, proxy, false).await;
+    if outcome.refreshed {
+        crate::catalog_backoff::clear(provider, account);
+        return;
+    }
+    let reason = outcome.message.unwrap_or_else(|| "未知原因".to_string());
+    crate::catalog_backoff::hold(provider, account, &reason, logging::now_ms());
+    logging::verbose(
+        "[Models]",
+        &format!("Qoder {}模型目录就地补拉未成功：{reason}", region.label()),
+    );
+}
+
 /// 会话式转发的实现（从网关的 `forward_conversation` 搬来，改成 sink 出口）。
 ///
 /// ── 错误处理与编排层的分工 ──────────────────────────────────
@@ -600,6 +692,9 @@ async fn run_conversation_inner(
     let mut context = chat::account_context(ctx, region, &account_id, false).await?;
     // 代理：请求里给的优先（网关已解析好），没有就用账号记录里的
     let effective_proxy = req.proxy.clone().or(context.proxy.clone());
+    // 目录准备（见 `ensure_catalog`）：重启后内存为空时先读台账，再就地补拉一次。
+    // 放在 `build_plan` 之前 —— 那一层的模型解析是同步的，读台账不能塞进它里面。
+    ensure_catalog(ctx, region, &account_id, &context.credentials, effective_proxy.as_ref()).await;
     // 排队退避的预算：用户给「等待响应超时」的那份预算（理由见 queue_backoff）
     let queue_budget_ms = crate::timeouts::current().headers_ms();
     let mut queue_waits: usize = 0;

@@ -51,6 +51,92 @@ pub struct CodeArtsProvider;
 /// 静态实例：注册表要的是 `&'static dyn Provider` 的等价物。
 pub static CODEARTS: CodeArtsProvider = CodeArtsProvider;
 
+impl CodeArtsProvider {
+    /// 转发前的**目录准备**：内存 → 台账 → 就地补拉一次。
+    ///
+    /// ── 为什么需要这三步 ────────────────────────────────────────
+    /// 内存槽活不过进程重启（插件每次都是新进程）。原来这里拿不到内存就直接拒绝
+    /// （"请先在模型页对该账号执行一次「获取模型」"），于是**每次重启后**、在网关
+    /// 那轮刷新成功之前，所有请求都被拒。而网关自己恢复出来的那份目录喂的是它的
+    /// `/v1/models` 与选路 —— 插件拿不到它：协议里没有把目录推回插件的方法，
+    /// `HostEnv` 也没有目录槽。症状就是「模型页列得出来、一发请求却说目录没拉取过」。
+    ///
+    /// 现在：① 内存有就用；② 没有就读账号台账（上次真拉到的那份，
+    /// [`crate::catalog_ledger`]）；③ 台账也没有（首次运行 / 换过账号 / 清过数据）
+    /// 就**就地真拉一次**，拉不到才报错。②省掉一次上游往返，③让"从没手动点过
+    /// 「获取模型」"的用户也能直接用 —— 那是个不该存在的门槛。
+    ///
+    /// ── 为什么台账那份敢直接用 ──────────────────────────────────
+    /// 与网关侧 `catalog_cache` 同一取舍：宁可给一份旧清单，也不要从"有模型"
+    /// 突然变成"没有"（本家的清单还带逐模型的 `max_output_tokens` 与福利头判据，
+    /// 静态兜底编不出来，见 `models` 的模块头）。时效性交给刷新链路。
+    async fn ensure_catalog(
+        &self,
+        ctx: &PluginCtx,
+        account: &str,
+    ) -> Result<models::Catalog, String> {
+        if let Some(catalog) = models::cached_catalog() {
+            return Ok(catalog);
+        }
+        if let Some(payload) = crate::catalog_ledger::load(ctx, account, models::LEDGER_KIND).await {
+            if let Some((catalog, fetched_at)) = models::from_saved(&payload) {
+                let count = catalog.models.len();
+                let catalog = models::restore_catalog(catalog, fetched_at);
+                crate::catalog_backoff::clear(PROVIDER_ID, account);
+                logging::log(
+                    "[Models]",
+                    &format!("CodeArts 模型目录从台账恢复（{count} 个模型，转发可直接使用）"),
+                );
+                return Ok(catalog);
+            }
+        }
+        // 刚刚试过、又失败了：按冷却回报，别再打一遍上游（见 `catalog_backoff`）
+        if let Some(cooling) =
+            crate::catalog_backoff::cooling(PROVIDER_ID, account, logging::now_ms())
+        {
+            return Err(format!(
+                "CodeArts 模型目录还没有拉取成功：{}（{} 秒后自动重试）",
+                cooling.reason,
+                crate::catalog_backoff::seconds_left(cooling.ms_left)
+            ));
+        }
+        // 台账也没有：就地补拉一次。用户没点过「获取模型」也应当能用 ——
+        // 这一轮真失败才报错，且把上游给的原因原样带上。
+        let outcome = self.refresh_models(ctx, account, true).await?;
+        if let Some(catalog) = models::cached_catalog() {
+            crate::catalog_backoff::clear(PROVIDER_ID, account);
+            return Ok(catalog);
+        }
+        let reason = outcome
+            .message
+            .unwrap_or_else(|| "上游没有返回可用的模型目录".to_string());
+        crate::catalog_backoff::hold(PROVIDER_ID, account, &reason, logging::now_ms());
+        Err(format!(
+            "CodeArts 模型目录还没有拉取成功：{reason}\
+             （稍后会自动重试，也可在模型页点一次「获取模型」）"
+        ))
+    }
+}
+
+/// 把一份清单写进账号台账（刷新成功后调用）。
+///
+/// 失败只记一行 verbose：台账决定的是「下次重启能不能提前恢复」，写不进去不影响
+/// 这一次刷新，也不该把一次成功的刷新变成失败。
+async fn persist_catalog(ctx: &PluginCtx, account: &str, catalog: &models::Catalog) {
+    if account.trim().is_empty() {
+        return;
+    }
+    let payload = models::saved_payload(catalog);
+    if let Err(error) =
+        crate::catalog_ledger::save(ctx, account, models::LEDGER_KIND, &payload).await
+    {
+        logging::verbose(
+            "[Models]",
+            &format!("CodeArts 目录台账写入失败（不影响本次刷新）：{error}"),
+        );
+    }
+}
+
 impl Provider for CodeArtsProvider {
     fn meta(&self) -> ProviderMeta {
         ProviderMeta::new(PROVIDER_ID, "CodeArts")
@@ -180,9 +266,7 @@ impl Provider for CodeArtsProvider {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let catalog = models::cached_catalog().ok_or_else(|| {
-                "CodeArts 模型目录还没拉取过：请先在模型页对该账号执行一次「获取模型」".to_string()
-            })?;
+            let catalog = self.ensure_catalog(ctx, &account_id).await?;
             let Some(model) = catalog.resolve(&requested) else {
                 return Err(models::unknown_model_error(&requested, &catalog).message);
             };
@@ -540,6 +624,12 @@ impl Provider for CodeArtsProvider {
                     "指定的 CodeArts 账号不存在或不可用，请重新选择",
                 ));
             }
+            // 台账按账号存，所以用记录里的**真实 id**（`account` 传空串时它是队首那条）
+            let account_id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let proxy = match record_proxy(ctx, account).await {
                 Ok(proxy) => proxy,
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
@@ -565,7 +655,9 @@ impl Provider for CodeArtsProvider {
                 ));
             }
             let count = catalog.models.len();
-            models::store_catalog(catalog);
+            let catalog = models::store_catalog(catalog);
+            // 顺带落一份进账号台账：下次进程重启后不必等这一轮刷新就能转发
+            persist_catalog(ctx, &account_id, &catalog).await;
             Ok(proto::RefreshOutcome::refreshed(count))
         })
     }

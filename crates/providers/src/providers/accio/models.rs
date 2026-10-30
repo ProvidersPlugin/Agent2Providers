@@ -160,14 +160,62 @@ fn cache_slot(region: Region) -> &'static RwLock<RegionCache> {
 
 /// 进程启动时的空缓存。
 ///
-/// ── 迁移时丢了什么：**持久化缓存** ──────────────────────────
+/// ── 恢复在哪里发生 ──────────────────────────────────────────
 /// 网关那版把每次成功刷到的目录写进 `catalog_cache`（两个地区各一条 scope），
-/// 重启后先读回它 —— 好处是「重启那一次刷新失败也不会让本家模型全消失」。
-/// 插件侧没有那个缓存目录（见 `paths` 模块头），所以只留内存：**重启后首轮
-/// 刷新必须真打上游**。后果可控：`list()` 在远程为空时回落到 `FALLBACK`
-/// 静态表，所以重启后界面照样有清单。
+/// 重启后先读回它。插件侧那份在**账号台账**里（[`crate::catalog_ledger`]）：
+/// 刷新成功时写，转发链路由 `ensure_catalog` 读回来（读台账是异步的，塞不进
+/// 这个同步的初始化里）。空状态的读取语义是「回落到 `FALLBACK` 静态表」——
+/// 那条路仍然在（网络不通 / 没账号时界面照样有清单），只是不再是唯一一条。
 fn restored_cache(_region: Region) -> RegionCache {
     RegionCache::default()
+}
+
+/// 账号台账里那份目录的 kind（网关存成 `pluginLedger.accio-catalog`）。
+pub const LEDGER_KIND: &str = "accio-catalog";
+
+/// 台账 payload：两个地区各一份远程清单 + 各自拉到的时刻。
+pub fn saved_payload() -> Value {
+    let mut payload = serde_json::Map::new();
+    for (region, key, at_key) in [
+        (Region::Global, "global", "globalFetchedAt"),
+        (Region::Cn, "cn", "cnFetchedAt"),
+    ] {
+        let guard = cache_slot(region).read().unwrap_or_else(|error| error.into_inner());
+        payload.insert(key.to_string(), Value::Array(guard.models.clone()));
+        payload.insert(at_key.to_string(), json!(guard.fetched_at));
+    }
+    Value::Object(payload)
+}
+
+/// 从台账恢复两格缓存，返回是否装进了东西。
+///
+/// **只填空格**：某个地区内存里已经有远程清单就不覆盖它 —— 恢复只该补上
+/// 「进程重启后丢掉的那部分」，不该拿旧数据盖掉刚拉到的新数据。
+pub fn restore_from_saved(payload: &Value) -> bool {
+    let mut restored = false;
+    for (region, key, at_key) in [
+        (Region::Global, "global", "globalFetchedAt"),
+        (Region::Cn, "cn", "cnFetchedAt"),
+    ] {
+        let Some(models) = payload
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+            .cloned()
+        else {
+            continue;
+        };
+        let fetched_at = payload.get(at_key).and_then(Value::as_i64).unwrap_or(0);
+        let slot = cache_slot(region);
+        let mut guard = slot.write().unwrap_or_else(|error| error.into_inner());
+        if !guard.models.is_empty() {
+            continue;
+        }
+        guard.models = models;
+        guard.fetched_at = fetched_at;
+        restored = true;
+    }
+    restored
 }
 
 fn fallback_models() -> Vec<Value> {

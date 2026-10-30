@@ -579,72 +579,8 @@ impl Provider for ZcodeProvider {
             let user_id = crate::store::pick(&record, &["userId", "user_id"]);
             let proxy = account_proxy(&record);
             let mid = (!device_mid.is_empty()).then_some(device_mid.as_str());
-            let outcome = claim::preview(self.region, &jwt, mid, proxy.as_ref())
+            preview_action(ctx, self.region, account, &jwt, mid, &user_id, proxy.as_ref())
                 .await
-                .map_err(GatewayError::into_message)?;
-            // ── 空列表时补报激活事件再重探（与网关 `api::zcode_claim::preview`
-            // 逐条相同）──────────────────────────────────────────────
-            // 资格由激活事件发放，而本家不跑官方客户端，那一步不会自动发生。
-            // 代价是两次事件 + 一次重探，收益是把「明明有资格却看不到套餐」
-            // 变成看得到 —— 预览是用户点出来的低频动作，这个代价付得起。
-            // 列表非空时**不报**：探测仍是只读的。
-            let mut activated: Option<bool> = None;
-            let mut activation_error: Option<String> = None;
-            let outcome = match outcome {
-                claim::PreviewOutcome::Plans(ref plans) if plans.is_empty() => {
-                    if !user_id.is_empty() {
-                        match activation::report(
-                            self.region,
-                            &user_id,
-                            &device_mid,
-                            proxy.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(()) => activated = Some(true),
-                            Err(error) => {
-                                logging::log(
-                                    "[Claim]",
-                                    &format!(
-                                        "ZCode {}账号「{account}」激活事件上报失败：{error}",
-                                        self.region.label()
-                                    ),
-                                );
-                                activated = Some(false);
-                                activation_error = Some(error);
-                            }
-                        }
-                    }
-                    match claim::preview(self.region, &jwt, mid, proxy.as_ref()).await {
-                        // 重探失败不把首次的空探测降级成错误（首次已给出可信答案）
-                        Ok(next) => next,
-                        Err(error) => {
-                            logging::log(
-                                "[Claim]",
-                                &format!(
-                                    "ZCode {}账号「{account}」补报激活后的重探失败：{}",
-                                    self.region.label(),
-                                    error.message
-                                ),
-                            );
-                            claim::PreviewOutcome::Plans(Vec::new())
-                        }
-                    }
-                }
-                other => other,
-            };
-            let mut body = preview_json(&outcome);
-            if let Some(object) = body.as_object_mut() {
-                object.insert(
-                    "activated".to_string(),
-                    activated.map(Value::Bool).unwrap_or(Value::Null),
-                );
-                object.insert(
-                    "activationError".to_string(),
-                    activation_error.map(Value::String).unwrap_or(Value::Null),
-                );
-            }
-            Ok(body)
         })
     }
 
@@ -666,57 +602,25 @@ impl Provider for ZcodeProvider {
                 .map_err(GatewayError::into_message)?;
             let jwt = crate::store::pick(&record, &["jwt"]);
             let device_mid = crate::store::pick(&record, &["deviceMid", "device_mid"]);
+            let user_id = crate::store::pick(&record, &["userId", "user_id"]);
             let proxy = account_proxy(&record);
-            // 没点名就现探一次（「一键领取」的语义）
-            let plan_id = if claim_id.trim().is_empty() {
-                match claim::preview(
-                    self.region,
-                    &jwt,
-                    (!device_mid.is_empty()).then_some(device_mid.as_str()),
-                    proxy.as_ref(),
-                )
-                .await
-                .map_err(GatewayError::into_message)?
-                {
-                    claim::PreviewOutcome::Plans(plans) => plans
-                        .first()
-                        .map(|plan| plan.plan_id.clone())
-                        .unwrap_or_default(),
-                    claim::PreviewOutcome::NotDeployed => String::new(),
-                }
-            } else {
-                claim_id.trim().to_string()
+            let mid = (!device_mid.is_empty()).then_some(device_mid.as_str());
+            let plan = claim::resolve_target(
+                ctx, self.region, account, &jwt, mid, &user_id, proxy.as_ref(), claim_id,
+            ).await.map_err(GatewayError::into_message)?;
+            let Some(plan) = plan else {
+                return Ok(serde_json::json!({
+                    "claimed": false,
+                    "failure": "unavailable",
+                    "message": "当前没有可领取的套餐",
+                }));
             };
-            if plan_id.is_empty() {
-                return Err("当前没有可领取的套餐".to_string());
-            }
-            // 验证码令牌：要就要、不要就整个不带（见 `claim` 的模块头）
-            let (param, region_tag) = if captcha::required() {
-                match captcha::take() {
-                    Some(pair) => pair,
-                    None => {
-                        return Err(
-                            "套餐池通道需要人机验证令牌，当前令牌池为空：令牌由**打开着的界面**\
-                             自动铸造，请先打开主窗口或浏览器面板页让它补铸"
-                                .to_string(),
-                        )
-                    }
-                }
-            } else {
-                (String::new(), String::new())
-            };
-            let outcome = claim::claim(
-                self.region,
-                &jwt,
-                &plan_id,
-                &param,
-                (!region_tag.is_empty()).then_some(region_tag.as_str()),
-                (!device_mid.is_empty()).then_some(device_mid.as_str()),
-                proxy.as_ref(),
-            )
-            .await
-            .map_err(GatewayError::into_message)?;
-            Ok(claim_json(&outcome))
+            let attempt = claim::claim_plan(
+                ctx, self.region, account, &jwt, mid, proxy.as_ref(), &plan, None,
+            ).await.map_err(GatewayError::into_message)?;
+            let mut result = claim_json(&attempt.outcome);
+            result["marketingError"] = serde_json::json!(attempt.marketing_error);
+            Ok(result)
         })
     }
 
@@ -838,7 +742,9 @@ impl Provider for ZcodeProvider {
                         return Err(missing_jwt(self.region));
                     }
                     preview_action(
+                        ctx,
                         self.region,
+                        account,
                         &jwt,
                         device_mid.as_deref(),
                         &user_id,
@@ -851,7 +757,9 @@ impl Provider for ZcodeProvider {
                         return Err(missing_jwt(self.region));
                     }
                     claim_action(
+                        ctx,
                         self.region,
+                        account,
                         &jwt,
                         device_mid.as_deref(),
                         &user_id,
@@ -975,29 +883,6 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
     }
 }
 
-/// 一条可领套餐 → 前端 JSON（字段名与网关 `plan_to_json` 逐字相同）。
-fn plan_to_json(plan: &claim::ClaimablePlan) -> Value {
-    serde_json::json!({
-        "planId": plan.plan_id,
-        "name": plan.name,
-        "description": plan.description,
-        "priority": plan.priority,
-        "startsAt": plan.starts_at,
-        "endsAt": plan.ends_at,
-        "entitlements": plan
-            .entitlements
-            .iter()
-            .map(|item| serde_json::json!({
-                "showName": item.show_name,
-                "unitType": item.unit_type,
-                "grantUnits": item.grant_units,
-                "period": item.period,
-                "effectiveAt": item.effective_at,
-            }))
-            .collect::<Vec<Value>>(),
-    })
-}
-
 /// 失败语义 → 前端用的稳定字符串（前端按它选文案，不按中文 label 匹配）。
 fn failure_key(failure: claim::ClaimFailure) -> &'static str {
     use claim::ClaimFailure;
@@ -1022,57 +907,18 @@ fn failure_key(failure: claim::ClaimFailure) -> &'static str {
 /// 登记，而那是本家不跑官方客户端的必然结果。列表非空时不报（读写分开的
 /// 口径只在这一处被打破：预览是低频的用户点击动作，代价付得起）。
 async fn preview_action(
+    ctx: &PluginCtx,
     region: Region,
+    account: &str,
     jwt: &str,
     device_mid: Option<&str>,
     user_id: &str,
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
 ) -> Result<Value, String> {
-    let outcome = claim::preview(region, jwt, device_mid, proxy)
+    claim::preview(ctx, region, account, jwt, device_mid, user_id, proxy, true)
         .await
-        .map_err(GatewayError::into_message)?;
-    let (plans, deployed, activated, activation_error) = match outcome {
-        claim::PreviewOutcome::NotDeployed => (Vec::new(), false, None, None),
-        claim::PreviewOutcome::Plans(plans) if !plans.is_empty() => (plans, true, None, None),
-        claim::PreviewOutcome::Plans(_) => {
-            let (activated, activation_error) =
-                report_activation(region, user_id, device_mid, proxy).await;
-            match claim::preview(region, jwt, device_mid, proxy).await {
-                Ok(claim::PreviewOutcome::NotDeployed) => {
-                    (Vec::new(), false, activated, activation_error)
-                }
-                Ok(claim::PreviewOutcome::Plans(plans)) => {
-                    logging::verbose(
-                        "[Claim]",
-                        &format!(
-                            "ZCode {}账号补报激活事件后重探：{} 份可领套餐",
-                            region.label(),
-                            plans.len()
-                        ),
-                    );
-                    (plans, true, activated, activation_error)
-                }
-                // 重探失败不把「刚才那次成功的空探测」降级成错误：
-                // 首次探测已给出可信答案（当前没有可领套餐），补报只是加试。
-                Err(error) => {
-                    logging::log(
-                        "[Claim]",
-                        &format!(
-                            "ZCode {}账号补报激活后的重探失败：{error}",
-                            region.label()
-                        ),
-                    );
-                    (Vec::new(), true, activated, activation_error)
-                }
-            }
-        }
-    };
-    Ok(serde_json::json!({
-        "plans": plans.iter().map(plan_to_json).collect::<Vec<Value>>(),
-        "deployed": deployed,
-        "activated": activated,
-        "activationError": activation_error,
-    }))
+        .map(|snapshot| snapshot.to_json())
+        .map_err(GatewayError::into_message)
 }
 
 /// `claim.claim` 的实现：补报激活 → （没点名就探一次选优先级最高的）→ 领取。
@@ -1081,7 +927,9 @@ async fn preview_action(
 /// `quota_exhausted` / `captcha` 都是正常结果，前端要靠 `failure` 给不同提示。
 /// `claimedAt` 由网关落库后回填（插件写不到记录的普通字段），这里先不出现。
 async fn claim_action(
+    ctx: &PluginCtx,
     region: Region,
+    account: &str,
     jwt: &str,
     device_mid: Option<&str>,
     user_id: &str,
@@ -1106,48 +954,23 @@ async fn claim_action(
     let (activated, activation_error) =
         report_activation(region, user_id, device_mid, proxy).await;
     let requested = text("planId");
-    let plan_id = if requested.is_empty() {
-        match claim::preview(region, jwt, device_mid, proxy)
-            .await
-            .map_err(GatewayError::into_message)?
-        {
-            claim::PreviewOutcome::Plans(plans) => match claim::pick_target(&plans, "") {
-                Some(plan) => plan.plan_id.clone(),
-                None => {
-                    return Ok(serde_json::json!({
-                        "ok": false,
-                        "failure": "unavailable",
-                        "message": "当前没有可领取的套餐",
-                        "activated": activated,
-                        "activationError": activation_error,
-                    }))
-                }
-            },
-            claim::PreviewOutcome::NotDeployed => {
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "failure": "unavailable",
-                    "message": "活动尚未开始（上游接口未部署）",
-                    "activated": activated,
-                    "activationError": activation_error,
-                }))
-            }
-        }
-    } else {
-        requested
+    let plan = claim::resolve_target(
+        ctx, region, account, jwt, device_mid, user_id, proxy, &requested,
+    ).await.map_err(GatewayError::into_message)?;
+    let Some(plan) = plan else {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "failure": "unavailable",
+            "message": "当前没有可领取的套餐",
+            "activated": activated,
+            "activationError": activation_error,
+        }));
     };
-    let outcome = claim::claim(
-        region,
-        jwt,
-        &plan_id,
-        &captcha_verify_param,
-        captcha_region.as_deref(),
-        device_mid,
-        proxy,
-    )
-    .await
-    .map_err(GatewayError::into_message)?;
-    Ok(match outcome {
+    let attempt = claim::claim_plan(
+        ctx, region, account, jwt, device_mid, proxy, &plan,
+        Some((&captcha_verify_param, captcha_region.as_deref())),
+    ).await.map_err(GatewayError::into_message)?;
+    Ok(match attempt.outcome {
         claim::ClaimOutcome::Claimed { plan_id, starts_at, ends_at } => {
             logging::log(
                 "[Claim]",
@@ -1158,6 +981,7 @@ async fn claim_action(
                 "planId": plan_id,
                 "startsAt": starts_at,
                 "endsAt": ends_at,
+                "marketingError": attempt.marketing_error,
                 "activated": activated,
                 "activationError": activation_error,
             })
@@ -1179,6 +1003,7 @@ async fn claim_action(
                 "code": code,
                 "message": message,
                 "failureEndsAt": failure_ends_at,
+                "marketingError": attempt.marketing_error,
                 "activated": activated,
                 "activationError": activation_error,
             })
@@ -1345,32 +1170,6 @@ async fn session_access_token(
 }
 
 // ─── 领取结果的 JSON 形态 ──────────────────────────────────────
-
-/// `PreviewOutcome` → 界面读的 JSON（`api::zcode_claim::preview` 的同形物）。
-fn preview_json(outcome: &claim::PreviewOutcome) -> Value {
-    match outcome {
-        claim::PreviewOutcome::NotDeployed => serde_json::json!({
-            "deployed": false,
-            "plans": [],
-            "message": "上游当前没有部署套餐领取接口",
-        }),
-        claim::PreviewOutcome::Plans(plans) => serde_json::json!({
-            "deployed": true,
-            "plans": plans
-                .iter()
-                .map(|plan| serde_json::json!({
-                    "planId": plan.plan_id,
-                    "name": plan.name,
-                    "description": plan.description,
-                    "priority": plan.priority,
-                    "startsAt": plan.starts_at,
-                    "endsAt": plan.ends_at,
-                    "entitlements": plan.entitlements.len(),
-                }))
-                .collect::<Vec<_>>(),
-        }),
-    }
-}
 
 /// `ClaimOutcome` → 界面读的 JSON。
 fn claim_json(outcome: &claim::ClaimOutcome) -> Value {

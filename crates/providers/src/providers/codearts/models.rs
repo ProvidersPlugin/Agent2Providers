@@ -22,8 +22,9 @@
 //!     所以这里提供 [`Catalog::resolve`] 做**大小写无关**的查找并返回上游的真名，
 //!     转发时用真名，不要拿客户端的写法直接发。
 //!
-//! 目录缓存（5 分钟 / 有告警时 30 秒）在文件末尾；插件里**没有**落盘持久化
-//! （见 [`store_catalog`] 的说明）。本模块其余部分只管解析与合并。
+//! 目录缓存（5 分钟 / 有告警时 30 秒）在文件末尾；落盘那份走**账号台账**
+//! （[`crate::catalog_ledger`]，见 [`saved_payload`] / [`from_saved`]）——
+//! 插件进程重启后由 `adapter` 的目录准备读回来。本模块其余部分只管解析与合并。
 
 use std::time::Duration;
 
@@ -36,7 +37,13 @@ use super::oauth::signer_credential;
 use super::signer;
 
 /// 模型来自哪个源（决定路由与 `maas_type` 注入）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ── 为什么要 serde ──────────────────────────────────────────
+/// 这份清单要按账号落进台账（[`crate::catalog_ledger`]），重启后读回来接着用。
+/// `snake_case` 与 [`ModelSource::as_str`] / [`ModelSource::from_label`] 同一套
+/// 字面量，三处不会各写一份。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelSource {
     Agent,
     Builtin,
@@ -72,7 +79,7 @@ impl ModelSource {
 }
 
 /// 一条模型。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModelConfig {
     /// 上游真名（大小写敏感，转发时必须用这个）
     pub id: String,
@@ -111,7 +118,7 @@ pub struct ModelConfig {
 }
 
 /// 合并后的清单 + 诊断信息。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Catalog {
     pub models: Vec<ModelConfig>,
     pub warnings: Vec<String>,
@@ -613,11 +620,17 @@ fn form_escape(value: &str) -> String {
     out
 }
 
-/// ── 进程内目录缓存 ──────────────────────────────────────────
+/// ── 进程内目录缓存 + 台账 ────────────────────────────────────
 ///
 /// `list_models()` 是**同步**接口（适配器契约），而发现目录要发网络请求，所以
 /// 清单必须先在别处（刷新链路）落到这里，`list_models()` 只读缓存。这与 accio
 /// 的 `models::list()` 同一形状。
+///
+/// ── 落盘那份在**台账**里 ────────────────────────────────────
+/// 内存槽活不过进程重启（插件每次都是新进程），所以刷新成功时同时把清单写进
+/// 账号台账（[`crate::catalog_ledger`]，kind = [`LEDGER_KIND`]）；转发前内存为空
+/// 时由 `adapter` 的目录准备读回来（内存 → 台账 → 就地补拉一次）。
+/// 本模块只做「内存槽 ↔ 台账 payload」的翻译，见 [`saved_payload`] / [`from_saved`]。
 ///
 /// ── 为什么缓存要能"空着"而不是造一份兜底 ────────────────────
 /// 该账号一个模型都没返回时，缓存就是空的 —— `list_models()` 返回空清单，
@@ -634,6 +647,36 @@ fn cache_slot() -> &'static std::sync::Mutex<Option<CachedCatalog>> {
     CACHED.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// 账号台账里那份目录的 kind（网关存成 `pluginLedger.codearts-catalog`）。
+pub const LEDGER_KIND: &str = "codearts-catalog";
+
+/// 清单 → 台账 payload。
+///
+/// 带上 `fetchedAt`：恢复时要把**当初**拉到的时刻装回内存槽，界面「更新日期」
+/// 才如实显示这份清单有多旧，而不是假装刚刷过。
+pub fn saved_payload(catalog: &Catalog) -> Value {
+    serde_json::json!({
+        "fetchedAt": crate::logging::now_ms(),
+        "catalog": catalog,
+    })
+}
+
+/// 台账 payload → （清单, 拉到的时刻）。
+///
+/// 空清单按「没有缓存」处理（上游那个账号本来就没有模型时我们也不会写台账 ——
+/// 见 `adapter` 的刷新链路），免得把一份空目录装回内存槽、把「没拉过」与
+/// 「拉到了个空的」混成同一件事。
+pub fn from_saved(payload: &Value) -> Option<(Catalog, i64)> {
+    let catalog: Catalog = serde_json::from_value(payload.get("catalog")?.clone()).ok()?;
+    if catalog.models.is_empty() {
+        return None;
+    }
+    Some((
+        catalog,
+        payload.get("fetchedAt").and_then(Value::as_i64).unwrap_or(0),
+    ))
+}
+
 #[allow(dead_code)]
 /// 缓存有效期：正常 5 分钟；**有告警时 30 秒**（参考实现同款 —— 少几个模型时
 /// 更该快点重试，而不是把不完整的清单钉住五分钟）。
@@ -641,11 +684,13 @@ pub const CACHE_TTL_MS: i64 = 5 * 60 * 1000;
 #[allow(dead_code)]
 pub const CACHE_TTL_WARNING_MS: i64 = 30 * 1000;
 
-/// 落一份清单进缓存（并持久化到统一库），返回它。
+/// 落一份清单进内存槽，返回它。
 ///
-/// 持久化这一步不是可选的优化：**没有它，进程重启后那一次刷新若失败，
-/// 上游新增的模型会消失、已下架的又回来被广告出去**。缓存不带有效期
-/// （宁可给一份旧清单也不退回静态兜底），时效性仍由刷新链路负责。
+/// **本函数只写内存** —— 落台账是刷新链路（`adapter::refresh_models`）在成功
+/// 那一步做的：那是异步调用，而这里是同步函数（`list_models()` 的调用路径上
+/// 不能 await）。两件事分开写，是因为同步/异步这条边界挡在中间。
+///
+/// 缓存不带有效期（宁可给一份旧清单也不退回静态兜底），时效性仍由刷新链路负责。
 pub fn store_catalog(catalog: Catalog) -> Catalog {
     let now = crate::logging::now_ms();
     {
@@ -655,14 +700,23 @@ pub fn store_catalog(catalog: Catalog) -> Catalog {
     catalog
 }
 
-/// 读缓存（过期也照给：宁可给一份旧清单，也不要突然从"有模型"变成"没有"；
-/// 时效性由刷新链路负责 —— 与 agent2api 全局清单持久化同一取舍）。
+/// 从台账恢复：把清单装回内存槽，并带上它**当初**拉到的时刻。
 ///
-/// 内存槽为空（**每次进程重启后都是**）时回落到持久化那份并重建目录。
-/// 这一条不是"顺手更周到"：转发的模型校验读的是这里，而 `/v1/models` 的广告读的是
-/// `list()`（本来就有持久化回落）。两边不对称的后果是重启后
-/// 「模型列得出来、每一条都回 503 目录没拉取过」—— 用户必须手动点一次「获取模型」
-/// 才能恢复，而网关看起来完全正常。审计抓出来的，测试也补在文件末尾。
+/// 与 [`store_catalog`] 只差时间戳（那个用"现在"）—— 恢复不是刷新，别把
+/// 「更新日期」改写成此刻，否则界面会显示一份刚拉过的旧清单。
+pub fn restore_catalog(catalog: Catalog, fetched_at_ms: i64) -> Catalog {
+    {
+        let mut slot = cache_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(CachedCatalog { catalog: catalog.clone(), fetched_at_ms });
+    }
+    catalog
+}
+
+/// 读内存槽（过期也照给：宁可给一份旧清单，也不要突然从"有模型"变成"没有"；
+/// 时效性由刷新链路负责 —— 与网关侧 `catalog_cache` 同一取舍）。
+///
+/// 槽为空是**每次进程重启后的常态**，此时这里返回 `None`：读回台账那一步是
+/// 异步的（`adapter` 的目录准备），本函数必须保持同步，所以它只读内存。
 pub fn cached_catalog() -> Option<Catalog> {
     let slot = cache_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     slot.as_ref().map(|entry| entry.catalog.clone())

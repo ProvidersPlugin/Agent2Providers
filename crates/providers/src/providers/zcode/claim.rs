@@ -68,6 +68,16 @@
 // 保留的理由与 `captcha` 相同：这些判据是 parity 的对照材料，而且将来若把
 // 调度也搬进插件，它们就是现成的实现。
 #![allow(dead_code)]
+mod discovery;
+mod marketing;
+mod plans;
+mod state;
+
+pub(super) use discovery::resolve_target;
+pub use discovery::preview;
+pub use plans::ClaimablePlan;
+pub use state::{claim_plan, ClaimAttempt};
+
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
@@ -76,6 +86,7 @@ use crate::http::send_raw;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use agent2api_provider_sdk::PluginCtx;
 use crate::errors::GatewayError;
+use crate::logging;
 
 use super::region::Region;
 
@@ -367,63 +378,6 @@ pub fn os_category() -> &'static str {
     }
 }
 
-/// 一条可领取的套餐（上游 `plans[]` 的归一形态）。
-///
-/// 字段保留上游语义：`starts_at` / `ends_at` 是 **unix 秒**（不是毫秒）——
-/// 领取链路全程用秒，换算成毫秒只在展示层做，混用会让「有效期到 1970 年」
-/// 这类错误悄悄发生。
-#[derive(Clone, Debug)]
-pub struct ClaimablePlan {
-    /// 上游套餐 id（领取时原样回传）
-    pub plan_id: String,
-    /// 展示名
-    pub name: String,
-    /// 描述
-    pub description: String,
-    /// 优先级（同一批多个套餐时，取最大的那个）
-    pub priority: i64,
-    /// 生效时间（unix 秒；有些期次的活动套餐是「先领、稍后生效」，因此可能缺失）
-    pub starts_at: Option<i64>,
-    /// 失效时间（unix 秒）
-    pub ends_at: Option<i64>,
-    /// 权益条目（进日志与界面，让用户看到领到了什么）
-    pub entitlements: Vec<PlanEntitlement>,
-}
-
-/// 套餐里的一条权益
-#[derive(Clone, Debug)]
-pub struct PlanEntitlement {
-    /// 权益展示名（缺失时回落到 id）
-    pub show_name: String,
-    /// 计量单位（`tokens` / `requests` …）
-    pub unit_type: String,
-    /// 授予量（`0` = 上游没给数字）
-    pub grant_units: i64,
-    /// 周期（`one_time` = 一次性发放，`daily` = 每天续发）。
-    ///
-    /// 界面拿它区分「活动送的一次性额度」与「每日额度」（Start Plan 的两条权益
-    /// 就是 `daily`）—— 2026-09-28 那期 Trust Build 是一次性 1 亿，
-    /// 每天一个新套餐，所以两者都可能在同一天出现。
-    pub period: String,
-    /// 生效时间（unix 秒；缺失表示随套餐立即生效）
-    pub effective_at: Option<i64>,
-}
-
-/// 探测的结果。
-///
-/// ── 为什么 404 要单独成一档（这是最容易漏的一处）─────────────
-/// 参考实现在 `scheduler.ts` 里明确写着：**404 是「活动还没上线」的正常状态**
-/// （活动开抢前，接口尚未部署），要按**正常节奏**轮询而不是走错误退避。
-/// 若把 404 当失败处理，退避会让轮询节奏越来越慢，恰好错过开抢那一刻 ——
-/// 这个功能的价值全在「上新瞬间抢到」，慢一拍就没意义了。
-#[derive(Clone, Debug)]
-pub enum PreviewOutcome {
-    /// 拿到了可领取的套餐（可能是空列表：接口通了但当前没有可领的）
-    Plans(Vec<ClaimablePlan>),
-    /// 404：活动接口尚未部署（开抢前的预期状态）
-    NotDeployed,
-}
-
 /// 领取的失败语义（参考实现 `ClaimFailureKind` 的移植）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClaimFailure {
@@ -563,12 +517,12 @@ pub fn outcome_hold(outcome: &ClaimOutcome) -> NextAttempt {
 /// 这里只在真的没有时才省略那个头 —— 那种情况会稳定拿到 3001，
 /// 而那正是「谁漏了这一步」的信号，不该由本函数偷偷补一个随机值（现编的值
 /// 每次都不一样，风控看到的是「同一个账号天天换设备」）。
-pub async fn preview(
+async fn preview_billing(
     region: Region,
     jwt: &str,
     device_mid: Option<&str>,
     proxy: Option<&ResolvedProxy>,
-) -> Result<PreviewOutcome, GatewayError> {
+) -> Result<Option<Vec<ClaimablePlan>>, GatewayError> {
     let url = format!(
         "{}{PREVIEW_PATH}?app_version={}&platform={}",
         region.zcode_origin(),
@@ -594,9 +548,8 @@ pub async fn preview(
             }
         })?;
 
-    // 404 单独成一档（见 `PreviewOutcome::NotDeployed` 的文档）
     if response.status == 404 {
-        return Ok(PreviewOutcome::NotDeployed);
+        return Ok(None);
     }
     if response.status == 401 {
         return Err(GatewayError::with_status(401, "登录态已失效，无法探测套餐"));
@@ -604,21 +557,54 @@ pub async fn preview(
     let payload = response
         .payload
         .ok_or_else(|| GatewayError::with_status(502, "套餐探测：上游响应不是 JSON"))?;
-    let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
+    let code = payload.get("code").and_then(Value::as_i64);
     let data = payload.get("data");
-    if !(200..300).contains(&response.status) || code != 0 || data.is_none() {
-        let message = error_message(&payload, response.status);
+    let plans = data.and_then(|value| value.get("plans"));
+    // 无可领套餐时，上游可能省略 data / plans，或将它们置为 null。
+    let invalid_data = data.is_some_and(|value| !value.is_null() && !value.is_object());
+    let invalid_plans = plans.is_some_and(|value| !value.is_null() && !value.is_array());
+    let succeeded = (200..300).contains(&response.status)
+        && code == Some(0)
+        && payload.get("success").and_then(Value::as_bool) != Some(false);
+    if !succeeded || invalid_data || invalid_plans {
+        let code_label = code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "缺失或无效".to_string());
+        let mut message = if succeeded && invalid_data {
+            "上游套餐数据格式错误：data 应为对象或 null".to_string()
+        } else if succeeded && invalid_plans {
+            "上游套餐列表格式错误：plans 应为数组或 null".to_string()
+        } else if (200..300).contains(&response.status) && code.is_none() {
+            "上游响应缺少有效的业务状态码".to_string()
+        } else if code == Some(0) && payload.get("success").and_then(Value::as_bool) == Some(false) {
+            "上游明确返回失败状态".to_string()
+        } else {
+            error_message(&payload, response.status)
+        };
+        if !has_error_text(&payload) {
+            message = format!("{message}（上游响应原文：{}）", excerpt(&payload));
+        }
+        logging::log(
+            "[Claim]",
+            &format!(
+                "ZCode {}套餐探测响应异常：HTTP {} / code={} / data={} / 原文={}",
+                region.label(),
+                response.status,
+                code_label,
+                if data.is_none() { "缺失" } else { "在场" },
+                excerpt(&payload),
+            ),
+        );
         return Err(GatewayError::with_status(
             502,
-            format!("套餐探测失败（{code}）：{message}"),
+            format!("套餐探测失败（{code_label}）：{message}"),
         ));
     }
-    let plans = data
-        .and_then(|value| value.get("plans"))
+    let plans = plans
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(parse_plan).collect())
+        .map(|items| items.iter().filter_map(plans::parse_plan).collect())
         .unwrap_or_default();
-    Ok(PreviewOutcome::Plans(plans))
+    Ok(Some(plans))
 }
 
 /// 领取一个套餐。
@@ -629,7 +615,7 @@ pub async fn preview(
 /// 返回 `Err` 只用于「请求本身没打成」（网络 / 超时 / 响应不是 JSON）；
 /// 上游明确拒绝（含验证码失败、已领过）一律走 `Ok(ClaimOutcome::Failed)` ——
 /// 那些是**业务结果**，调用方要靠 `failure` 决定下次何时再试。
-pub async fn claim(
+async fn claim_upstream(
     region: Region,
     jwt: &str,
     plan_id: &str,
@@ -693,18 +679,20 @@ pub async fn claim(
     })?;
 
     let payload = response.payload.unwrap_or(Value::Null);
-    let biz_code = payload.get("code").and_then(Value::as_i64);
+    let biz_code = payload.get("code").and_then(plans::integer);
     let data = payload.get("data");
     let plan = data.and_then(|value| value.get("plan"));
 
     // 成功：HTTP 2xx + biz code 0 + data.plan 存在（三者缺一不可 —— 参考实现
     // 同样要求 data.plan 在场，因为只有它带 starts_at/ends_at）
-    if (200..300).contains(&response.status) && biz_code == Some(0) {
-        if let Some(plan) = plan {
+    if (200..300).contains(&response.status) && biz_code == Some(0)
+        && payload.get("success").and_then(Value::as_bool) != Some(false)
+    {
+        if let Some(plan) = plan.filter(|value| value.is_object()) {
             return Ok(ClaimOutcome::Claimed {
                 plan_id: plan_id.to_string(),
-                starts_at: plan.get("starts_at").and_then(Value::as_i64),
-                ends_at: plan.get("ends_at").and_then(Value::as_i64),
+                starts_at: plan.get("starts_at").and_then(plans::integer),
+                ends_at: plan.get("ends_at").and_then(plans::integer),
             });
         }
     }
@@ -719,7 +707,7 @@ pub async fn claim(
     // 上游在失败响应里也可能带 plan（含 ends_at），那就是「下一个可尝试窗口」
     let failure_ends_at = plan
         .and_then(|value| value.get("ends_at"))
-        .and_then(Value::as_i64);
+        .and_then(plans::integer);
     Ok(ClaimOutcome::Failed {
         plan_id: plan_id.to_string(),
         failure,
@@ -742,106 +730,33 @@ fn error_message(payload: &Value, status: u16) -> String {
     format!("HTTP {status}")
 }
 
-/// 上游 `plans[]` 里的一条 → [`ClaimablePlan`]（缺 `plan_id` 的条目丢弃）
-fn parse_plan(raw: &Value) -> Option<ClaimablePlan> {
-    let plan_id = raw.get("plan_id").and_then(Value::as_str)?.trim().to_string();
-    if plan_id.is_empty() {
-        return None;
-    }
-    let name = raw
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&plan_id)
-        .to_string();
-    let entitlements = raw
-        .get("entitlements")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let show_name = item
-                        .get("show_name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())?
-                        .to_string();
-                    Some(PlanEntitlement {
-                        show_name,
-                        unit_type: item
-                            .get("unit_type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                        grant_units: item.get("grant_units").and_then(Value::as_i64).unwrap_or(0),
-                        period: item
-                            .get("period")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                        // 生效时间（unix 秒）：品类同 [`unix_seconds_of`]。
-                        // `0` 是官方文档里的「立即生效」哨兵值，原样带出 —— 判定在
-                        // 余额侧（`balance::plan_effective_times` 只收 > 0 的）
-                        effective_at: item.get("effective_at").and_then(unix_seconds_of),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(ClaimablePlan {
-        plan_id,
-        name,
-        description: raw
-            .get("description")
+/// 上游给的人话存在吗（`msg` / `message` 有一个非空）。
+///
+/// 用来区分「上游说了原因」与「只剩兜底文案」两种情况：只有后者才需要把
+/// 响应原文附进错误里（见 [`excerpt`]）。
+fn has_error_text(payload: &Value) -> bool {
+    ["msg", "message"].iter().any(|key| {
+        payload
+            .get(*key)
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        priority: raw.get("priority").and_then(Value::as_i64).unwrap_or(0),
-        starts_at: raw.get("starts_at").and_then(unix_seconds_of),
-        ends_at: raw.get("ends_at").and_then(unix_seconds_of),
-        entitlements,
+            .is_some_and(|text| !text.trim().is_empty())
     })
 }
 
-/// 一个 unix 秒字段 → `i64`。
-///
-/// 上游这几个时间字段的官方类型是 `number | string | null`
-/// （`ZaiStartPlanPlan` / `entitlements[].effective_at` 在官方源码里就是这么写的），
-/// 只看 `as_i64` 会让**字符串形态**整条消失 —— 生效时间一丢，界面就退回
-/// 「按领取时间 / 立即生效」猜，那正是「生效时间显示成领取时间」那类 bug 的来源。
-/// 与余额侧的 `number_of` 同一条取值口径。
-fn unix_seconds_of(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(number) => number.as_i64(),
-        Value::String(text) => text.trim().parse::<i64>().ok(),
-        _ => None,
-    }
-}
+/// 排障用的字符数上限（够看清是哪一层回的包，又不至于把错误串撑爆）。
+const EXCERPT_CHARS: usize = 240;
 
-/// 从一批可领套餐里挑出目标：指定了 `plan_id` 就取它，否则取优先级最高的。
+/// 上游响应原文的一段（截断）。
 ///
-/// 参考实现的选取口径：`planId` 配置为空时按 `priority` 降序取第一个。
-/// 优先级相同的情形保持**上游给的顺序**（`max_by_key` 取最后一个的语义陷阱
-/// 要避开：这里用显式比较，相等时不替换，于是先出现的那个胜出）。
-pub fn pick_target<'a>(plans: &'a [ClaimablePlan], plan_id: &str) -> Option<&'a ClaimablePlan> {
-    let wanted = plan_id.trim();
-    if !wanted.is_empty() {
-        return plans.iter().find(|plan| plan.plan_id == wanted);
+/// 只放上游自己的 JSON —— 我们的凭证在**请求头**里（`Authorization` /
+/// `X-Device-Mid`），body 里没有，所以附原文不泄露任何东西。
+fn excerpt(payload: &Value) -> String {
+    let text = payload.to_string();
+    let mut kept: String = text.chars().take(EXCERPT_CHARS).collect();
+    if text.chars().count() > EXCERPT_CHARS {
+        kept.push('…');
     }
-    let mut best: Option<&ClaimablePlan> = None;
-    for plan in plans {
-        match best {
-            None => best = Some(plan),
-            Some(current) if plan.priority > current.priority => best = Some(plan),
-            Some(_) => {}
-        }
-    }
-    best
+    kept
 }
 
 /// 最小的 URL 查询参数编码（`url` crate 不在依赖里，这里只处理查询值）。

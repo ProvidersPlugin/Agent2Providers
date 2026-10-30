@@ -41,7 +41,9 @@ use agent2api_provider_sdk::PluginCtx;
 use crate::errors::GatewayError;
 
 use super::region::Region;
-use super::{activation, captcha, claim};
+use super::{activation, claim};
+
+const ROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(100);
 
 /// 每日窗口的开启时刻（北京时间秒偏移）：**19:00**。
 ///
@@ -77,6 +79,7 @@ pub async fn claim_daily_checkin(
     account_id: &str,
 ) -> Result<Value, GatewayError> {
     let now = crate::http::now_ms();
+    let started = tokio::time::Instant::now();
     let window = daily_window_start();
     // 窗口没开：不探测、不领取，直接给中性结果并指定窗口开启时刻
     if now < window {
@@ -117,96 +120,113 @@ pub async fn claim_daily_checkin(
         }
     }
 
-    // ── 2. 探测今天有哪些可领套餐 ─────────────────────────────
-    let plans = match claim::preview(region, &jwt, mid, proxy.as_ref()).await {
-        Ok(claim::PreviewOutcome::Plans(plans)) => plans,
-        Ok(claim::PreviewOutcome::NotDeployed) => {
-            return Ok(inactive("上游的活动接口尚未部署（活动还没上线），稍后自动重试", None))
-        }
+    claim::refresh_app_version_override(ctx).await;
+    let snapshot = match claim::preview(
+        ctx, region, account_id, &jwt, mid, &user_id, proxy.as_ref(), false,
+    ).await {
+        Ok(snapshot) => snapshot,
         Err(error) => return Ok(failed_soft(error.message)),
     };
-    if plans.is_empty() {
-        // 空列表有两种可能：今天这份已经领过了（上游把套餐从列表里摘掉），或者
-        // 此刻确实没有可领的。本家没有「今天领过没」的独立读数，只能如实说清
-        // 两种可能 —— 不能直接记成已签（那会让没领到的账号显示「已签」）。
-        return Ok(inactive(
-            "当前没有可领取的赠送套餐（可能今天已领过，或活动未开始），稍后自动重试",
-            None,
-        ));
+    if snapshot.plans.is_empty() {
+        if snapshot.preview_error.is_some() || snapshot.marketing_error.is_some() {
+            return Ok(failed_soft("部分套餐来源查询失败，尚不能确认是否有可领取套餐"));
+        }
+        return Ok(inactive("当前没有可领取的赠送套餐", None));
     }
-    let Some(target) = claim::pick_target(&plans, "") else {
-        return Ok(inactive("当前没有可领取的赠送套餐，稍后自动重试", None));
-    };
-    let plan_id = target.plan_id.clone();
-    let plan_name = target.name.clone();
+    let plans = snapshot.plans;
+    let expected = plans.len();
+    let mut results = Vec::new();
+    for plan in &plans {
+        if ROUND_TIMEOUT.saturating_sub(started.elapsed()) < std::time::Duration::from_secs(45) {
+            results.push(inactive("本轮领取时间已用完，剩余套餐稍后继续", Some(crate::http::now_ms() + 600_000)));
+            break;
+        }
+        let attempt = claim::claim_plan(
+            ctx, region, account_id, &jwt, mid, proxy.as_ref(), plan, None,
+        ).await;
+        let stop = match &attempt {
+            Ok(attempt) => matches!(&attempt.outcome,
+                claim::ClaimOutcome::Failed { failure: claim::ClaimFailure::Captcha | claim::ClaimFailure::LoginRequired, .. }
+                | claim::ClaimOutcome::Failed { code: 3012, .. }
+            ),
+            Err(_) => true,
+        };
+        results.push(plan_result(region, plan, attempt));
+        if stop { break; }
+    }
+    Ok(combine_results(results, expected))
+}
 
-    // ── 3. 领取（验证码令牌：有就用，没有就试一次不带）────────
-    // `captcha::required()` 是「上游此刻要不要每条请求附令牌」的结论（由界面
-    // 同步的配置与 3007 共同决定）。要令牌而池子空时，仍然发一次不带令牌的请求：
-    // 上游可能只是对**推理**要码、对领取不要（`skip_model_request`），那时这一下
-    // 就成功了；真被拒也只是多一次 3007，比「一律不领」更接近本意。
-    let (param, region_tag) = if captcha::required() {
-        captcha::take().unwrap_or_default()
-    } else {
-        (String::new(), String::new())
-    };
-    let outcome = claim::claim(
-        region,
-        &jwt,
-        &plan_id,
-        &param,
-        (!region_tag.is_empty()).then_some(region_tag.as_str()),
-        mid,
-        proxy.as_ref(),
-    )
-    .await;
-
-    match outcome {
-        Ok(claim::ClaimOutcome::Claimed { plan_id, ends_at, .. }) => {
-            let until = ends_at
-                .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
-                .map(|time| time.format("%m-%d %H:%M").to_string());
-            let msg = match until {
-                Some(until) => format!("领到「{plan_name}」（{plan_id}），有效期至 {until}"),
-                None => format!("领到「{plan_name}」（{plan_id}）"),
+fn plan_result(
+    region: Region,
+    plan: &claim::ClaimablePlan,
+    attempt: Result<claim::ClaimAttempt, GatewayError>,
+) -> Value {
+    let plan_id = &plan.plan_id;
+    let plan_name = &plan.name;
+    match attempt {
+        Ok(attempt) => {
+            let mut result = match attempt.outcome {
+                claim::ClaimOutcome::Claimed { ends_at, .. } => {
+                    let until = ends_at
+                        .and_then(|at| crate::beijing::date_time_of_ms(at.saturating_mul(1000)))
+                        .map(|time| time.format("%m-%d %H:%M").to_string());
+                    let msg = match until {
+                        Some(until) => format!("领到「{plan_name}」（{plan_id}），有效期至 {until}"),
+                        None => format!("领到「{plan_name}」（{plan_id}）"),
+                    };
+                    crate::logging::log("[Checkin]", &format!("✅ ZCode {}账号签到成功：{plan_id}", region.label()));
+                    json!({ "success": true, "msg": msg, "planId": plan_id, "planName": plan_name })
+                }
+                claim::ClaimOutcome::Failed { failure, code, message, failure_ends_at, .. } => {
+                    use claim::ClaimFailure;
+                    match failure {
+                        ClaimFailure::AlreadyClaimed => json!({
+                            "success": false, "alreadyCompleted": true,
+                            "msg": format!("「{plan_name}」已领取"), "planId": plan_id,
+                        }),
+                        ClaimFailure::Unavailable | ClaimFailure::QuotaExhausted => inactive(
+                            format!("「{plan_name}」{}（{code}）：{message}", failure.label()),
+                            failure_ends_at.map(|at| at.saturating_mul(1000)),
+                        ),
+                        ClaimFailure::Captcha => inactive(
+                            format!("「{plan_name}」领取需要有效的人机验证令牌，请在界面中主动完成验证后领取"),
+                            None,
+                        ),
+                        other => failed_soft(format!("「{plan_name}」{}（{code}）：{message}", other.label())),
+                    }
+                }
             };
-            crate::logging::log(
-                "[Checkin]",
-                &format!("✅ ZCode {}账号签到成功：{plan_id}", region.label()),
-            );
-            Ok(json!({ "success": true, "msg": msg, "planId": plan_id, "planName": plan_name }))
+            result["marketingError"] = json!(attempt.marketing_error);
+            result
         }
-        Ok(claim::ClaimOutcome::Failed { failure, code, message, failure_ends_at, .. }) => {
-            use claim::ClaimFailure;
-            match failure {
-                // 今天已经领过 = 这一家的「已签到」，不算失败
-                ClaimFailure::AlreadyClaimed => Ok(json!({
-                    "success": false,
-                    "alreadyCompleted": true,
-                    "msg": "今日已领取",
-                })),
-                // 活动未开始 / 额度用尽：中性未领取，等窗口
-                ClaimFailure::Unavailable | ClaimFailure::QuotaExhausted => Ok(inactive(
-                    format!("{}（{code}）：{message}", failure.label()),
-                    failure_ends_at.map(|at| at.saturating_mul(1000)),
-                )),
-                // 验证码被拒：令牌池空或令牌过期。这是 headless 部署的常态，
-                // 给中性结果 + 一句可执行的提示，第二天照常再试。
-                ClaimFailure::Captcha => Ok(inactive(
-                    if captcha::ready() == 0 {
-                        "领取需要人机验证令牌，而本机此刻没有：打开主窗口或浏览器面板页会自动补铸（Docker / 无界面部署铸不出，请在桌面端签到）"
-                            .to_string()
-                    } else {
-                        "人机验证令牌被上游拒绝，界面会自动补铸新的，稍后自动重试".to_string()
-                    },
-                    None,
-                )),
-                // 未登录 / 不符合资格 / 参数错误 / HTTP 错误：都是真问题
-                other => Ok(failed_soft(format!("{}（{code}）：{message}", other.label()))),
-            }
-        }
-        Err(error) => Ok(failed_soft(error.message)),
+        Err(error) => failed_soft(error.message),
     }
+}
+
+fn combine_results(results: Vec<Value>, expected: usize) -> Value {
+    let succeeded = results.iter().any(|row| row.get("success").and_then(Value::as_bool) == Some(true));
+    let completed = !results.is_empty() && results.len() == expected
+        && results.iter().all(|row| row.get("success").and_then(Value::as_bool) == Some(true)
+            || row.get("alreadyCompleted").and_then(Value::as_bool) == Some(true));
+    let pending = results.iter().any(|row| row.get("outcome").and_then(Value::as_str) == Some("inactive"));
+    let failed = results.iter().any(|row| row.get("success").and_then(Value::as_bool) != Some(true)
+        && row.get("alreadyCompleted").and_then(Value::as_bool) != Some(true)
+        && row.get("outcome").and_then(Value::as_str) != Some("inactive"));
+    let msg = results.iter().filter_map(|row| row.get("msg").and_then(Value::as_str))
+        .collect::<Vec<_>>().join("；");
+    let mut result = json!({
+        "success": succeeded && completed,
+        "alreadyCompleted": !succeeded && completed,
+        "msg": msg,
+        "outcome": if completed { if succeeded { "claimed" } else { "done" } }
+            else if failed { "failed" } else if pending { "inactive" } else { "failed" },
+        "results": results,
+    });
+    let retry_at = result["results"].as_array().and_then(|rows| rows.iter()
+        .filter_map(|row| row.get("retryAt").and_then(Value::as_i64)).min());
+    if let Some(at) = retry_at { result["retryAt"] = json!(at); }
+    result
 }
 
 /// 中性未领取（不落 `checkinAt`，按 `retryAt` 稍后重试）。

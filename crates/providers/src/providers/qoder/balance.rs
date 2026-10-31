@@ -30,14 +30,20 @@
 //! 套餐名来自 `GET /api/v2/user/plan` 的 `plan_tier_name`（`Free` / `Pro Trial`），
 //! 取不到就不显示（额度接口才是主链路，套餐名只是补一行）。到期的**哨兵值**见
 //! [`EXPIRY_SENTINEL_MS`]。
+//!
+//! 逐份资源包的到期时间不在 openapi 的聚合桶里：配置网页 Cookie 后，本模块
+//! 额外请求 `BIG_MODEL_CREDITS_PATH`，把 `resource_package_quota.quota_detail`
+//! 的 `expires_at` 写成 `credits[].expireAt`。没有 Cookie 时只出聚合行，
+//! 「积分到期时间」排序显示暂无数据，不影响原有余额读数。
 
 use serde_json::{json, Map, Value};
 
 use agent2api_provider_sdk::PluginCtx;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::errors::GatewayError;
+use crate::logging;
 
-use super::credentials::Credentials;
+use super::credentials::{self, Credentials};
 use super::{auth, endpoints, refresh};
 
 /// `expiresAt` 的「永不过期」哨兵值：上游给 `253402214400000`（9999-12-31）。
@@ -52,6 +58,110 @@ fn number(value: Option<&Value>) -> Option<f64> {
         Value::String(value) => value.parse::<f64>().ok().filter(|value| value.is_finite()),
         _ => None,
     }
+}
+
+/// 时间戳归一成毫秒（网页接口给毫秒；防御性兼容秒）。
+fn millis(value: Option<&Value>) -> Option<i64> {
+    let value = number(value)?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    Some(if value < 100_000_000_000.0 {
+        (value * 1000.0) as i64
+    } else {
+        value as i64
+    })
+}
+
+fn source_label(source: &str) -> &'static str {
+    match source {
+        "RESOURCE_PACKAGE_SOURCE_BONUS" => "活动赠送",
+        "RESOURCE_PACKAGE_SOURCE_PURCHASE" => "购买资源包",
+        "PLAN" => "套餐额度",
+        _ => "资源包",
+    }
+}
+
+fn package_name(source: &str, id: &str) -> String {
+    let label = source_label(source);
+    let short: String = id.chars().take(8).collect();
+    if short.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} · {short}")
+    }
+}
+
+/// 网页积分明细 → 逐份资源包行（主仓库「积分到期时间」排序的输入）。
+///
+/// 只读 `resource_package_quota.quota_detail`：`total_quota.quota_detail` 是
+/// 套餐 + 资源包的重复汇总，读它会重复出行。跳过未启用、已用完、没有到期
+/// 时间的包；`expireAt` 统一为毫秒。名字带资源包 id 前 8 位，便于同源码的
+/// 多份包在界面上区分。
+pub(crate) fn package_rows(raw: &Value, doc_unit: &str) -> Vec<Value> {
+    let Some(detail) = raw
+        .get("resource_package_quota")
+        .and_then(|quota| quota.get("quota_detail"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut rows: Vec<Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for pack in detail {
+        if pack
+            .get("is_active")
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            continue;
+        }
+        if let Some(status) = pack.get("status").and_then(Value::as_str) {
+            if !status.eq_ignore_ascii_case("ACTIVE") {
+                continue;
+            }
+        }
+        let remain = number(pack.get("remaining_value"));
+        if !remain.is_some_and(|value| value > 0.0) {
+            continue;
+        }
+        let Some(expire_at) = millis(pack.get("expires_at")) else {
+            continue;
+        };
+        let id = pack.get("id").and_then(Value::as_str).unwrap_or("");
+        if !id.is_empty() && !seen.insert(id.to_string()) {
+            continue;
+        }
+        let source = pack.get("source").and_then(Value::as_str).unwrap_or("");
+        let mut row = Map::new();
+        row.insert("name".to_string(), Value::String(package_name(source, id)));
+        if let Some(value) = number(pack.get("limit_value")) {
+            row.insert("total".to_string(), json!(value));
+        }
+        if let Some(value) = number(pack.get("used_value")) {
+            row.insert("used".to_string(), json!(value));
+        }
+        row.insert("remain".to_string(), json!(remain.unwrap_or(0.0)));
+        row.insert("expireAt".to_string(), Value::from(expire_at));
+        if !id.is_empty() {
+            row.insert("id".to_string(), Value::String(id.to_string()));
+        }
+        if let Some(unit) = pack
+            .get("unit")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != doc_unit)
+        {
+            row.insert("unit".to_string(), Value::String(unit.to_string()));
+        }
+        rows.push(Value::Object(row));
+    }
+    rows.sort_by_key(|row| {
+        row.get("expireAt")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX)
+    });
+    rows
 }
 
 /// 一行钱包（账号页余额面板按 `displayName` + `balanceView` 渲染）。
@@ -162,11 +272,13 @@ fn org_package(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
 ///     —— 「有没有这份额度」只有一份判据，见那两个函数。
 ///
 /// ── 时刻与单位 ──────────────────────────────────────────────
-///   * 不写 `expireAt` / `grantAt`：桶级没有这些字段；`subscription.expireAt`
+///   * 聚合行不写 `expireAt` / `grantAt`：桶级没有这些字段；`subscription.expireAt`
 ///     是**订阅**到期，与「这一份额度什么时候作废」是两回事，不拿它顶替；
+///   * 逐份资源包行由 [`package_rows`] 写入网页接口给的 `expires_at`（毫秒），
+///     这样主仓库才能按「最快到期优先」排序；
 ///   * `unit` 只在该桶自己的单位非空且**与文档级不同**时写（文档级取自
 ///     `userQuota.unit`，缺省「额度」；三桶通常同单位，多数情况都不写）。
-fn credit_rows(raw: &Value, doc_unit: &str) -> Vec<Value> {
+fn credit_rows(raw: &Value, doc_unit: &str, packages: &[Value]) -> Vec<Value> {
     let mut rows: Vec<Value> = Vec::new();
     if let Some(bucket) = raw.get("userQuota").filter(|value| value.is_object()) {
         if let Some(row) = credit_row(
@@ -180,17 +292,23 @@ fn credit_rows(raw: &Value, doc_unit: &str) -> Vec<Value> {
             rows.push(row);
         }
     }
-    if let Some(bucket) = add_on_bucket(raw) {
-        if let Some(row) = credit_row(
-            "个人资源包",
-            number(bucket.get("total")),
-            number(bucket.get("used")),
-            number(bucket.get("remaining")),
-            bucket.get("unit").and_then(Value::as_str),
-            doc_unit,
-        ) {
-            rows.push(row);
+    if packages.is_empty() {
+        // 没有逐份明细（未配 Cookie / 接口失败）时保留聚合行，界面至少还能看到
+        // 「个人资源包」总额；有逐份明细时用明细替换这一行，避免重复。
+        if let Some(bucket) = add_on_bucket(raw) {
+            if let Some(row) = credit_row(
+                "个人资源包",
+                number(bucket.get("total")),
+                number(bucket.get("used")),
+                number(bucket.get("remaining")),
+                bucket.get("unit").and_then(Value::as_str),
+                doc_unit,
+            ) {
+                rows.push(row);
+            }
         }
+    } else {
+        rows.extend_from_slice(packages);
     }
     if let Some(bucket) = org_bucket(raw) {
         if let Some(row) = credit_row(
@@ -274,7 +392,7 @@ async fn plan_name(credentials: &Credentials, proxy: Option<&ResolvedProxy>) -> 
 /// 抽出来是为了让「组织资源包计不计入 `available`」这类判据能单测钉住——
 /// 这一带的历史事故全是「明明读到了却显示成没有」，而症状在界面上，
 /// 光看 `query` 的返回值很难回归。
-fn usage_document(raw: &Value) -> Value {
+fn usage_document(raw: &Value, packages: &[Value]) -> Value {
     let quota = raw.get("userQuota");
     let remaining = quota.and_then(|quota| number(quota.get("remaining")));
     let total = quota.and_then(|quota| number(quota.get("total")));
@@ -296,7 +414,7 @@ fn usage_document(raw: &Value) -> Value {
         .into_iter()
         .flatten()
         .reduce(|acc, value| acc + value);
-    let credits = credit_rows(raw, unit);
+    let credits = credit_rows(raw, unit, packages);
     let mut document = json!({
         "available": available,
         "unit": unit,
@@ -311,6 +429,124 @@ fn usage_document(raw: &Value) -> Value {
         }
     }
     document
+}
+
+/// 用网页会话 Cookie 读逐份积分包；Cookie 缺失、失效或属于别的账号时返回错误。
+///
+/// 这个接口是**增强**：调用方在余额查询里要吞掉错误、回落到聚合读数；只有
+/// 管理动作 `webcookie.set` 才把错误直接交给用户。
+pub(crate) async fn big_model_credits(
+    credentials: &Credentials,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Vec<Value>, GatewayError> {
+    if credentials.web_cookie.is_empty() {
+        return Err(GatewayError::with_status(400, "还没有配置 Qoder 网页 Cookie"));
+    }
+    let response = auth::request(
+        "GET",
+        &format!(
+            "{}{}",
+            credentials.region.web_origin(),
+            endpoints::BIG_MODEL_CREDITS_PATH
+        ),
+        None,
+        &endpoints::web_cookie_headers(credentials.region, &credentials.web_cookie),
+        proxy,
+    )
+    .await?;
+    let raw = auth::payload(response, "积分明细查询")?;
+    let cookie_user = raw.get("user_id").and_then(Value::as_str).unwrap_or("");
+    if !cookie_user.is_empty()
+        && !credentials.user_id.is_empty()
+        && cookie_user != credentials.user_id
+    {
+        return Err(GatewayError::with_status(
+            400,
+            "这枚网页 Cookie 属于另一个 Qoder 账号，请登录当前账号后重试",
+        ));
+    }
+    Ok(package_rows(&raw, "credits"))
+}
+
+pub(crate) async fn web_cookie_info(
+    ctx: &PluginCtx,
+    region: super::endpoints::Region,
+    account: &str,
+) -> Result<Value, GatewayError> {
+    if account.trim().is_empty() {
+        return Err(GatewayError::with_status(400, "Qoder 网页 Cookie 需要指定账号"));
+    }
+    let record = crate::store::record(ctx, region.provider_id(), account).await?;
+    let configured = !crate::store::pick(&record, &["webCookie", "web_cookie"]).is_empty();
+    Ok(json!({ "configured": configured }))
+}
+
+pub(crate) async fn web_cookie_set(
+    ctx: &PluginCtx,
+    region: super::endpoints::Region,
+    account: &str,
+    payload: &Value,
+) -> Result<Value, GatewayError> {
+    if account.trim().is_empty() {
+        return Err(GatewayError::with_status(400, "Qoder 网页 Cookie 需要指定账号"));
+    }
+    let cookie = credentials::cookie(payload)?;
+    if cookie.is_empty() {
+        return Err(GatewayError::with_status(400, "请提供 Qoder 网页 Cookie"));
+    }
+    let record = crate::store::record(ctx, region.provider_id(), account).await?;
+    let mut credentials = Credentials::from_payload(&record)?;
+    credentials.region = region;
+    credentials.web_cookie = cookie.clone();
+    if credentials.user_id.is_empty() {
+        return Err(GatewayError::with_status(400, "Qoder 账号缺少 userId，无法校验 Cookie"));
+    }
+    let proxy = auth::account_proxy(&record)?;
+    // 先真正打一次积分明细：既验证 Cookie 有效，也验证它属于当前账号。
+    let packages = big_model_credits(&credentials, proxy.as_ref()).await?;
+    let expect = crate::store::secret_view(&record);
+    let next = crate::store::with_fields(&expect, &[("webCookie", Value::String(cookie))]);
+    let written = crate::store::save(ctx, account, &expect, &next).await?;
+    if !written {
+        return Err(GatewayError::with_status(
+            502,
+            "账号凭证刚被其他操作更新，请重新读取后再试",
+        ));
+    }
+    let earliest = packages
+        .iter()
+        .filter_map(|row| row.get("expireAt").and_then(Value::as_i64))
+        .min();
+    Ok(json!({
+        "configured": true,
+        "packages": packages.len(),
+        "earliestExpireAt": earliest,
+    }))
+}
+
+pub(crate) async fn web_cookie_clear(
+    ctx: &PluginCtx,
+    region: super::endpoints::Region,
+    account: &str,
+) -> Result<Value, GatewayError> {
+    if account.trim().is_empty() {
+        return Err(GatewayError::with_status(400, "Qoder 网页 Cookie 需要指定账号"));
+    }
+    let record = crate::store::record(ctx, region.provider_id(), account).await?;
+    let expect = crate::store::secret_view(&record);
+    let mut next = expect.clone();
+    if let Some(object) = next.as_object_mut() {
+        object.remove("webCookie");
+        object.remove("web_cookie");
+    }
+    let written = crate::store::save(ctx, account, &expect, &next).await?;
+    if !written {
+        return Err(GatewayError::with_status(
+            502,
+            "账号凭证刚被其他操作更新，请重新读取后再试",
+        ));
+    }
+    Ok(json!({ "configured": false }))
 }
 
 pub async fn query(
@@ -339,7 +575,21 @@ pub async fn query(
         ).await?;
     }
     let raw = auth::payload(response, "额度查询")?;
-    let mut document = usage_document(&raw);
+    let packages = if credentials.web_cookie.is_empty() {
+        Vec::new()
+    } else {
+        match big_model_credits(&credentials, proxy.as_ref()).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                logging::verbose(
+                    "[Qoder]",
+                    &format!("积分明细查询失败（保留聚合额度）：{}", error.message),
+                );
+                Vec::new()
+            }
+        }
+    };
+    let mut document = usage_document(&raw, &packages);
     let mut subscription = Map::new();
     if let Some(name) = plan_name(&credentials, proxy.as_ref()).await {
         subscription.insert("planName".to_string(), Value::String(name));
@@ -353,3 +603,97 @@ pub async fn query(
     Ok(document)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn package_rows_keeps_active_sorted_packages_only() {
+        let raw = json!({
+            "resource_package_quota": {
+                "quota_detail": [
+                    {
+                        "id": "01a19030-f27b-7ef1-88da-81e4369703af",
+                        "limit_value": 100,
+                        "used_value": 0,
+                        "remaining_value": 100,
+                        "unit": "credits",
+                        "expires_at": 1796012488144_i64,
+                        "source": "RESOURCE_PACKAGE_SOURCE_BONUS",
+                        "status": "ACTIVE",
+                        "is_active": true
+                    },
+                    {
+                        "id": "01a171c2-5d1c-7177-9729-7ec54e1a1445",
+                        "limit_value": 100,
+                        "used_value": 0,
+                        "remaining_value": 100,
+                        "unit": "credits",
+                        "expires_at": 1795501924458_i64,
+                        "source": "RESOURCE_PACKAGE_SOURCE_BONUS",
+                        "status": "ACTIVE",
+                        "is_active": true
+                    },
+                    {
+                        "id": "zero",
+                        "remaining_value": 0,
+                        "expires_at": 1795501924458_i64,
+                        "status": "ACTIVE"
+                    },
+                    {
+                        "id": "expired",
+                        "remaining_value": 100,
+                        "expires_at": 1795501924458_i64,
+                        "status": "EXPIRED"
+                    },
+                    {
+                        "id": "no-expiry",
+                        "remaining_value": 100,
+                        "expires_at": 0,
+                        "status": "ACTIVE"
+                    }
+                ]
+            }
+        });
+        let rows = package_rows(&raw, "credits");
+        assert_eq!(rows.len(), 2, "只保留两份有效包");
+        assert_eq!(rows[0]["expireAt"], json!(1795501924458_i64));
+        assert_eq!(rows[1]["expireAt"], json!(1796012488144_i64));
+        assert_eq!(rows[0]["name"], json!("活动赠送 · 01a171c2"));
+        assert_eq!(rows[0]["remain"].as_f64(), Some(100.0));
+        assert_eq!(rows[0]["total"].as_f64(), Some(100.0));
+    }
+
+    #[test]
+    fn usage_document_replaces_addon_row_when_packages_exist() {
+        let raw = json!({
+            "userQuota": { "total": 300, "used": 75, "remaining": 225, "unit": "credits" },
+            "addOnQuota": { "total": 700, "used": 0, "remaining": 700, "unit": "credits" }
+        });
+        let packages = vec![json!({
+            "name": "活动赠送 · 01a171c2",
+            "total": 100,
+            "used": 0,
+            "remain": 100,
+            "expireAt": 1795501924458_i64
+        })];
+        let document = usage_document(&raw, &packages);
+        let credits = document.get("credits").and_then(Value::as_array).expect("credits 应存在");
+        assert!(credits.iter().any(|row| row.get("name").and_then(Value::as_str) == Some("套餐额度")));
+        assert!(!credits.iter().any(|row| row.get("name").and_then(Value::as_str) == Some("个人资源包")));
+        assert!(credits.iter().any(|row| row.get("expireAt").and_then(Value::as_i64) == Some(1795501924458)));
+    }
+
+    #[test]
+    fn usage_document_keeps_addon_row_without_packages() {
+        let raw = json!({
+            "userQuota": { "total": 300, "used": 75, "remaining": 225, "unit": "credits" },
+            "addOnQuota": { "total": 700, "used": 0, "remaining": 700, "unit": "credits" }
+        });
+        let document = usage_document(&raw, &[]);
+        let credits = document.get("credits").and_then(Value::as_array).expect("credits 应存在");
+        assert!(credits.iter().any(|row| row.get("name").and_then(Value::as_str) == Some("个人资源包")));
+    }
+}

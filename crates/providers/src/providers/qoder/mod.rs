@@ -202,7 +202,13 @@ impl Provider for QoderProvider {
             proto::LoginMethod::Token {
                 label: "个人访问令牌（PAT）".to_string(),
                 placeholder: "Qoder 个人访问令牌（PAT）".to_string(),
-                extra_fields: Vec::new(),
+                extra_fields: vec![proto::LoginField {
+                    key: "webCookie".to_string(),
+                    label: "网页 Cookie（可选，用于积分明细）".to_string(),
+                    placeholder: "粘贴 qoder_session_cookie=… 或完整 Cookie".to_string(),
+                    optional: true,
+                    multiline: true,
+                }],
             },
             proto::LoginMethod::Browser {
                 button: "网页登录".to_string(),
@@ -213,12 +219,15 @@ impl Provider for QoderProvider {
         // 账号行：两个地区能力完全一致（拆家后是两家 provider，各自都要申报，
         // 漏一个会让国际版掉进兜底）。
         //   `credit_detail` —— 三个桶各一行（套餐额度 / 个人资源包 / 组织资源包），
-        //     桶级口径、没有时刻。
+        //     桶级口径；配置网页 Cookie 后，个人资源包再拆成逐份包。
+        //   `credit_expiry` —— 网页 Cookie 可读时，逐份包带 `expireAt`（毫秒），
+        //     主仓库据此按「最快到期优先」排序账号。
         //   `edition` —— 两家各是单一地区，但公开形态仍带 `edition` 供徽章显示。
         //   `email_as_name` —— 本家账号以邮箱报名字。
         .with_account_features(proto::AccountFeatures {
             usage: true,
             credit_detail: true,
+            credit_expiry: true,
             edition: true,
             identifier: vec!["uid".to_string(), "userId".to_string()],
             expiry: vec!["expiresAt".to_string()],
@@ -544,10 +553,10 @@ impl Provider for QoderProvider {
     /// `installSupported` / `installing`），形状一变界面就白屏，所以逐字复刻。
     fn admin_action<'a>(
         &'a self,
-        _ctx: &'a PluginCtx,
-        _account: &'a str,
+        ctx: &'a PluginCtx,
+        account: &'a str,
         action: &'a str,
-        _payload: &'a Value,
+        payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
             match action {
@@ -555,8 +564,17 @@ impl Provider for QoderProvider {
                 "risk.install" => risk::install_component()
                     .await
                     .map_err(GatewayError::into_message),
+                "webcookie.info" => balance::web_cookie_info(ctx, self.region, account)
+                    .await
+                    .map_err(GatewayError::into_message),
+                "webcookie.set" => balance::web_cookie_set(ctx, self.region, account, payload)
+                    .await
+                    .map_err(GatewayError::into_message),
+                "webcookie.clear" => balance::web_cookie_clear(ctx, self.region, account)
+                    .await
+                    .map_err(GatewayError::into_message),
                 other => Err(format!(
-                    "Qoder 不认识管理动作「{other}」（可用：risk.status / risk.install）"
+                    "Qoder 不认识管理动作「{other}」（可用：risk.status / risk.install / webcookie.info / webcookie.set / webcookie.clear）"
                 )),
             }
         })

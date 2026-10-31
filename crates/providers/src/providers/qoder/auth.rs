@@ -138,7 +138,9 @@ pub async fn prepare_account(payload: &Value, region: Region) -> Result<Credenti
     }
     let pat = credentials::secret(payload, &["pat", "personalAccessToken", "personal_token"])?;
     if !pat.is_empty() {
-        return exchange_pat(&pat, region, None).await;
+        let mut credentials = exchange_pat(&pat, region, None).await?;
+        credentials.web_cookie = credentials::cookie(payload)?;
+        return Ok(credentials);
     }
     let mut credentials = Credentials::from_payload(payload)?;
     credentials.region = region;

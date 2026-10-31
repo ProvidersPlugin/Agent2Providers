@@ -91,6 +91,9 @@ async fn refresh_and_save(
     } else {
         refresh_via_open_api(credentials, proxy.as_ref()).await?
     };
+    // 网页 Cookie 不在 openapi 续期响应里：刷新后必须从旧凭证带过来，
+    // 否则下一次余额查询会丢失积分明细。
+    fresh.web_cookie = credentials.web_cookie.clone();
     fresh.complete_identity()?;
     if fresh.user_id != credentials.user_id || fresh.region != credentials.region {
         return Err(GatewayError::with_status(400, "Qoder 续期返回了不同账号，旧凭证未被覆盖"));

@@ -20,6 +20,8 @@ pub struct Credentials {
     pub email: String,
     pub name: String,
     pub machine_id: String,
+    /// 网页端会话 Cookie（只用于读取逐份积分明细，不参与转发/续期）。
+    pub web_cookie: String,
 }
 
 impl Credentials {
@@ -64,6 +66,7 @@ impl Credentials {
             email: text(payload, &["email"]).chars().take(320).collect(),
             name: text(payload, &["nickname", "name"]).chars().take(100).collect(),
             machine_id,
+            web_cookie: cookie(payload)?,
         };
         if parts.len() == 1 && !refresh.is_empty() {
             credentials.refresh_token = format!("{}|{}|{}", refresh, credentials.user_id, credentials.machine_id);
@@ -135,8 +138,49 @@ impl Credentials {
             "email": text_or_null(&self.email),
             "nickname": text_or_null(&self.name),
             "machineId": text_or_null(&self.machine_id),
+            "webCookie": text_or_null(&self.web_cookie),
         })
     }
+}
+
+/// 网页会话 Cookie：接受完整 `Cookie:` 头，也接受单独的
+/// `qoder_session_cookie=…`，或只粘贴值（自动补 cookie 名）。
+///
+/// 只允许文本头能安全承载的字符：换行是头注入，超过 8 KiB 的串多半是贴错
+/// 了整段请求头。Cookie 里必须真的有 `qoder_session_cookie` —— 缺它的串
+/// 打网页额度接口只会 401，留着只会让用户以为已经配好。
+pub fn cookie(payload: &Value) -> Result<String, GatewayError> {
+    normalize_cookie(&text(payload, &["webCookie", "web_cookie", "cookie"]))
+}
+
+pub fn normalize_cookie(raw: &str) -> Result<String, GatewayError> {
+    let mut value = raw.trim();
+    if value.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("Cookie:")) {
+        value = value[7..].trim();
+    }
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.len() > 8192 || value.chars().any(|ch| ch.is_control()) {
+        return Err(GatewayError::with_status(400, "Qoder 网页 Cookie 过长或包含非法控制字符"));
+    }
+    let has_session = value
+        .split(';')
+        .map(str::trim)
+        .any(|part| part.starts_with("qoder_session_cookie="));
+    let normalized = if has_session {
+        value.to_string()
+    } else if value.contains(';') {
+        // 明显是一段 Cookie 头，但里面没有会话名：不猜，直接拒绝。
+        return Err(GatewayError::with_status(
+            400,
+            "Qoder 网页 Cookie 里没有 qoder_session_cookie，请从 qoder.cn 的请求头里复制完整 Cookie",
+        ));
+    } else {
+        // 只粘贴了会话值（base64 里可能带 `=`），补上 cookie 名。
+        format!("qoder_session_cookie={value}")
+    };
+    Ok(normalized)
 }
 
 pub fn text(payload: &Value, keys: &[&str]) -> String {
@@ -179,4 +223,32 @@ pub fn timestamp(value: Option<&Value>) -> Option<i64> {
         return if number < 100_000_000_000 { number.checked_mul(1000) } else { Some(number) };
     }
     chrono::DateTime::parse_from_rfc3339(value.as_str()?).ok().map(|time| time.timestamp_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_accepts_full_header() {
+        let raw = "Cookie: qoder_session_cookie=abc==; acw_tc=xyz";
+        assert_eq!(normalize_cookie(raw).unwrap(), "qoder_session_cookie=abc==; acw_tc=xyz");
+    }
+
+    #[test]
+    fn cookie_accepts_raw_session_value() {
+        let raw = "MTc5MzM2MjU3NXx0Vk5DdU1ZNzIwNGNyem9Vam52enpERllzVjI3Z0lfcVAwM3RENDViUVRmYTBaV3Bvbzl5bFgybURUbjBpeEpmZkNOci1ZVEJmOFVmMk1wX3JYQm5fbDVWS2R3c2dEdXFrMzZvMEhPZ19DQ0d1WDc2U1p6TFZUUGNycVJZQ25JQXNObUxTTjVOWmRSZzZEMUFZS2I1clBzdjh0cEVUS1AyRi12dUtsR2ZuS2tQOVc4emdvV3haVGNOXzVqSU9uTllzVlVBQlJLN1NyR0pJVVByNjU1UE5QZkUyZjZSdFc4TklWYldCQT09fNOpIJ-5KiZ8Jmwf0RjkrLC34S-g96LfbvFTm4UgaMly";
+        assert!(normalize_cookie(raw).unwrap().starts_with("qoder_session_cookie="));
+    }
+
+    #[test]
+    fn cookie_rejects_header_without_session_name() {
+        let error = normalize_cookie("foo=bar; baz=qux").unwrap_err();
+        assert!(error.message.contains("qoder_session_cookie"));
+    }
+
+    #[test]
+    fn cookie_rejects_control_characters() {
+        assert!(normalize_cookie("qoder_session_cookie=a\r\nX: y").is_err());
+    }
 }

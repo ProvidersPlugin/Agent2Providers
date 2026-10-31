@@ -134,6 +134,8 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
         "hasSession": !access_token.is_empty(),
         // 有刷新令牌 = 能续期（PAT 与设备授权都带）
         "canRefresh": !crate::store::pick(secret, &["refreshToken", "refresh_token"]).is_empty(),
+        // 有网页 Cookie = 能读逐份积分到期（只影响积分明细，不影响转发）
+        "hasWebCookie": !crate::store::pick(secret, &["webCookie", "web_cookie"]).is_empty(),
         "desktop": false,
     });
     if !email.is_empty() {

@@ -168,6 +168,12 @@ pub const EXCHANGE_PATH: &str = "/api/v1/jobToken/exchange";
 pub const USER_INFO_PATH: &str = "/api/v1/userinfo";
 pub const USAGE_PATH: &str = "/api/v2/quota/usage";
 
+/// 网页端个人积分明细（含逐份资源包的 `expires_at`）。
+///
+/// 与 [`USAGE_PATH`] 不是同一套鉴权：这个接口挂在 [`Region::web_origin`] 上，
+/// 只认网页会话 Cookie；openapi 的 Bearer 打过去是 401（2026-10-31 实测）。
+pub const BIG_MODEL_CREDITS_PATH: &str = "/api/v2/me/usages/big_model_credits";
+
 /// 套餐查询（`GET`，返回 `plan_tier_name` 等）。与额度接口同在 openapi 主机上，
 /// 用同一套头；余额面板的「套餐 Pro Trial」一行就来自这里。
 pub const PLAN_PATH: &str = "/api/v2/user/plan";
@@ -249,4 +255,25 @@ pub fn open_api_headers(token: Option<&str>) -> Vec<(String, String)> {
         headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     }
     headers
+}
+
+/// 网页额度接口的浏览器标识（抓包确认的 Chrome UA）。
+const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
+
+/// 网页额度接口的请求头：Cookie 会话 + 页面 XHR 的最小头束。
+///
+/// `x-csrf-token` 是页面里固定的哨兵值（不是随机 CSRF）；`x-requested-with`
+/// 与 `referer` 一起让上游按「站内 XHR」处理。网页端用 `credentials: include`
+/// 发请求，openapi 的 Bearer 打这个接口不认。
+pub fn web_cookie_headers(region: Region, cookie: &str) -> Vec<(String, String)> {
+    vec![
+        ("Accept".to_string(), "application/json, text/plain, */*".to_string()),
+        ("Accept-Language".to_string(), "zh-CN,zh;q=0.9".to_string()),
+        ("Cookie".to_string(), cookie.to_string()),
+        ("Referer".to_string(), format!("{}/account/usage", region.web_origin())),
+        ("User-Agent".to_string(), WEB_USER_AGENT.to_string()),
+        ("X-CSRF-Token".to_string(), "_echo_csrf_using_sec_fetch_site_".to_string()),
+        ("X-Requested-With".to_string(), "XMLHttpRequest".to_string()),
+        ("X-Timezone".to_string(), "Asia/Shanghai".to_string()),
+    ]
 }

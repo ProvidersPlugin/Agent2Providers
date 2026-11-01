@@ -277,7 +277,8 @@ mod tests {
             user_id: "uid".to_string(),
             refresh_token: "jwt-token".to_string(),
             oauth_context: Some(OAuthContext {
-                pkce_pair: PkcePair {
+                                client_id: None,
+pkce_pair: PkcePair {
                     code_verifier: "verifier".to_string(),
                     ..PkcePair::default()
                 },

@@ -919,7 +919,8 @@ mod tests {
                     user_id: account_id.into(),
                     refresh_token: "rt".into(),
                     oauth_context: Some(OAuthContext {
-                        pkce_pair: PkcePair { code_verifier: "v".into(), ..Default::default() },
+                                                client_id: None,
+pkce_pair: PkcePair { code_verifier: "v".into(), ..Default::default() },
                         ..Default::default()
                     }),
                     ..Default::default()

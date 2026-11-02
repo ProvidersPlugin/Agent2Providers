@@ -83,14 +83,24 @@ use crate::workbuddy_shared::endpoints::normalize_endpoint;
 
 use self::quota_reset::parse_quota_reset_at;
 
-/// 上游错误码 11-128（历史文案：Illegal API invocation from an unapproved channel）。
+/// WorkBuddy 对未获批准的 API 渠道返回的业务码。
 ///
 /// 实测语义：多为提示词命中上游敏感词审核而被拦截（并非单纯的频率风控）。
-/// 常量名沿用 Node 版的历史命名，不要据此理解成「频率限制」。
 /// 拦截会持续一小段时间，期间客户端失败自动重试会形成重试风暴并给拦截续期，
 /// 因此命中 11-128 时值得退避重试 —— 次数与间隔统一走设置页的「请求重试」
 /// （历史硬编码是 10 秒 / 25 秒各一次；间隔设得过短会拉长拦截窗口，建议 ≥10 秒）。
 const RATE_LIMIT_CODE: i64 = 11_128;
+
+/// 同一业务码也用于其他请求校验；只有明确的渠道拒绝文案才走终态路径。
+fn is_channel_rejection(error_body: &Value) -> bool {
+    let code = error_body.get("code").and_then(Value::as_i64);
+    let message = error_body
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    code == Some(RATE_LIMIT_CODE)
+        && message.to_ascii_lowercase().contains("unapproved channel")
+}
 
 /// 上游要求首条消息必须是 system prompt，否则返回 400
 /// （first message is not system prompt）。客户端没带 system 消息时注入一条兜底系统消息。
@@ -366,7 +376,8 @@ impl Provider for WorkBuddyProvider {
     /// 上游错误分类（照抄改造前 `upstream` 的判定与文案）：
     ///   - 401 → TokenExpired（刷新后同账号重试一次）
     ///   - 429 或 code 6004 → QuotaLimited（冷却 + 换账号）
-    ///   - 内容策略拦截（11-128 或审核文案）→ ContentBlocked（**不罚账号**：换中性提示词后
+    ///   - 未批准渠道（11128）→ Fatal（保留上游码，不重试、不换提示词）
+    ///   - 内容策略拦截文案 → ContentBlocked（**不罚账号**：换中性提示词后
     ///     同账号重试一次 + 触发降级，见 `core::degrade`）
     ///   - 其余 → Fatal（原样透传）
     ///
@@ -394,19 +405,19 @@ impl Provider for WorkBuddyProvider {
                 status,
             };
         }
-        // 11-128 透传时追加敏感词指引（改造前在 rotate::request_with_waf_retry 里）
         let is_waf_code = code == Some(RATE_LIMIT_CODE);
         let hint = if is_waf_code { WAF_HINT } else { "" };
         let message = format!("上游返回 {status}: {raw}{hint}");
-        // 内容策略拦截（11-128 及其历史文案）：**不罚账号**，交给编排层降级到
-        // 中性提示词后同账号重试一次（见 `core::degrade`）。判据取并集 ——
-        // 业务码兜住「上游改了文案」、共用文案规则兜住「上游改了码」，两条
-        // 指向的是同一件事（论证见 `providers::content_block` 模块头）。
-        //
-        // 提示文案分两种：11-128 用它自己那句既有措辞（`WAF_HINT`，改造前
-        // 就在 —— 既有用户的错误文案逐字不变是本项目的约定，不并进共用提示）；
-        // 只按文案命中的那一支才补共用提示（两条提示说的是同一件事，
-        // 叠在一起只是噪音）。
+        // 这个具体响应是渠道校验失败，不能被下面共用的「内容审核」文案规则
+        // 吸收成 ContentBlocked。上游同时明确要求不重试；保留码并原样终止。
+        if is_channel_rejection(error_body) {
+            return proto::ErrorClass::Fatal {
+                status,
+                message,
+                upstream_code: code,
+            };
+        }
+        // 保留其他 11-128 响应既有的内容审核与降级行为。
         if is_waf_code {
             return proto::ErrorClass::ContentBlocked {
                 status,
@@ -426,6 +437,25 @@ impl Provider for WorkBuddyProvider {
             message,
             upstream_code: code,
         }
+    }
+
+    fn retry_advice(
+        &self,
+        error_body: &Value,
+        attempt: usize,
+        budget: usize,
+    ) -> Option<proto::RetryAdvice> {
+        let code = error_body.get("code").and_then(Value::as_i64);
+        if code != Some(RATE_LIMIT_CODE)
+            || is_channel_rejection(error_body)
+            || attempt >= budget
+        {
+            return None;
+        }
+        Some(proto::RetryAdvice {
+            delay_ms: 10_000,
+            reason: "上游敏感词拦截（11-128），请检查提示词中的敏感词".to_string(),
+        })
     }
 
     /// 取 access token（含临期主动刷新并回写账号）。
@@ -549,43 +579,6 @@ impl Provider for WorkBuddyProvider {
                 // 没有登录态），全部如实报成失败原因，界面据此显示「为什么没变」
                 proto::RefreshOutcome::failed(outcome.reason)
             })
-        })
-    }
-
-    /// 11-128 退避建议（改造前 `rotate::request_with_waf_retry` 的判定；
-    /// 次数与间隔改由设置页的「请求重试」统一提供）。
-    ///
-    /// **循环**留在编排层（架构文档 §4.3「11-128 退避逻辑保持在转发层」），
-    /// 这里只回答「这个错误要不要退避、退多久、为什么」——
-    /// 「哪个码是敏感词拦截」是 workbuddy 的知识，不该漏进 `upstream/`。
-    ///
-    /// `budget` 是编排层按「这一轮是不是已经换过家」算出的预算
-    /// （见 `ProviderAdapter::retry_advice` 的说明）—— 本函数只比 `attempt`
-    /// 与它，不去读全局设置里的哪一档。
-    ///
-    /// 返回的 `reason` 不含「第 n/N 次」：那是编排层才知道的读数
-    /// （见 `RetryAdvice` 的说明）。
-    fn retry_advice(
-        &self,
-        error_body: &Value,
-        attempt: usize,
-        budget: usize,
-    ) -> Option<proto::RetryAdvice> {
-        let code = error_body.get("code").and_then(Value::as_i64);
-        if code != Some(RATE_LIMIT_CODE) {
-            return None;
-        }
-        if attempt >= budget {
-            return None;
-        }
-        // ── 重试间隔在插件里取不到设置页的值（迁移时改的一处）──────────
-        // 网关读 `config::retry_settings().delay_ms()`（设置页「请求重试」）。
-        // 插件没有配置回调，所以用**历史硬编码**那一档：10 秒（改造前的默认，
-        // 也是设置页的出厂值）。影响面：用户把间隔改过之后，插件路径上仍按
-        // 10 秒退避 —— 比不重试好，比读配置差一点。
-        Some(proto::RetryAdvice {
-            delay_ms: 10_000,
-            reason: "上游敏感词拦截（11-128），请检查提示词中的敏感词".to_string(),
         })
     }
 
@@ -914,11 +907,12 @@ async fn default_session_token(ctx: &PluginCtx, region: Region) -> Result<String
 
 /// 客户端身份 + 鉴权 + 会话追踪头。
 ///
-/// ── 会话头族与身份对齐（2026-10 升级，渠道校验 11-128）────────
-/// 国际版上游上线了「渠道校验」：对话请求缺会话头族（`X-Conversation-ID` /
-/// `-Request-ID` / `-Message-ID` / `-Root-Request-ID`）时回 400 / code 11-128
-/// （`conversation id missing`，displayTips「这次调用没通过渠道校验，可能不是
-/// 官方客户端发出的」）。取值形态按 2026-10-16 对国际版客户端 5.8.4 的
+/// ── 会话头族与身份对齐（2026-10 升级，渠道校验 11128）────────
+/// 早期国际版记录显示，缺会话头族（`X-Conversation-ID` / `-Request-ID` /
+/// `-Message-ID` / `-Root-Request-ID`）可触发渠道校验。当前运行记录也出现了
+/// 同码的 `Illegal API invocation from an unapproved channel`，但完整会话头俱在，
+/// 且相同身份字段的请求有成功样本，因此不能仅凭 11128 判定缺头或擅自改身份值。
+/// 取值形态按 2026-10-16 对国际版客户端 5.8.4 的
 /// mitmproxy 抓包对齐（参考实现 workbuddy2api-hub #381，两仓同步升级）：
 ///
 /// - 会话 / 消息 id **每次请求现生成**：会话 id 是带连字符的 UUID，请求 /
@@ -1018,6 +1012,122 @@ pub(super) fn chat_headers(
         headers.push(("Accept".to_string(), accept.to_string()));
     }
     headers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn is_hex(value: &str) -> bool {
+        value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
+    #[test]
+    fn chat_identity_and_conversation_headers_match_each_edition() {
+        for region in Region::ALL {
+            let endpoint = "https://tenant.example.test/";
+            let session = json!({ "endpoint": endpoint });
+            let headers = chat_headers(&session, region, Some("text/event-stream"));
+            let conversation_id = header(&headers, "X-Conversation-ID").unwrap_or_default();
+            let message_id = header(&headers, "X-Conversation-Message-ID").unwrap_or_default();
+            let request_id = header(&headers, "X-Conversation-Request-ID").unwrap_or_default();
+
+            assert_eq!(
+                chat_completions_url(&session, region),
+                "https://tenant.example.test/v2/chat/completions"
+            );
+            assert_eq!(
+                header(&headers, "Origin"),
+                Some("https://tenant.example.test")
+            );
+            assert_eq!(
+                header(&headers, "Referer"),
+                Some("https://tenant.example.test/")
+            );
+            assert_eq!(header(&headers, "X-Domain"), Some("tenant.example.test"));
+            assert_eq!(
+                header(&headers, "X-IDE-Name"),
+                Some(region.edition().ua_platform)
+            );
+            assert_eq!(
+                header(&headers, "X-IDE-Type"),
+                Some(region.edition().ua_platform)
+            );
+            assert_eq!(
+                header(&headers, "X-IDE-Version"),
+                Some(region.edition().chat_ide_version)
+            );
+            assert_eq!(
+                header(&headers, "User-Agent"),
+                Some(region.edition().chat_ua)
+            );
+            assert_eq!(header(&headers, "X-Product"), Some("SaaS"));
+            assert_eq!(header(&headers, "X-Root-Request-ID"), Some(request_id));
+            assert_eq!(header(&headers, "X-Request-ID"), Some(message_id));
+            assert_eq!(message_id.len(), 32);
+            assert!(is_hex(message_id));
+            assert_eq!(request_id.len(), 32);
+            assert!(is_hex(request_id));
+            assert_eq!(conversation_id.len(), 36);
+            for position in [8, 13, 18, 23] {
+                assert_eq!(conversation_id.as_bytes()[position], b'-');
+            }
+            assert!(is_hex(&conversation_id.replace('-', "")));
+            assert!(header(&headers, "X-Session-ID").is_none());
+        }
+    }
+
+    #[test]
+    fn unapproved_channel_11128_is_terminal_for_both_editions() {
+        let error = json!({
+            "code": 11128,
+            "message": "Illegal API invocation from an unapproved channel",
+        });
+
+        for region in Region::ALL {
+            let provider = WorkBuddyProvider::new(region);
+            match provider.classify(400, &error) {
+                proto::ErrorClass::Fatal {
+                    upstream_code: Some(11128),
+                    message,
+                    ..
+                } => assert!(message.contains("unapproved channel")),
+                other => panic!("expected terminal channel rejection, got {other:?}"),
+            }
+            assert!(Provider::retry_advice(&provider, &error, 1, 3).is_none());
+        }
+    }
+
+    #[test]
+    fn other_11128_responses_keep_the_existing_retry_advice() {
+        let provider = WorkBuddyProvider::new(Region::Cn);
+        let error = json!({ "code": 11128, "message": "blocked by security policy" });
+
+        assert!(matches!(
+            provider.classify(400, &error),
+            proto::ErrorClass::ContentBlocked { .. }
+        ));
+        assert!(Provider::retry_advice(&provider, &error, 1, 3).is_some());
+    }
+
+    #[test]
+    fn ordinary_content_policy_errors_keep_the_existing_degrade_path() {
+        let provider = WorkBuddyProvider::new(Region::Cn);
+        let error = json!({ "message": "blocked by security policy" });
+
+        assert!(matches!(
+            provider.classify(400, &error),
+            proto::ErrorClass::ContentBlocked { .. }
+        ));
+    }
 }
 
 /// 对话接口 URL：`{session.endpoint || 本地区端点}/v2/chat/completions`。

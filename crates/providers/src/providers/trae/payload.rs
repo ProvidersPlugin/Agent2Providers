@@ -115,6 +115,9 @@ pub fn prepare_body(source: &Value, variant: &str, resolved_model: &str) -> Valu
     if let Some(tool_choice) = obj.get("tool_choice") {
         out.insert("tool_choice".to_string(), tool_choice.clone());
     }
+    if let Some(prompt_cache_key) = obj.get("prompt_cache_key").filter(|value| !value.is_null()) {
+        out.insert("prompt_cache_key".to_string(), prompt_cache_key.clone());
+    }
     for key in SAMPLING_KEYS {
         // 只认数字（参考实现断言 float64）：字符串或布尔的 `temperature` 一律丢，
         // 上游对类型的容忍度是零。
@@ -342,5 +345,24 @@ fn normalize_tools(obj: &mut Value) {
         return;
     }
     obj["tools"] = Value::Array(kept);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_body_preserves_prompt_cache_key() {
+        let body = json!({
+            "model": "deepseek-v4.1-flash-solo",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "prompt_cache_key": "session-cache-key",
+            "unknown_field": true,
+        });
+        let outbound = prepare_body(&body, "solo", "");
+
+        assert_eq!(outbound["prompt_cache_key"], "session-cache-key");
+        assert!(outbound.get("unknown_field").is_none());
+    }
 }
 

@@ -32,6 +32,7 @@ pub mod checkin;
 pub mod commodity;
 pub mod headers;
 pub mod ops;
+mod resources;
 pub mod tools;
 pub mod usage;
 

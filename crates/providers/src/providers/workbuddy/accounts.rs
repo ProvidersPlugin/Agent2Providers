@@ -122,6 +122,8 @@ fn account_of(
         ("enterpriseId", "enterpriseId"),
         ("enterpriseName", "enterpriseName"),
         ("departmentFullName", "departmentFullName"),
+        ("oneidAccountId", "oneidAccountId"),
+        ("idp", "idp"),
     ] {
         let value = account
             .and_then(|map| map.get(nested_key))
@@ -148,6 +150,14 @@ fn account_of(
     // 端点 / 前缀 / 平台：payload 显式给了就用它（自建网关场景），否则按地区兜底。
     // 三项都**必须**落下来：转发链的 `session_of_record` 从记录读它们，缺了会
     // 退到地区默认值 —— 对自建网关就是打错站点（症状是「刚加的账号不能用」）。
+    for key in ["type", "enterpriseId", "departmentFullName", "oneidAccountId", "idp"] {
+        if let Some(value) = account.and_then(|fields| fields.get(key)).or_else(|| object.get(key)) {
+            if value.is_string() { secret.insert(key.into(), value.clone()); }
+        }
+    }
+    if let Some(value) = auth.and_then(|fields| fields.get("tokenType")).or_else(|| object.get("tokenType")) {
+        if value.is_string() { secret.insert("tokenType".into(), value.clone()); }
+    }
     let edition = region.edition();
     for (key, fallback) in [
         ("endpoint", edition.endpoint),

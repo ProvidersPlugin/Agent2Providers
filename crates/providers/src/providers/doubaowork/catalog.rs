@@ -200,14 +200,39 @@ fn directory(value: &Value) -> BTreeMap<String, Model> {
     result
 }
 
+/// 挑一条能跑任务的模型：生图、以及任何"让 agent 干活"的任务都挂在通用任务
+/// 模式上（客户端记录里 `ext.agent_name = Agent-GeneralTask`、`agent_mode = 1`）。
+///
+/// 判据只能看 `agent_mode`：`model_row` 里它来自模式条目的 `agent_mode`，普通
+/// 对话模型落到 0（缺省）。优先 1（通用任务，实测即客户端这一路），其次 2，
+/// 再次任何非 0 的模式 —— 上游换编号时至少还有一条兜底，而不是直接断掉。
+fn agent_model(models: &BTreeMap<String, Model>) -> Option<Model> {
+    let pick = |wanted: u64| {
+        models
+            .values()
+            .find(|model| model.agent_mode == wanted)
+            .cloned()
+    };
+    pick(1)
+        .or_else(|| pick(2))
+        .or_else(|| models.values().find(|model| model.agent_mode != 0).cloned())
+}
+
 fn model_records(catalog: &Catalog) -> Vec<Value> {
-    catalog.models.iter().map(|(id, model)| {
+    let mut rows: Vec<Value> = catalog.models.iter().map(|(id, model)| {
         let mut value = json!({"id":id,"name":model.name,"supportsImages":true,"supportsReasoning":model.deep_think != 0 || model.mode_id.is_some(),"supportsToolCall":true,"toolCallEmulated":true});
         if let Some(context) = model.extra.get("context_window").or_else(||model.extra.get("max_input_tokens")).and_then(Value::as_u64) {
             value["maxInputTokens"] = json!(context);
         }
         value
-    }).collect()
+    }).collect();
+    // 生图条目只在**真的能跑任务**的账号上露出：能力位是网关派发图片请求的依据
+    // （`operation_providers`），列一条注定失败的模型等于给用户一个必然报错的
+    // 选项 —— 宁可这个账号不显示"豆包生图"。
+    if agent_model(&catalog.models).is_some() {
+        rows.push(super::image_generation::model_row());
+    }
+    rows
 }
 
 pub async fn list(ctx: &PluginCtx, _account: &str) -> Result<proto::ModelList, GatewayError> {
@@ -319,7 +344,10 @@ pub async fn refresh(
     let (id, credentials, client) = api::account(ctx, account, false).await?;
     let (catalog, refreshed) = fetch(ctx, &id, &credentials, &client, force).await?;
     Ok(if refreshed {
-        proto::RefreshOutcome::refreshed(catalog.models.len())
+        // 数的是**对下游露出的**条数（`model_records`），不是上游目录条数：
+        // 目录里没有「生图」这一条（那是我们的合成条目），只报上游条数会让
+        // 「刷新到 40 个模型」与 `/v1/models` 里能看到的条数对不上。
+        proto::RefreshOutcome::refreshed(model_records(&catalog).len())
     } else {
         proto::RefreshOutcome::unchanged()
     })
@@ -349,5 +377,28 @@ pub async fn resolve(
             )
             .with_code("model_not_found")
         })?;
+    Ok((catalog.bot, selected))
+}
+
+/// 生图这类"让 agent 干活"的请求要用的模型：见 [`agent_model`]。
+///
+/// 单独一个入口是为了让 `image_generation` 不必知道目录的内部结构（`Catalog`
+/// 不对模块外可见）。取不到时给的是**能照做**的文案：账号本身没坏，只是这个
+/// 账号的下发目录里没有可跑任务的模式。
+pub async fn resolve_agent(
+    ctx: &PluginCtx,
+    account: &str,
+    credentials: &Value,
+    client: &reqwest::Client,
+) -> Result<(String, Model), GatewayError> {
+    let (catalog, _) = fetch(ctx, account, credentials, client, false).await?;
+    let selected = agent_model(&catalog.models).ok_or_else(|| {
+        GatewayError::with_status(
+            400,
+            "该豆包工作账号的在线目录里没有可跑任务的模式（生图需要它），\
+             请刷新模型目录；若仍不出现，请在该账号的豆包工作客户端里确认「图像生成」可用",
+        )
+        .with_code("image_generation_not_supported")
+    })?;
     Ok((catalog.bot, selected))
 }

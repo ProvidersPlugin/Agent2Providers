@@ -7,9 +7,10 @@
 //!
 //! ── 准入过滤（`is_chat_model`）为什么在插件里 ────────────────
 //! `/v3/config` 会下发补全 / 改写 / 内部工具 / 图像 / 视频 / 旧代条目，
-//! 网关只服务对话模型。这套判据（九个排除前缀 + `supportsExtra` 真值 +
-//! `maxOutputTokens >= 16000`）是**这一家上游的形态知识**，因此跟着 provider
-//! 走。网关侧仍保留同一份实现（内置家还在用它），两边逐字一致。
+//! **本文件只挑对话模型**；图像条目由 [`super::image_generation`] 按标签单独
+//! 摘出来（两条通道各要各的形态）。这套判据（九个排除前缀 + `supportsExtra`
+//! 真值 + `maxOutputTokens >= 16000`）是**这一家上游的形态知识**，因此跟着
+//! provider 走。网关侧不再保留同一份实现（内置家已随插件走）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -138,6 +139,12 @@ pub fn builtin_models() -> Vec<Value> {
 }
 
 /// 内置清单经准入过滤（网关 `initial_state` 的兜底分支）。
+///
+/// 尾部再挂上图像模型的内置兜底（`image_generation::builtin`）：这一份清单回答
+/// 的是「还没有远程目录时 `/v1/models` 长什么样」，图像通道同样需要在那段窗口
+/// 里有可选项，否则「装了插件但还没刷目录」的用户会看不到任何生图模型。
 pub fn builtin_filtered() -> Vec<Value> {
-    apply_filters(builtin_models())
+    let mut models = apply_filters(builtin_models());
+    models.extend(super::image_generation::builtin());
+    models
 }

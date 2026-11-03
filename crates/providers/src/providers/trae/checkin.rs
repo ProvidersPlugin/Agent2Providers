@@ -37,9 +37,12 @@
 //! 这两个字段，本家不另立口径：今日已签 → `success:false` + `alreadyCompleted:true`
 //! + msg 带「今日已签到」；真领到 → `success:true` + msg 带奖励数额。
 //!
-//! ⚠️ 数额是上游**报出的当日奖励**，不是到账余额 —— 实测一个 SOLO 账号官方报
-//!   200（100+100）、积分池只长 100。两个分量原样透出（`checkinCredits` /
-//!   `checkinExtraCredits`），文案不替上游的名义数做到账背书。
+//! ⚠️ 数额口径：上游状态里 `credits` 与 `extra_credits` 是两个**并列分量**，
+//!   不是可相加的两笔钱。实测一个账号状态报 `credits=100`、`extra_credits=100`，
+//!   钱包实际只增加 100；把两者相加会显示成 200（参考实现 magpie 也踩过同坑，
+//!   见 yetone/magpie#808 与 zhujiu 的 Discord 反馈）。因此到账数额按
+//!   `credits` 取，只有 `credits` 为 0 时才退到 `extra_credits`；两个原始分量
+//!   仍原样透出（`checkinCredits` / `checkinExtraCredits`）供排障。
 
 use std::time::Duration;
 
@@ -161,8 +164,8 @@ pub fn checkin_device_id() -> String {
 
 /// `checkin_credits/status` 响应里本模块要用的字段。
 ///
-/// `credits` / `extra_credits` 是**本次奖励数额**（不是钱包余额、签到后不增长），
-/// 界面与日志都按"今日奖励"来写，别把它当余额显示。
+/// `credits` / `extra_credits` 是上游并列报出的两个分量（不是钱包余额、
+/// 签到后不增长，也**不是可以相加的两笔钱**）；到账数额见 [`Award::total`]。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub checked_in: bool,
@@ -182,9 +185,13 @@ impl Status {
         self.checked_in || self.did_checked_in
     }
 
-    /// 今日奖励的两个分量（合计见 [`Award::total`]）。
+    /// 今日奖励的两个分量；到账数额见 [`Award::total`]（不是两者相加）。
     pub fn award(&self) -> Award {
-        Award { credits: self.credits, extra_credits: self.extra_credits }
+        Award {
+            credits: self.credits,
+            extra_credits: self.extra_credits,
+            credited: if self.credits > 0 { self.credits } else { self.extra_credits },
+        }
     }
 }
 
@@ -254,24 +261,43 @@ pub enum Outcome {
     Unconfirmed,
 }
 
-/// 今日奖励的**两部分**（基础 + 加成）。
+/// 今日奖励的两个分量，以及**实际计入钱包的数额**。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Award {
     pub credits: i64,
     pub extra_credits: i64,
+    /// 实际到账数额：`credits` 优先，`credits` 为 0 时才用 `extra_credits`。
+    /// 两者绝不能相加（见模块头的 200/100 说明）。
+    pub credited: i64,
 }
 
 impl Award {
-    /// 参考实现给界面看的合计数（两者相加）。
+    /// 给界面看的到账数额（不是 `credits + extra_credits`）。
     pub fn total(&self) -> i64 {
-        self.credits + self.extra_credits
+        self.credited
+    }
+}
+
+/// 领取成功后的到账数额：claim 自己报了数额就以 claim 为准；它没报才用回查
+/// 状态里的 `credits`。`credits` 与 `extra_credits` 仍然只取一个，绝不相加。
+fn claimed_award(claim: &Status, after: &Status) -> Award {
+    let (credits, extra_credits) = if claim.credits > 0 || claim.extra_credits > 0 {
+        (claim.credits, claim.extra_credits)
+    } else {
+        (after.credits, after.extra_credits)
+    };
+    Award {
+        credits,
+        extra_credits,
+        credited: if credits > 0 { credits } else { extra_credits },
     }
 }
 
 /// 拿到状态与（必要时）领取+回查后的判定。
 ///
 /// `before` 是本轮第一发状态；`after` 是领取后用**同一个设备号**的回查；
-/// `claim` 是领取那一发的响应（只读它的 code 与 message，数额归回查读）。
+/// `claim` 是领取那一发的响应 —— 数额优先读 claim（它可能报得比 status 具体），
+/// claim 没报时退到回查那份。
 pub fn decide(before: &Status, claim: &Status, after: Option<&Status>) -> Outcome {
     if !before.enable {
         return Outcome::NotEnabled;
@@ -283,8 +309,10 @@ pub fn decide(before: &Status, claim: &Status, after: Option<&Status>) -> Outcom
         return Outcome::Rejected(claim.code, claim.message.clone());
     }
     match after {
-        // 回查确认：奖励数按回查那份读（上游在 claim 里不保证给数额）
-        Some(confirmed) if confirmed.done_today() => Outcome::Claimed(confirmed.award()),
+        // 回查确认：领取成功，数额按 claim → 回查的顺序取。
+        Some(confirmed) if confirmed.done_today() => {
+            Outcome::Claimed(claimed_award(claim, confirmed))
+        }
         Some(_) | None => Outcome::Unconfirmed,
     }
 }
@@ -426,9 +454,9 @@ async fn run(
 /// 与「官方客户端同日替用户签了」在后端日志里分开的唯一线索。
 ///
 /// ⚠️ 两个雷区：
-///   1. 数字口径：`credits`/`extra_credits` 是上游**报出的当日奖励数额**，不是
-///      到账余额 —— 文案说"官方报出的当日奖励"，把"实际到账"留给界面上已有的
-///      余额列，不用一句会撒谎的成功文案替它背书。
+///   1. 数字口径：到账数额取 `credits`，`credits` 为 0 才用 `extra_credits`；
+///      两者**不相加**（上游实测 100+100 名义、实际只到账 100）。文案说
+///      "本次领取"而不是"官方报出"，避免再把名义数当成到账数。
 ///   2. Rejected / Unconfirmed 的文案不许出现「已签到」「已领取」：批量层
 ///      `billing::checkin::checkin_completed_today` 是按 msg 子串判"当日已办"的，
 ///      写进去就把一次失败洗成已签、当日不再重试。（上游自己给的文案落在
@@ -454,7 +482,7 @@ fn complete(outcome: Outcome, device_id: &str) -> Value {
             row.insert(
                 "msg".into(),
                 json!(if award.total() > 0 {
-                    format!("今日已签到（官方报出当日奖励 {} 积分）", award.total())
+                    format!("今日已签到（当日奖励 {} 积分）", award.total())
                 } else {
                     "今日已签到".to_string()
                 }),
@@ -466,10 +494,7 @@ fn complete(outcome: Outcome, device_id: &str) -> Value {
             row.insert(
                 "msg".into(),
                 json!(if award.total() > 0 {
-                    format!(
-                        "签到成功（官方报出当日奖励 {} 积分；到账看余额列）",
-                        award.total()
-                    )
+                    format!("签到成功（本次领取 {} 积分）", award.total())
                 } else {
                     // 回查确认了"今天签过"，但上游没给数额 —— 不编一个数字出来
                     "签到成功（上游未给出奖励数额）".to_string()
@@ -531,7 +556,8 @@ fn complete(outcome: Outcome, device_id: &str) -> Value {
 /// 为什么这一格值钱：未知业务码自己不含信息，能把它夹出来的是状态与领取的
 /// **组合形状**。「活动开着但对这个账号今日不发货」和「有份额但被资格/风控拒了」
 /// 在只带 code 的日志里长得一模一样；带上状态五格就能一眼分开。
-/// 只挂在拒绝行：成功行的数额走 `awarded`（回查那份），挂两份会供出两个不同的数。
+/// 只挂在拒绝行：成功行的数额走 `awarded`（claim 优先、回查兜底），
+/// 挂两份会供出两个不同的数。
 fn with_status_probe(row: Value, status: &Status) -> Value {
     let mut row = row;
     if let Some(map) = row.as_object_mut() {

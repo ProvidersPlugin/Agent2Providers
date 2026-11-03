@@ -34,7 +34,29 @@ fn is_chat(target: &Target) -> bool {
             && (url.path() == "/chat" || url.path().starts_with("/chat/")))
 }
 
+/// 读本机客户端的登录态：先试调试端口（最新、需要客户端带参数启动），
+/// 不行就直接读客户端的 Cookie 数据库（**不需要调试端口**，见 `cookies_db`）。
+///
+/// ── 顺序为什么是「调试端口优先」──────────────────────────────
+/// 客户端运行时，最新的 Cookie 先落内存、再慢慢写回 SQLite；调试端口读到的是
+/// 内存里那一份，所以只要它有，就是最准的。没有调试端口时客户端会立刻拒绝
+/// 连接（本机端口），回落到库文件几乎不增加等待。
 pub async fn read() -> Result<Value, GatewayError> {
+    match read_cdp().await {
+        Ok(value) => Ok(value),
+        Err(cdp_error) => match super::cookies_db::read() {
+            Ok(value) => Ok(value),
+            Err(disk_error) => Err(GatewayError::with_status(
+                disk_error.status_code,
+                format!("{}；{}", disk_error.message, cdp_error.message),
+            )),
+        },
+    }
+}
+
+/// 只走调试端口（客户端带参数启动时）。给「已有快照、但客户端正好开着」的
+/// 账号取最新会话用 —— 这条路径不该再摸硬盘上的库文件。
+pub(super) async fn read_cdp() -> Result<Value, GatewayError> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

@@ -256,7 +256,7 @@ pub(super) async fn query_usage(
 ///
 /// 这是本家最早的读数路径，行为与候选链上线前逐字相同（`source` 是唯一新增
 /// 的键，排障用）。
-async fn billing_channel(
+pub(super) async fn billing_channel(
     region: Region,
     jwt: &str,
     device_mid: Option<&str>,
@@ -289,8 +289,9 @@ async fn billing_channel(
             }
         })?;
 
-    let payload = response.payload.clone().unwrap_or(Value::Null);
-    let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
+    let payload = response.payload.clone()
+        .ok_or_else(|| GatewayError::with_status(502, "ZCode 余额查询：上游响应不是 JSON"))?;
+    let code = payload.get("code").and_then(claim::integer);
     let message = payload
         .get("msg")
         .and_then(Value::as_str)
@@ -300,14 +301,14 @@ async fn billing_channel(
 
     // 401：JWT 被拒（失效 / 吊销 / 换了账号）。原样透出 401，让调用方走它既有的
     // 「刷新后重试一次」处置 —— 本家没有续期协议，那条路最终会报一句可读的话。
-    if response.status == 401 || code == 401 {
+    if response.status == 401 || code == Some(401) {
         return Err(GatewayError::with_status(
             401,
             "ZCode 套餐令牌已失效，请重新登录该账号",
         ));
     }
     // 3001 = 参数错误：这台网关只有一种常见成因 —— 设备标识缺失或不是 UUID
-    if code == 3001 {
+    if code == Some(3001) {
         return Err(GatewayError::with_status(
             502,
             "ZCode 余额查询被上游以「参数错误」拒绝（常见成因：设备标识无效），请重新登录该账号",
@@ -323,22 +324,27 @@ async fn billing_channel(
             "ZCode 余额查询被上游限流（429），请稍后重试或改为逐个查询",
         ));
     }
-    if !(200..300).contains(&response.status) || code != 0 {
+    if !(200..300).contains(&response.status) || code != Some(0)
+        || payload.get("success").and_then(Value::as_bool) == Some(false)
+    {
         let detail = if message.is_empty() {
             format!("HTTP {}", response.status)
         } else {
             message.clone()
         };
-        // 业务码为 0 表示「响应体里没有 code」（HTTP 层错误，体可能是空的）——
-        // 那种情况别拼一个读起来莫名其妙的「（0）」
-        let label = if code == 0 { String::new() } else { format!("（{code}）") };
+        let label = code.filter(|code| *code != 0)
+            .map(|code| format!("（{code}）")).unwrap_or_default();
         return Err(GatewayError::with_status(
             502,
             format!("ZCode 余额查询失败{label}：{detail}"),
         ));
     }
-    let data = payload.get("data").cloned().unwrap_or(Value::Null);
-    Ok(normalize(&data))
+    let data = payload.get("data").filter(|data| data.is_object())
+        .ok_or_else(|| GatewayError::with_status(502, "ZCode 余额查询：上游未返回有效的套餐数据"))?;
+    if data.get("plans").is_some_and(|plans| !plans.is_null() && !plans.is_array()) {
+        return Err(GatewayError::with_status(502, "ZCode 余额查询：上游套餐列表格式异常"));
+    }
+    Ok(normalize(data))
 }
 
 /// 上游 `data` → 账号页的统一形状。
@@ -520,6 +526,7 @@ fn normalize(data: &Value) -> Value {
         .map(|plan| {
             json!({
                 "planId": plan_id_of(plan),
+                "userPlanId": plan.get("user_plan_id").and_then(Value::as_str),
                 "name": plan_display_name(plan).unwrap_or_default(),
                 "state": state_of(plan).key(),
                 // 缺失一律 null（界面按「不知道」处理，不拿 0 顶替）

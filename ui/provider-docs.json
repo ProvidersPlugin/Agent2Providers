@@ -130,7 +130,27 @@
         "pt-BR": "Há apenas uma lista estática de modelos, sem endpoint de renovação de credenciais. Resgates de planos promocionais são separados do check-in diário."
       }]
     },
-    "workbuddy": {},
+    "raccoon": {
+      "capabilities": { "claims": { "status": "supported" } },
+      "notes": [{
+        "zh-CN": "已对齐官方客户端 1.1.5。旧凭证可续期；IAM 没有刷新接口，过期后需重新登录。本机导入自动识别新旧目录。模型、积分与图片请求使用相同组织身份；每日积分按 v2 账单核对，首次登录奖励单独领取。参考图编辑需要支持 multipart 的新版网关；图片操作单次 n=1。本次未运行对话、图片或领取测试。",
+        "zh-Hant": "已對齊官方用戶端 1.1.5。舊憑證可續期；IAM 沒有更新介面，過期後需重新登入。本機匯入自動識別新舊目錄。模型、積分與圖片請求使用相同組織身分；每日積分依 v2 帳單核對，首次登入獎勵獨立領取。參考圖編輯需要支援 multipart 的新版閘道；圖片操作單次 n=1。本次未執行對話、圖片或領取測試。",
+        "en": "Aligned with official client 1.1.5. Legacy credentials can refresh; IAM has no refresh grant and requires sign-in after expiry. Desktop import detects old and new profiles. Model, points and image requests share the account organization. Daily grants are checked against v2 bills; first-login rewards are separate. Reference editing requires a gateway with multipart support; images use n=1. Chat, image and claim tests were not run.",
+        "ja": "公式クライアント 1.1.5 に対応しています。旧認証情報は更新できますが、IAM は更新 API がなく、期限切れ後に再ログインが必要です。ローカル取り込みは新旧の保存先を識別します。モデル、ポイント、画像の要求は同じ組織を使用します。日次ポイントは v2 明細で確認し、初回ログイン報酬は個別に取得します。参照画像編集には multipart 対応ゲートウェイが必要で、画像は n=1 です。対話、画像、報酬のテストは未実行です。",
+        "ko": "공식 클라이언트 1.1.5에 맞췄습니다. 기존 인증 정보는 갱신할 수 있지만 IAM에는 갱신 API가 없어 만료 후 다시 로그인해야 합니다. 로컬 가져오기는 새 경로와 기존 경로를 구분합니다. 모델, 포인트, 이미지 요청에 같은 조직 정보를 사용합니다. 일일 포인트는 v2 내역으로 확인하며 첫 로그인 보상은 별도로 수령합니다. 참조 편집에는 multipart 지원 게이트웨이가 필요하고 이미지 요청은 n=1입니다. 대화, 이미지 및 수령 테스트는 실행하지 않았습니다.",
+        "pt-BR": "Alinhado ao cliente oficial 1.1.5. Credenciais antigas podem ser renovadas; IAM não tem concessão de renovação e exige novo login após expirar. A importação detecta perfis antigos e novos. Pedidos de modelos, pontos e imagens usam a mesma organização. Créditos diários são conferidos nas faturas v2; recompensas do primeiro login são separadas. A edição de referência exige gateway com multipart; imagens usam n=1. Testes de chat, imagens e resgates não foram executados."
+      }]
+    },
+    "workbuddy": {
+      "notes": [{
+        "zh-CN": "已接入官方图片接口（/v2/images/generations 与 /v2/images/edits）：目录中带 text-to-image 标签的模型文生图，带 image-to-image 标签的模型做参考图编辑。参考图以 data URL 内联在 JSON 里发送（不是 multipart），最多 16 张；size 省略或 auto 时按 1024x1024 请求，不接受 quality、style、background 与 moderation，请把要求写进 prompt。",
+        "zh-Hant": "已接入官方圖片介面（/v2/images/generations 與 /v2/images/edits）：目錄中帶 text-to-image 標籤的模型做文字生圖，帶 image-to-image 標籤的模型做參考圖編輯。參考圖以 data URL 內聯在 JSON 裡傳送（不是 multipart），最多 16 張；size 省略或 auto 時按 1024x1024 請求，不接受 quality、style、background 與 moderation，請把要求寫進 prompt。",
+        "en": "The official image API is integrated (/v2/images/generations and /v2/images/edits): models tagged text-to-image generate images, and models tagged image-to-image edit reference images. Reference images are sent inline as data URLs inside JSON (not multipart), up to 16; an omitted or auto size is requested as 1024x1024, and quality, style, background and moderation are not accepted — describe them in the prompt instead.",
+        "ja": "公式の画像 API（/v2/images/generations と /v2/images/edits）に対応しました。カタログで text-to-image タグが付いたモデルは画像生成、image-to-image タグのモデルは参照画像編集を行います。参照画像は data URL として JSON にインラインで送信され（multipart ではありません）、最大 16 枚です。size を省略または auto にすると 1024x1024 で要求し、quality、style、background、moderation は受け付けないため、指定は prompt に書いてください。",
+        "ko": "공식 이미지 API(/v2/images/generations 및 /v2/images/edits)를 지원합니다. 카탈로그에서 text-to-image 태그가 붙은 모델은 이미지 생성, image-to-image 태그 모델은 참조 이미지 편집을 수행합니다. 참조 이미지는 data URL로 JSON에 인라인 전송되며(multipart 아님) 최대 16장입니다. size를 생략하거나 auto로 하면 1024x1024로 요청하고 quality, style, background, moderation은 받지 않으므로 요구 사항은 prompt에 적어 주세요.",
+        "pt-BR": "A API oficial de imagens está integrada (/v2/images/generations e /v2/images/edits): modelos com a tag text-to-image geram imagens e modelos com a tag image-to-image editam imagens de referência. As imagens de referência vão embutidas como data URLs no JSON (não multipart), até 16; size omitido ou auto é solicitado como 1024x1024, e quality, style, background e moderation não são aceitos — descreva-os no prompt."
+      }]
+    },
     "workbuddy-intl": {
       "notes": [{
         "zh-CN": "每日活跃任务包含网页会话保活与领取积分，可分别执行；不是国内版的普通签到接口。",
@@ -203,8 +223,42 @@
         "pt-BR": "Os resgates diários exigem o componente UMID de verificação do dispositivo e dependem da conta e das regras da campanha upstream."
       }]
     },
+    "qwenwork": {
+      "capabilities": { "claims": { "status": "not_applicable" } },
+      "notes": [
+      {
+        "zh-CN": "登录走官方设备授权页：在浏览器里登录并授权后，插件轮询收下账号，不需要本机回调。没有个人访问令牌，也没有每日签到与领取类活动。个人账号的额度只有「剩余」，三档积分池（每日 / 每月 / 长期）来自钱包接口。",
+        "zh-Hant": "登入走官方裝置授權頁：在瀏覽器登入並授權後，外掛輪詢收下帳號，不需要本機回呼。沒有個人存取權杖，也沒有每日簽到與領取類活動。個人帳號的額度只有「剩餘」，三檔積分池（每日 / 每月 / 長期）來自錢包介面。",
+        "en": "Sign-in uses the official device-authorization page: after you sign in and approve it in the browser, the plugin polls and adds the account; no local callback is needed. There is no personal access token, and no daily check-in or claimable campaigns. A personal account reports only its remaining quota; the three credit pools (daily / monthly / long-term) come from the wallets endpoint.",
+        "ja": "ログインは公式のデバイス認可ページを使用します。ブラウザでログインして承認すると、プラグインがポーリングしてアカウントを追加します（ローカルコールバックは不要）。個人アクセストークンはなく、毎日のチェックインや受け取り型キャンペーンもありません。個人アカウントの残高は「残り」のみで、3 つのクレジットプール（毎日 / 毎月 / 長期）は wallets エンドポイントから取得します。",
+        "ko": "로그인은 공식 기기 인가 페이지를 사용합니다. 브라우저에서 로그인하고 승인하면 플러그인이 폴링하여 계정을 추가하며, 로컬 콜백이 필요 없습니다. 개인 액세스 토큰이 없고, 일일 체크인과 수령형 캠페인도 없습니다. 개인 계정의 사용량은 남은 양만 제공되며, 세 가지 크레딧 풀(일일 / 월간 / 장기)은 wallets 엔드포인트에서 읽습니다.",
+        "pt-BR": "O login usa a página oficial de autorização de dispositivo: depois de entrar e aprovar no navegador, o plugin consulta e adiciona a conta, sem callback local. Não há token de acesso pessoal, nem check-in diário, nem campanhas resgatáveis. Uma conta pessoal informa apenas o saldo restante; os três pools de créditos (diário / mensal / de longo prazo) vêm do endpoint de carteiras."
+      }
+      ]
+    },
+    "qwenwork-intl": {
+      "capabilities": { "claims": { "status": "not_applicable" } },
+      "notes": [
+      {
+        "zh-CN": "国际版与国内版同一套登录方式（官方设备授权页）。对话、余额与模型目录走 gateway.qwenwork.ai，其余说明同国内版。",
+        "zh-Hant": "國際版與國內版同一套登入方式（官方裝置授權頁）。對話、餘額與模型目錄走 gateway.qwenwork.ai，其餘說明同國內版。",
+        "en": "The international edition signs in the same way as the China edition (the official device-authorization page). Chat, usage and the model catalog go through gateway.qwenwork.ai; the rest matches the China edition.",
+        "ja": "国際版も中国版と同じログイン方法（公式のデバイス認可ページ）です。会話・残高・モデル一覧は gateway.qwenwork.ai を使用し、その他は中国版と同じです。",
+        "ko": "국제판도 중국판과 같은 로그인 방식(공식 기기 인가 페이지)을 사용합니다. 대화, 잔액, 모델 목록은 gateway.qwenwork.ai를 사용하며 나머지는 중국판과 같습니다.",
+        "pt-BR": "A edição internacional entra da mesma forma que a edição da China (a página oficial de autorização de dispositivo). Chat, saldo e catálogo de modelos passam por gateway.qwenwork.ai; o restante é igual à edição da China."
+      }
+      ]
+    },
     "trae": {
-      "capabilities": { "claims": { "status": "not_applicable" } }
+      "capabilities": { "claims": { "status": "undeclared" } },
+      "notes": [{
+        "zh-CN": "本插件不提供 Trae 活动查询与领取入口；相关活动请在官方客户端处理，每日签到保留。",
+        "zh-Hant": "本外掛不提供 Trae 活動查詢與領取入口；相關活動請在官方用戶端處理，每日簽到保留。",
+        "en": "This plugin does not provide Trae campaign queries or claims. Use the official client for campaigns; daily check-in remains available.",
+        "ja": "このプラグインは Trae のキャンペーン照会・受け取り機能を提供しません。キャンペーンは公式クライアントで操作してください。毎日のチェックインは引き続き利用できます。",
+        "ko": "이 플러그인은 Trae 이벤트 조회 및 수령 기능을 제공하지 않습니다. 이벤트는 공식 클라이언트에서 처리하세요. 일일 출석은 계속 지원합니다.",
+        "pt-BR": "Este plugin não oferece consultas nem resgates de campanhas do Trae. Use o cliente oficial para campanhas; o check-in diário continua disponível."
+      }]
     },
     "catpaw": {
       "capabilities": {
@@ -244,12 +298,12 @@
         "refresh": { "status": "unsupported" }
       },
       "notes": [{
-        "zh-CN": "基于 EchoBird 的 MIT 实现接入豆包工作：官方页面登录或完整 Cookie、账号在线模型目录、流式对话与思考、图片输入、订阅窗口和奖励额度查询、每日签到及已达成奖励领取。工具调用使用文本桥接，并非原生 function calling；未接入图片生成或编辑，未伪造 Token 用量。Cookie 失效后需重新登录。未使用真实账号验证，接口和活动以官方实际返回为准。",
-        "zh-Hant": "基於 EchoBird 的 MIT 實作接入豆包工作：官方頁面登入或完整 Cookie、帳號線上模型目錄、串流對話與思考、圖片輸入、訂閱時段和獎勵額度查詢、每日簽到及已達成獎勵領取。工具呼叫使用文字橋接，並非原生 function calling；尚未接入圖片生成或編輯，未偽造 Token 用量。Cookie 失效後需重新登入。尚未以真實帳號驗證，介面與活動以官方實際回傳為準。",
-        "en": "Integrates Doubao Work using EchoBird's MIT implementation: official-page login or complete cookies, account-specific online models, streaming chat and reasoning, image input, subscription windows and bonus quota, daily check-in and eligible reward claims. Tool calls use a text bridge, not native function calling. Image generation and editing are not integrated; token usage is not fabricated. Expired cookies require a new login. Not validated with a real account; endpoints and campaigns depend on actual upstream responses.",
-        "ja": "EchoBird の MIT 実装を基に豆包工作を連携します。公式ページでのログインまたは完全な Cookie、アカウント別オンラインモデル一覧、ストリーミング対話と推論、画像入力、契約期間別と報酬のクォータ確認、毎日のチェックインと条件達成済み報酬の取得に対応します。ツール呼び出しはテキスト橋渡しでありネイティブではありません。画像生成・編集は未連携で、トークン使用量は捏造しません。Cookie が無効になった場合は再ログインが必要です。実アカウントでは未検証で、API とキャンペーンは実際の応答に従います。",
-        "ko": "EchoBird의 MIT 구현을 기반으로 Doubao Work를 연동합니다. 공식 페이지 로그인 또는 전체 Cookie, 계정별 온라인 모델 목록, 스트리밍 대화 및 추론, 이미지 입력, 구독 기간과 보너스 할당량 조회, 일일 체크인 및 조건을 충족한 보상 수령을 지원합니다. 도구 호출은 텍스트 연결이며 네이티브 function calling이 아닙니다. 이미지 생성과 편집은 연동하지 않았으며 토큰 사용량을 꾸며내지 않습니다. Cookie가 만료되면 다시 로그인해야 합니다. 실제 계정으로 검증하지 않았으며 API와 이벤트는 상위 서비스 응답에 따릅니다.",
-        "pt-BR": "Integra o Doubao Work com a implementação MIT do EchoBird: login na página oficial ou cookies completos, modelos online por conta, chat e raciocínio em streaming, entrada de imagens, janelas da assinatura e cota bônus, check-in diário e resgate de recompensas elegíveis. Ferramentas usam uma ponte de texto, não function calling nativo. Geração e edição de imagens não estão integradas; o uso de tokens não é inventado. Cookies expirados exigem novo login. Não validado com conta real; APIs e campanhas dependem das respostas upstream."
+        "zh-CN": "基于 EchoBird 的 MIT 实现接入豆包工作：官方页面登录或完整 Cookie、账号在线模型目录、流式对话与思考、图片输入、订阅窗口和奖励额度查询、每日签到及已达成奖励领取。本机登录态直接读取客户端 Cookie 数据库与设备号，不需要调试端口。支持在对话中执行生图任务（一次一张，不支持参考图编辑）；工具调用使用文本桥接，并非原生 function calling，未伪造 Token 用量。Cookie 失效后需重新登录。未使用真实账号验证，接口和活动以官方实际返回为准。",
+        "zh-Hant": "基於 EchoBird 的 MIT 實作接入豆包工作：官方頁面登入或完整 Cookie、帳號線上模型目錄、串流對話與思考、圖片輸入、訂閱時段和獎勵額度查詢、每日簽到及已達成獎勵領取。本機登入狀態直接讀取用戶端 Cookie 資料庫與裝置號，不需要除錯連接埠。支援在對話中執行生圖任務（一次一張，不支援參考圖編輯）；工具呼叫使用文字橋接，並非原生 function calling，未偽造 Token 用量。Cookie 失效後需重新登入。尚未以真實帳號驗證，介面與活動以官方實際回傳為準。",
+        "en": "Integrates Doubao Work using EchoBird's MIT implementation: official-page login or complete cookies, account-specific online models, streaming chat and reasoning, image input, subscription windows and bonus quota, daily check-in and eligible reward claims. Desktop login import reads the client's Cookie database and device ID directly, with no debug port required. Image generation runs as a chat task (one image per task); reference-image editing is not supported. Tool calls use a text bridge, not native function calling; token usage is not fabricated. Expired cookies require a new login. Not validated with a real account; endpoints and campaigns depend on actual upstream responses.",
+        "ja": "EchoBird の MIT 実装を基に豆包工作を連携します。公式ページでのログインまたは完全な Cookie、アカウント別オンラインモデル一覧、ストリーミング対話と推論、画像入力、契約期間別と報酬のクォータ確認、毎日のチェックインと条件達成済み報酬の取得に対応します。本機のログイン状態はクライアントの Cookie データベースとデバイス ID を直接読み取って取り込み、デバッグポートは不要です。チャット内のタスクとして画像生成を実行できます（1 回 1 枚、参照画像編集は非対応）。ツール呼び出しはテキスト橋渡しでありネイティブではありません。トークン使用量は捏造しません。Cookie が無効になった場合は再ログインが必要です。実アカウントでは未検証で、API とキャンペーンは実際の応答に従います。",
+        "ko": "EchoBird의 MIT 구현을 기반으로 Doubao Work를 연동합니다. 공식 페이지 로그인 또는 전체 Cookie, 계정별 온라인 모델 목록, 스트리밍 대화 및 추론, 이미지 입력, 구독 기간과 보너스 할당량 조회, 일일 체크인 및 조건을 충족한 보상 수령을 지원합니다. 로컬 로그인 상태는 클라이언트의 Cookie 데이터베이스와 장치 ID를 직접 읽어 가져오며 디버그 포트가 필요 없습니다. 채팅 작업으로 이미지 생성을 실행할 수 있습니다(작업당 1장, 참조 이미지 편집은 지원하지 않음). 도구 호출은 텍스트 연결이며 네이티브 function calling이 아닙니다. 토큰 사용량을 꾸며내지 않습니다. Cookie가 만료되면 다시 로그인해야 합니다. 실제 계정으로 검증하지 않았으며 API와 이벤트는 상위 서비스 응답에 따릅니다.",
+        "pt-BR": "Integra o Doubao Work com a implementação MIT do EchoBird: login na página oficial ou cookies completos, modelos online por conta, chat e raciocínio em streaming, entrada de imagens, janelas da assinatura e cota bônus, check-in diário e resgate de recompensas elegíveis. A importação do login local lê diretamente o banco de cookies e o ID do dispositivo do cliente, sem porta de depuração. A geração de imagens roda como uma tarefa de chat (uma imagem por tarefa); a edição com imagem de referência não é suportada. Ferramentas usam uma ponte de texto, não function calling nativo; o uso de tokens não é inventado. Cookies expirados exigem novo login. Não validado com conta real; APIs e campanhas dependem das respostas upstream."
       }]
     }
   }

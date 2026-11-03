@@ -1,15 +1,8 @@
-//! Trae 的错误分类与"哪些配置在这条通道上必死"的判定。
+//! Trae HTTP 与流内业务错误分类。
 //!
-//! ── 为什么这一层值得单独成文件 ────────────────────────────
-//! Trae 的账号级失败**不体现在 HTTP 状态上**：额度耗尽是 HTTP 200 的 SSE 里
-//! 一条 `event: error`（`solosse.go`），而"模型在这条通道不存在"是流内 `4001`。
-//! 跨账号降级链的触发条件完全依赖这一层的分类结果 —— 分类错的后果不是报错难听，
-//! 而是**给用户一个假成功**（codearts 那边同一条教训），或者把健康账号误冷却 12 小时。
-//!
-//! 所有判定逐条照参考实现 `plugins/trae/upstream/{client,solosse}.go`，
-//! 并由 `vectors/trae-vectors.json` 的 `classify` / `streamErrorKind` /
-//! `tooLargeMessage` / `deadModel` 四段钉住（生成器在参考实现包里，
-//! 见 `cpa-deploy/trae-vectors/README.md`）。
+//! 4001 / 4023 表示模型与通道不匹配；1005 也可能只限当前通道。
+//! 这些错误仅在首个内容帧之前尝试同模型的其它目录路由，耗尽后才分类限额。
+//! 401 / 1001 / 20101 是凭据失效，4011 是限流，不能当成模型路由失败。
 
 use serde_json::Value;
 
@@ -96,9 +89,15 @@ pub fn msg_indicates_input_too_large(message: &str) -> bool {
 /// 免得同一个码在两条路径上得到两种语义）。
 pub const PLAN_LIMIT_CODES: [i64; 2] = [1005, 4008];
 
-/// 4001 的语义：模型在当前 function 通道不可用。
+/// 模型在当前 function 不可用。
 pub fn is_model_mismatch_code(code: i64) -> bool {
-    code == 4001
+    matches!(code, 4001 | 4023)
+}
+
+pub fn retry_route(status: u16, code: Option<i64>, message: &str) -> bool {
+    !matches!(status, 401 | 403 | 429)
+        && code.is_some_and(|code| matches!(code, 4001 | 4023 | 1005))
+        && !msg_indicates_input_too_large(message)
 }
 
 /// 流内 `event: error` 的分类。
@@ -114,6 +113,12 @@ pub fn stream_error_kind(code: i64, message: &str) -> ErrorKind {
     }
     if is_model_mismatch_code(code) {
         return ErrorKind::ModelUnavailable;
+    }
+    if matches!(code, 1001 | 401 | 20101) {
+        return ErrorKind::SessionDead;
+    }
+    if code == 4011 {
+        return ErrorKind::SoftRate;
     }
     ErrorKind::Client
 }
@@ -153,45 +158,42 @@ pub fn classify(status: u16, body: &str) -> ErrorKind {
     if (400..500).contains(&status) && body.contains("\"code\":4001") {
         return ErrorKind::ModelUnavailable;
     }
+    let parsed: Option<Value> = serde_json::from_str(body).ok();
+    let (code, message) = parsed.as_ref().map(error_event_fields).unwrap_or_default();
+    if matches!(code, 1001 | 401 | 20101) {
+        return ErrorKind::SessionDead;
+    }
+    if code != 0 {
+        let kind = stream_error_kind(code, &message);
+        if kind != ErrorKind::Client {
+            return kind;
+        }
+    }
     if status >= 400 {
         return ErrorKind::Client;
     }
     ErrorKind::None
 }
 
-/// 只由 `solo_agent` / `llm_raw_chat` 那条通道服务的配置名（小写）。
-///
-/// 这些 config 在 `solo_work_lite` 通道**必定**流内 4001：过滤比"注册出来
-/// 再让用户撞上"好，但名单必须是**精确名字**——参考实现原本用前缀匹配
-/// （`agnes`、`deepseek-v4`），把实测可用的 `DeepSeek-V4-Flash-Official`
-/// 一起误杀过（issue #10），所以这里连"近似名字"都不许加。
-const SOLO_AGENT_ONLY_DEAD_NAMES: [&str; 4] = [
-    "agnes-2.0-flash",
-    "agnes-agent-x",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-];
-
-pub fn config_is_solo_agent_only(config_name: &str) -> bool {
-    let lowered = config_name.to_lowercase();
-    SOLO_AGENT_ONLY_DEAD_NAMES
-        .iter()
-        .any(|dead| *dead == lowered)
-}
-
-/// 从一条 `event: error` 的 data 里取码与文案（`code` 是 JSON 数字、
-/// `message` 是字符串 —— 参考实现只认 `message`，写成 `msg` 会被静默读空）。
+/// 目录与流内错误兼容数字 / 数字字符串及外层 error 包裹。
 pub fn error_event_fields(data: &Value) -> (i64, String) {
-    let code = data
+    let detail = data
+        .get("error")
+        .filter(|error| error.is_object())
+        .unwrap_or(data);
+    let code = detail
         .get("code")
-        .and_then(Value::as_f64)
-        .map(|value| value as i64)
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
         .unwrap_or(0);
-    let message = data
+    let message = detail
         .get("message")
+        .or_else(|| detail.get("msg"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
     (code, message)
 }
-

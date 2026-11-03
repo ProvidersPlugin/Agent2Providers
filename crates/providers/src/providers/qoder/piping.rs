@@ -98,6 +98,7 @@ pub(super) async fn prefetch_stream_head(
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
                         &limit.ctx,
+                        limit.site,
                         &limit.account_id,
                         &limit.model,
                         status,
@@ -246,6 +247,7 @@ pub(super) async fn drive_stream(
                     // 不再可能（与首帧前错误的差别，见 prefetch_stream_head 的说明）
                     record_limited(
                         &limit.ctx,
+                        limit.site,
                         &limit.account_id,
                         &limit.model,
                         status,
@@ -284,6 +286,7 @@ pub(super) async fn drive_stream(
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
                         &limit.ctx,
+                        limit.site,
                         &limit.account_id,
                         &limit.model,
                         status,

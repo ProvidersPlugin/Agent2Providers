@@ -34,6 +34,7 @@
 mod checkin;
 pub mod ctx;
 mod errors;
+pub mod extensions;
 pub mod images;
 mod log_context;
 pub mod provider;

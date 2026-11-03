@@ -62,6 +62,7 @@ const WALLET_LABELS: &[(&str, &str)] = &[
     ("monthly_points", "每月会员积分"),
     ("reward_points", "奖励积分"),
     ("topup_points", "充值积分"),
+    ("enterprise_topup_points", "企业加油包积分"),
 ];
 
 /// 主站 origin（`RACCOON_MAIN_SITE_URL` 可覆盖；去空白与末尾斜杠）。
@@ -81,10 +82,7 @@ pub(super) fn main_site_url() -> String {
 /// 但订阅的失败**不影响余额结果**（`subscription` 给 null 并往 `raw` 里记一条
 /// 原因）：订阅是附加信息，为了它把整个面板变成红色的「查询失败」得不偿失 ——
 /// 与源实现给 AutoClaw 的 `points/expiring` 兜底同一取向。
-pub(super) async fn query_usage(
-    ctx: &PluginCtx,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub(super) async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
     let credentials = credentials::snapshot(ctx, account_id).await?;
     if credentials.token.trim().is_empty() {
         return Err(GatewayError::with_status(
@@ -93,7 +91,16 @@ pub(super) async fn query_usage(
         ));
     }
     let origin = main_site_url();
-    let points = request_json(&origin, "/api/web/points/v1/balance", &credentials.token).await?;
+    let mut org_headers = Vec::new();
+    super::headers::append_org(&mut org_headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
+    let points = request_json(
+        &origin,
+        "/api/web/points/v1/balance",
+        &credentials.token,
+        &org_headers,
+    )
+    .await?;
     if !points.is_object() {
         return Err(GatewayError::with_status(
             502,
@@ -101,7 +108,8 @@ pub(super) async fn query_usage(
         ));
     }
 
-    let available = to_int(points.get("available_points"));
+    let available = to_int(points.get("total_chargeable_points"))
+        .or_else(|| to_int(points.get("available_points")));
     let wallets: Vec<Value> = WALLET_LABELS
         .iter()
         .filter_map(|(key, display_name)| {
@@ -134,11 +142,17 @@ pub(super) async fn query_usage(
         .collect();
 
     // 订阅失败只记原因，不阻断余额展示（见上）
-    let (subscription, subscription_error) =
-        match request_json(&origin, "/api/web/auth/v1/entitlement_info", &credentials.token).await {
-            Ok(data) => (normalize_subscription(&data), Value::Null),
-            Err(error) => (Value::Null, Value::String(error.message)),
-        };
+    let (subscription, subscription_error) = match request_json(
+        &origin,
+        "/api/web/auth/v1/entitlement_info",
+        &credentials.token,
+        &org_headers,
+    )
+    .await
+    {
+        Ok(data) => (normalize_subscription(&data), Value::Null),
+        Err(error) => (Value::Null, Value::String(error.message)),
+    };
 
     let mut raw = Map::new();
     raw.insert("points".to_string(), points);
@@ -172,8 +186,13 @@ pub(super) async fn query_usage(
 ///   ③ 非 2xx → 502 带上游状态码；
 ///   ④ `code` 存在且非 0 → 502 取 `message`；
 ///   ⑤ 取 `data ?? payload`（源实现 `payload?.data ?? payload`）。
-async fn request_json(origin: &str, path: &str, token: &str) -> Result<Value, GatewayError> {
-    request_json_ex(origin, "GET", path, token, &[], REQUEST_TIMEOUT_MS).await
+async fn request_json(
+    origin: &str,
+    path: &str,
+    token: &str,
+    headers: &[(String, String)],
+) -> Result<Value, GatewayError> {
+    request_json_ex(origin, "GET", path, token, headers, REQUEST_TIMEOUT_MS).await
 }
 
 /// `request_json` 的通用形态：方法与附加头可指定（每日签到与新手任务的
@@ -204,19 +223,18 @@ pub(super) async fn request_json_ex(
     ];
     headers.extend(extra_headers.iter().cloned());
     // 直连（源实现这条链路是裸 fetch，见模块头）
-    let response =
-        send_raw(method, &url, None, &headers, None, Some(timeout_ms)).await.map_err(|error| {
+    let response = send_raw(method, &url, None, &headers, None, Some(timeout_ms))
+        .await
+        .map_err(|error| {
             if error.is_timeout() {
                 GatewayError::with_status(504, "积分查询超时")
             } else {
                 GatewayError::with_status(502, format!("积分查询失败: {error}"))
             }
         })?;
-    if response.status == 401 {
-        return Err(GatewayError::with_status(
-            401,
-            "登录态已过期，无法查询积分",
-        ));
+    let payload = response.payload.unwrap_or(Value::Null);
+    if response.status == 401 || super::upstream_errors::token_expired(&payload) {
+        return Err(GatewayError::with_status(401, "登录态已过期，无法查询积分"));
     }
     if !response.ok {
         return Err(GatewayError::with_status(
@@ -224,8 +242,7 @@ pub(super) async fn request_json_ex(
             format!("积分查询返回 HTTP {}", response.status),
         ));
     }
-    let payload = response.payload.unwrap_or(Value::Null);
-    if let Some(code) = payload.get("code").and_then(Value::as_i64) {
+    if let Some(code) = super::upstream_errors::business_code(&payload) {
         if code != 0 {
             let message = payload
                 .get("message")
@@ -279,8 +296,7 @@ fn normalize_subscription(data: &Value) -> Value {
         .unwrap_or(Value::Null);
     let expired_at = pick("pro_expired_time")
         .or_else(|| {
-            pick("active_plan")
-                .and_then(|plan| plan.get("subscription_expired_at").cloned())
+            pick("active_plan").and_then(|plan| plan.get("subscription_expired_at").cloned())
         })
         .unwrap_or(Value::Null);
     json!({
@@ -292,6 +308,87 @@ fn normalize_subscription(data: &Value) -> Value {
         "remainQuota": Value::Null,
         "totalQuota": Value::Null,
     })
+}
+
+async fn daily_bills(
+    origin: &str,
+    token: &str,
+    headers: &[(String, String)],
+    today: &str,
+) -> Result<Vec<Value>, GatewayError> {
+    let mut cursor = String::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for _ in 0..5 {
+        let query = {
+            let mut params = url::form_urlencoded::Serializer::new(String::new());
+            params.append_pair("paging.limit", &GRANT_CHECK_LIMIT.to_string());
+            params.append_pair("type", "all");
+            if !cursor.is_empty() {
+                params.append_pair("cursor", &cursor);
+            }
+            params.finish()
+        };
+        let path = format!("/api/web/points/v2/bills?{query}");
+        let data =
+            request_json_ex(origin, "GET", &path, token, headers, GRANT_CHECK_TIMEOUT_MS).await?;
+        let page = data
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| GatewayError::with_status(502, "积分账单响应缺少 items"))?;
+        let reached_previous_day = page
+            .iter()
+            .any(|item| bill_date(item).is_some_and(|date| date.as_str() < today));
+        items.extend(page.iter().cloned());
+        if reached_previous_day || page.is_empty() {
+            break;
+        }
+        let next = data
+            .get("next_cursor")
+            .or_else(|| data.get("cursor"))
+            .or_else(|| data.pointer("/paging/next_cursor"))
+            .or_else(|| data.pointer("/paging/cursor"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let has_more = data
+            .get("has_more")
+            .or_else(|| data.pointer("/paging/has_more"))
+            .and_then(Value::as_bool)
+            .unwrap_or(!next.is_empty());
+        if !has_more || next.is_empty() || !seen.insert(next.to_string()) {
+            break;
+        }
+        cursor = next.to_string();
+    }
+    Ok(items)
+}
+
+fn bill_date(item: &Value) -> Option<String> {
+    let at = item
+        .get("grant_at")
+        .or_else(|| item.get("created_at"))?
+        .as_str()?;
+    if let Ok(date) = chrono::DateTime::parse_from_rfc3339(at) {
+        return Some(beijing::date_key(date.with_timezone(&beijing::offset())));
+    }
+    at.get(..10).map(str::to_string)
+}
+
+fn daily_grant(item: &Value, today: &str) -> Option<Value> {
+    let kind = item.get("biz_type").and_then(Value::as_str);
+    let name = item.get("event_name").and_then(Value::as_str).unwrap_or("");
+    let daily = kind == Some("daily_grant") || kind.is_none() && name == "每日积分发放";
+    let points = to_int(item.get("points"))?;
+    if !daily || points <= 0 || bill_date(item).as_deref() != Some(today) {
+        return None;
+    }
+    let at = item.get("created_at").and_then(Value::as_str).unwrap_or("");
+    Some(json!({
+        "name": name,
+        "points": points,
+        "at": at.get(11..19).unwrap_or(""),
+        "expireAt": item.get("expire_at"),
+    }))
 }
 
 /// 数值取整（源实现 `toInt`：非有限值给 None，有限值取 floor）。
@@ -333,10 +430,7 @@ const GRANT_CHECK_TIMEOUT_MS: u64 = 25_000;
 /// 客户端身份头：官方桌面端启动时带的两个头（源实现 grantDesktopLoginPoints）。
 /// 每日签到（setting_info）与新手任务的首次登录奖励（`onboarding.rs`）共用。
 pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
-    vec![
-        ("X-Client-Platform".to_string(), "desktop-windows".to_string()),
-        ("X-Client-Version".to_string(), "v1.0.0".to_string()),
-    ]
+    super::headers::desktop_client_headers()
 }
 
 /// 客户端身份头：官方手机端（Capacitor App）请求登录积分接口带的两个头。
@@ -363,10 +457,7 @@ pub(super) fn mobile_client_headers() -> Vec<(String, String)> {
 ///
 /// 首次桌面登录奖励（一次性新手福利）**不在**本函数里 —— 它已拆到
 /// `onboarding.rs` 挂新手任务分组，见那里的模块头说明。
-pub async fn claim_daily_grant(
-    ctx: &PluginCtx,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub async fn claim_daily_grant(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
     let credentials = credentials::snapshot(ctx, account_id).await?;
     if credentials.token.trim().is_empty() {
         return Err(GatewayError::with_status(
@@ -376,14 +467,37 @@ pub async fn claim_daily_grant(
     }
     let origin = main_site_url();
 
+    let today = beijing::today_key();
+    let mut org_headers = Vec::new();
+    super::headers::append_org(&mut org_headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
+    let previous = match daily_bills(&origin, &credentials.token, &org_headers, &today).await {
+        Ok(items) => Some(
+            items
+                .into_iter()
+                .filter_map(|item| daily_grant(&item, &today))
+                .collect::<Vec<_>>(),
+        ),
+        Err(error) if error.status_code == 401 => return Err(error),
+        Err(_) => None,
+    };
+    let already_completed = previous.as_ref().is_some_and(|items| !items.is_empty());
+
     // ① 每日积分发放触发器（按天幂等）。失败必须体现在结果里 ——
     //    这步不成功当日就没有发放，账单核对会给出「今日未见入账」
     let mut settings_headers = desktop_client_headers();
+    super::headers::append_org(&mut settings_headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
     settings_headers.push(("X-Raccoon-Language".to_string(), "zh".to_string()));
+    let settings_path = if credentials.org_code.is_empty() {
+        "/api/web/office/v3/setting_info"
+    } else {
+        "/api/web/org/user/office/v1/setting_info"
+    };
     let settings = match request_json_ex(
         &origin,
         "GET",
-        "/api/web/office/v3/setting_info",
+        settings_path,
         &credentials.token,
         &settings_headers,
         REQUEST_TIMEOUT_MS,
@@ -404,54 +518,26 @@ pub async fn claim_daily_grant(
     // 「今天」按**北京时间**（上游自然日即 UTC+8 零点，见 `core::beijing`），
     // 不跟机器时区：海外 / 容器部署下跟本地时区走会把 16 小时的账单认成昨天，
     // 让「今日积分 +N」与「今天已领过」的判定整体错位（issue #138）。
-    let today = beijing::today_key();
-    let bills_path = format!(
-        "/api/web/points/v1/bills?paging.limit={GRANT_CHECK_LIMIT}&paging.offset=0"
-    );
-    let (grants, grants_error) = match request_json_ex(
-        &origin,
-        "GET",
-        &bills_path,
-        &credentials.token,
-        &[],
-        GRANT_CHECK_TIMEOUT_MS,
-    )
-    .await
-    {
-        Ok(data) => {
-            let items = data.get("items").and_then(Value::as_array);
-            let grants: Vec<Value> = items
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| {
-                            // points>0 且 created_at 的日期部分 == 本地今天
-                            // （源实现直接比对字符串前 10 位，口径一致）
-                            let points = to_int(item.get("points"))?;
-                            if points <= 0 {
-                                return None;
-                            }
-                            let created_at =
-                                item.get("created_at").and_then(Value::as_str).unwrap_or("");
-                            if created_at.get(..10) != Some(today.as_str()) {
-                                return None;
-                            }
-                            Some(json!({
-                                "name": item.get("event_name").and_then(Value::as_str).unwrap_or("积分发放"),
-                                "points": points,
-                                "at": created_at.replace('T', " ").get(11..19).unwrap_or(""),
-                            }))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            (grants, None)
+    let (grants, grants_error) = if already_completed {
+        (previous.unwrap_or_default(), None)
+    } else {
+        match daily_bills(&origin, &credentials.token, &org_headers, &today).await {
+            Ok(items) => (
+                items
+                    .iter()
+                    .filter_map(|item| daily_grant(item, &today))
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(error) if error.status_code == 401 => return Err(error),
+            Err(error) => (Vec::new(), Some(error.message)),
         }
-        Err(error) if error.status_code == 401 => return Err(error),
-        Err(error) => (Vec::new(), Some(error.message)),
     };
 
-    let granted_today = grants.iter().map(|item| to_int(item.get("points")).unwrap_or(0)).sum::<i64>();
+    let granted_today = grants
+        .iter()
+        .map(|item| to_int(item.get("points")).unwrap_or(0))
+        .sum::<i64>();
     let mut msg_parts: Vec<String> = Vec::new();
     if granted_today > 0 {
         msg_parts.push(format!("今日积分 +{granted_today}"));
@@ -467,6 +553,7 @@ pub async fn claim_daily_grant(
 
     Ok(json!({
         "success": granted_today > 0,
+        "alreadyCompleted": already_completed,
         "msg": msg_parts.join("；"),
         "grantsToday": grants,
         "settings": settings,

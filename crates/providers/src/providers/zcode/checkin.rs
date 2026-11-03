@@ -4,8 +4,8 @@
 //! ZCode 没有独立的签到接口，但上游每天给账号下发一份**带日期段的新套餐**
 //! （`zcode-v3-start-plan-<日期>` / `zcode-v3-start-plan-1024` 这类），用户在
 //! 客户端里点一下就领 —— 那一下就是这一家的「签到」。判据与 `claim.rs` 模块头
-//! 记的一致：同一期再领回 `1003 already claimed`，所以「今天领过没」等价于
-//! 「今天这个 plan_id 领过没」，无需本地记账。
+//! 记的一致：同一期再领回 `1003 already claimed`。手动领取、自动签到与
+//! 领取状态预览共用逐套餐台账，已领取后从上游预览消失也不会丢失完成事实。
 //!
 //! 与 `claim.rs` 里那个**手动领取**的差别只有三点：
 //!   1. 这是**无人值守**的调度（每天定时跑），因此不弹滑块、不向用户要验证码；
@@ -57,13 +57,11 @@ const ROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(100);
 /// 改一处就要改另一处。
 const DAILY_WINDOW_HOUR: i64 = 19;
 
-/// 今天的窗口开启时刻（毫秒时间戳，北京时间口径）。
-///
-/// 用 `now + 8h` 再取整日的方式算「北京时间今天零点」，与 Qoder 的
-/// `daily_window_start` 同一算法（避免引入时区库依赖）。
-fn daily_window_start() -> i64 {
-    let beijing_now = crate::http::now_ms() + 8 * 3_600_000;
-    beijing_now.div_euclid(86_400_000) * 86_400_000 + DAILY_WINDOW_HOUR * 3_600_000
+/// 今天的窗口开启时刻（Unix 毫秒时间戳，北京时间口径）。
+fn daily_window_start(now: i64) -> i64 {
+    let offset = i64::from(crate::beijing::OFFSET_SECONDS) * 1000;
+    (now + offset).div_euclid(86_400_000) * 86_400_000
+        + DAILY_WINDOW_HOUR * 3_600_000 - offset
 }
 
 /// 执行一次签到。`manual` 只影响日志措辞（本家没有写请求限流闸）。
@@ -80,7 +78,7 @@ pub async fn claim_daily_checkin(
 ) -> Result<Value, GatewayError> {
     let now = crate::http::now_ms();
     let started = tokio::time::Instant::now();
-    let window = daily_window_start();
+    let window = daily_window_start(now);
     // 窗口没开：不探测、不领取，直接给中性结果并指定窗口开启时刻
     if now < window {
         return Ok(inactive(
@@ -122,14 +120,14 @@ pub async fn claim_daily_checkin(
 
     claim::refresh_app_version_override(ctx).await;
     let snapshot = match claim::preview(
-        ctx, region, account_id, &jwt, mid, &user_id, proxy.as_ref(), false,
+        ctx, region, account_id, &jwt, mid, &user_id, proxy.as_ref(), claim::PreviewPurpose::Automatic, false,
     ).await {
         Ok(snapshot) => snapshot,
         Err(error) => return Ok(failed_soft(error.message)),
     };
     if snapshot.plans.is_empty() {
-        if snapshot.preview_error.is_some() || snapshot.marketing_error.is_some() {
-            return Ok(failed_soft("部分套餐来源查询失败，尚不能确认是否有可领取套餐"));
+        if snapshot.preview_error.is_some() || snapshot.marketing_error.is_some() || snapshot.ledger_error.is_some() {
+            return Ok(failed_soft("部分套餐来源或领取台账查询失败，尚不能确认今日领取状态"));
         }
         return Ok(inactive("当前没有可领取的赠送套餐", None));
     }
@@ -142,7 +140,7 @@ pub async fn claim_daily_checkin(
             break;
         }
         let attempt = claim::claim_plan(
-            ctx, region, account_id, &jwt, mid, proxy.as_ref(), plan, None,
+            ctx, region, account_id, &jwt, mid, &user_id, proxy.as_ref(), plan, None,
         ).await;
         let stop = match &attempt {
             Ok(attempt) => matches!(&attempt.outcome,
@@ -154,7 +152,7 @@ pub async fn claim_daily_checkin(
         results.push(plan_result(region, plan, attempt));
         if stop { break; }
     }
-    Ok(combine_results(results, expected))
+    Ok(combine_results(results, expected, snapshot.daily_checkin))
 }
 
 fn plan_result(
@@ -176,7 +174,7 @@ fn plan_result(
                         None => format!("领到「{plan_name}」（{plan_id}）"),
                     };
                     crate::logging::log("[Checkin]", &format!("✅ ZCode {}账号签到成功：{plan_id}", region.label()));
-                    json!({ "success": true, "msg": msg, "planId": plan_id, "planName": plan_name })
+                    json!({ "success": true, "msg": msg, "planId": plan_id, "planName": plan_name, "claimedAt": attempt.claimed_at })
                 }
                 claim::ClaimOutcome::Failed { failure, code, message, failure_ends_at, .. } => {
                     use claim::ClaimFailure;
@@ -184,6 +182,7 @@ fn plan_result(
                         ClaimFailure::AlreadyClaimed => json!({
                             "success": false, "alreadyCompleted": true,
                             "msg": format!("「{plan_name}」已领取"), "planId": plan_id,
+                            "claimedAt": attempt.claimed_at,
                         }),
                         ClaimFailure::Unavailable | ClaimFailure::QuotaExhausted => inactive(
                             format!("「{plan_name}」{}（{code}）：{message}", failure.label()),
@@ -198,23 +197,30 @@ fn plan_result(
                 }
             };
             result["marketingError"] = json!(attempt.marketing_error);
+            result["dailyCheckin"] = attempt.daily_checkin;
             result
         }
         Err(error) => failed_soft(error.message),
     }
 }
 
-fn combine_results(results: Vec<Value>, expected: usize) -> Value {
+fn combine_results(results: Vec<Value>, expected: usize, daily_checkin: Value) -> Value {
+    let daily_checkin = results.iter().rev().find_map(|row| row.get("dailyCheckin")).cloned()
+        .unwrap_or(daily_checkin);
     let succeeded = results.iter().any(|row| row.get("success").and_then(Value::as_bool) == Some(true));
-    let completed = !results.is_empty() && results.len() == expected
+    let completed = daily_checkin.get("completed").and_then(Value::as_bool) == Some(true)
+        && !results.is_empty() && results.len() == expected
         && results.iter().all(|row| row.get("success").and_then(Value::as_bool) == Some(true)
             || row.get("alreadyCompleted").and_then(Value::as_bool) == Some(true));
     let pending = results.iter().any(|row| row.get("outcome").and_then(Value::as_str) == Some("inactive"));
     let failed = results.iter().any(|row| row.get("success").and_then(Value::as_bool) != Some(true)
         && row.get("alreadyCompleted").and_then(Value::as_bool) != Some(true)
         && row.get("outcome").and_then(Value::as_str) != Some("inactive"));
-    let msg = results.iter().filter_map(|row| row.get("msg").and_then(Value::as_str))
+    let mut msg = results.iter().filter_map(|row| row.get("msg").and_then(Value::as_str))
         .collect::<Vec<_>>().join("；");
+    if !completed && daily_checkin.get("sourcesComplete").and_then(Value::as_bool) != Some(true) {
+        msg.push_str("；部分套餐来源查询失败，已处理已知套餐，今日领取状态仍待确认");
+    }
     let mut result = json!({
         "success": succeeded && completed,
         "alreadyCompleted": !succeeded && completed,
@@ -222,6 +228,7 @@ fn combine_results(results: Vec<Value>, expected: usize) -> Value {
         "outcome": if completed { if succeeded { "claimed" } else { "done" } }
             else if failed { "failed" } else if pending { "inactive" } else { "failed" },
         "results": results,
+        "dailyCheckin": daily_checkin,
     });
     let retry_at = result["results"].as_array().and_then(|rows| rows.iter()
         .filter_map(|row| row.get("retryAt").and_then(Value::as_i64)).min());

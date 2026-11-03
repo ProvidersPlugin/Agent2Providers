@@ -7,11 +7,11 @@
 //!   账号 CAccount     POST https://account.xfinfr.com/login/phone/{sendMsgCode,checkCode}
 //!                     HMAC-SHA1 签名头（客户端内置 AccessKey 对，见 sign.rs）
 //!   集成网关（积分）  https://loomyad.xunfei.cn        header: token: <session>
-//!   模型网关          {集成网关}/api/v1                 OpenAI 兼容，token + Bearer 双头
+//!   模型网关          {集成网关}/api/v1                 按目录 protocol 走 Chat 或 Messages
 //! ```
 //!
-//! 本家**无状态**（一次 HTTP 请求 = 一次回答，OpenAI 协议），与 AutoClaw 同构：
-//! `stateful` 为 false，转发链只需 `build_chat`。
+//! 本家**无状态**（一次 HTTP 请求 = 一次回答）：`stateful` 为 false，
+//! `build_chat` 按模型目录分派协议，响应由网关已有翻译器处理。
 //!
 //! ── 三处与别家不同的取舍（都写在各自模块头，这里给索引）──────
 //!   1. **没有续期**（`refresh = false`）：session 14 天，上游没有 refresh 接口，
@@ -34,11 +34,11 @@ pub mod checkin;
 pub mod client;
 pub mod credentials;
 pub mod endpoints;
-pub mod images;
 mod image_generation;
 pub mod login;
 pub mod models;
 pub mod onboarding;
+mod request_headers;
 pub mod sign;
 
 use agent2api_provider_protocol as proto;
@@ -114,11 +114,7 @@ impl Provider for LoomyProvider {
 
     // ── 数据面 ────────────────────────────────────────────────
 
-    /// 构造 `POST {模型网关}/chat/completions`（OpenAI 协议，body 原样透传）。
-    ///
-    /// 鉴权是**双头**（客户端 `fetchModelsFromProvider` 的 authMode: 'token' 同款）：
-    /// `token: <session>` 与 `Authorization: Bearer <session>` 都发 —— 上游两个
-    /// 网关（模型 / 积分）对头名的偏好不同，双写是对两边都安全的做法。
+    /// 按模型目录里的 protocol 选择 Chat Completions 或 Messages。
     fn build_chat<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -126,35 +122,47 @@ impl Provider for LoomyProvider {
     ) -> SendFuture<'a, ChatPlan> {
         Box::pin(async move {
             let credentials = credentials::snapshot(ctx, &req.account).await?;
-            let token = credentials.session;
-            let headers: Vec<(String, String)> = vec![
-                ("token".to_string(), token.clone()),
-                ("Authorization".to_string(), format!("Bearer {token}")),
-                ("Accept".to_string(), "text/event-stream".to_string()),
-            ];
-            // 图片格式适配（见 `images` 模块头）：只有**上游没有视觉通路**的模型
-            // 才转 `<image_base64>` 标记；目录声明支持图片输入的模型保持标准
-            // image_url —— 对它来说标记反而会把 base64 当纯文本塞进 prompt。
-            //
-            // 网关在调本方法**之前**已经把 `body.model` 改写成本家要收的名字
-            // （见网关 `upstream::payload::send_body`），所以这里读的就是发送名。
-            let requested_model = req
-                .body
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let (payload, converted) = images::adapt_images(&req.body, &requested_model);
-            if converted > 0 {
-                agent2api_provider_sdk::log_info!(
-                    "[Loomy] 模型 {requested_model} 无视觉通路：已把 {converted} 个图片块转成 <image_base64> 标记"
-                );
+            let model = if req.wire_model.trim().is_empty() {
+                req.body.get("model").and_then(Value::as_str).unwrap_or("").trim().to_string()
+            } else {
+                req.wire_model.trim().to_string()
+            };
+            if model.is_empty() {
+                return Err(agent2api_provider_sdk::control_error(400, "Loomy 请求缺少模型名", None, None));
             }
-            Ok(ChatPlan::chat(
-                format!("{}/chat/completions", endpoints::model_base_url()),
-                headers,
-                payload,
-            ))
+            let mut body = req.body;
+            let object = body.as_object_mut().ok_or_else(|| {
+                agent2api_provider_sdk::control_error(400, "Loomy 请求体必须是 JSON 对象", None, None)
+            })?;
+            object.insert("model".to_string(), Value::String(model.clone()));
+            object.insert("stream".to_string(), Value::Bool(true));
+            let mut protocol = models::protocol(&model);
+            if protocol.is_none() {
+                let client = crate::http::control_client(req.proxy.as_ref(), &ctx.env.proxy);
+                let refreshed = models::refresh(&client, &credentials.session, false).await;
+                if let Some(message) = refreshed.message {
+                    return Err(message);
+                }
+                protocol = models::protocol(&model);
+            }
+            let mut headers = request_headers::chat(&credentials.session, &req.headers);
+            if protocol.as_deref() == Some("anthropic") {
+                let body = crate::anthropic::anthropic_outbound::anthropic_request_from_chat(&body, &model)?;
+                headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
+                headers.push(("x-api-key".to_string(), credentials.session));
+                Ok(ChatPlan {
+                    url: format!("{}/messages", endpoints::model_base_url()),
+                    headers,
+                    body,
+                    upstream: proto::UpstreamKind::Anthropic,
+                })
+            } else {
+                Ok(ChatPlan::chat(
+                    format!("{}/chat/completions", endpoints::model_base_url()),
+                    headers,
+                    body,
+                ))
+            }
         })
     }
 
@@ -182,41 +190,44 @@ impl Provider for LoomyProvider {
         Box::pin(image_generation::build(ctx, req))
     }
 
-    /// 上游错误分类：
-    ///   - HTTP 401 / 403 → `TokenExpired`；
-    ///   - 业务码 `020002` / `100002`（HTTP 200 或非 2xx 里的 body）→ `TokenExpired`；
-    ///   - HTTP 429 → `QuotaLimited`（上游不给结构化恢复时间）；
-    ///   - 其余 → 内容拦截分类（审核文案）或原样透传。
+    /// 网关向上游恒请求流式；HTTP 200 的 JSON 信封仍是错误，不能当 SSE 吞掉。
+    fn is_error_response(
+        &self,
+        status: u16,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        !(200..300).contains(&status)
+            || headers.get("content-type").is_some_and(|value| {
+                let mime = value.split(';').next().unwrap_or("").trim();
+                mime.eq_ignore_ascii_case("application/json")
+                    || mime.to_ascii_lowercase().ends_with("+json")
+            })
+    }
+
     fn classify(&self, status: u16, body: &Value) -> proto::ErrorClass {
-        let raw = body
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .unwrap_or("上游错误");
-        let message = format!("上游返回 {status}: {raw}");
-        let body_code = body
-            .get("code")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or("");
-        if status == 401 || status == 403 || client::is_auth_error_code(body_code) {
+        let raw = client::upstream_message(body);
+        let message = if raw.is_empty() {
+            format!("上游返回 {status}：Loomy 未返回有效的流式响应")
+        } else {
+            format!("上游返回 {status}: {raw}")
+        };
+        let body_code = client::business_code(body);
+        let code = body_code.parse::<i64>().ok();
+        let authentication_error = body.pointer("/error/type").and_then(Value::as_str)
+            == Some("authentication_error");
+        if status == 401 || client::is_auth_error_code(&body_code) || authentication_error {
             return proto::ErrorClass::TokenExpired { message };
         }
         if status == 429 {
             return proto::ErrorClass::QuotaLimited {
                 reset_at: None,
                 message,
-                upstream_code: body.get("code").and_then(Value::as_i64),
+                upstream_code: code,
                 status,
             };
         }
-        content_or_fatal(
-            status,
-            body,
-            message,
-            body.get("code").and_then(Value::as_i64),
-        )
+        let status = if (200..300).contains(&status) { 502 } else { status };
+        content_or_fatal(status, body, message, code)
     }
 
     /// 思考等级绑定 → `reasoning_effort`（low / medium / high）。
@@ -549,17 +560,10 @@ fn content_or_fatal(
     message: String,
     code: Option<i64>,
 ) -> proto::ErrorClass {
-    let matched = status >= 400
-        && body
-            .get("message")
-            .and_then(Value::as_str)
-            .map(|text| {
-                let lowered = text.to_lowercase();
-                CONTENT_BLOCK_PATTERNS
-                    .iter()
-                    .any(|pattern| lowered.contains(pattern))
-            })
-            .unwrap_or(false);
+    let matched = status >= 400 && {
+        let lowered = client::upstream_message(body).to_lowercase();
+        CONTENT_BLOCK_PATTERNS.iter().any(|pattern| lowered.contains(pattern))
+    };
     if matched {
         proto::ErrorClass::ContentBlocked {
             status,

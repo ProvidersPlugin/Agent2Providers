@@ -1,51 +1,13 @@
-//! 小浣熊模型清单（Agent2API 改造 W3-T4；移植来源 `raccoon-models.mjs`）。
+//! 小浣熊模型目录：仅采用 chat 分类，保留隐藏模型供显式映射使用。
 //!
-//! ── 清单从哪来 ──────────────────────────────────────────────
-//!   1. **静态兜底**：`FALLBACK_MODELS` 的 5 个模型（小浣熊客户端
-//!      `resources/default-llm-config.json` 预置 + 实测的 `/model_catalog` 内容）。
-//!      进程启动即可用，网络不通时 /v1/models 仍然有内容。
-//!   2. **远程刷新**：`GET {llmBase}/model_catalog`（10 分钟缓存）。token 失效或
-//!      网络失败时**保留旧缓存**，从未成功过就继续用静态兜底 —— 与源实现
-//!      `createModelCatalog` 的两级兜底逐条一致。
-//!
-//! ── 为什么清单条目保留上游原始形态 ───────────────────────────
-//! 聚合目录（`providers/catalog`）用 `models::list_item` 做字段映射，它认的是
-//! **上游原始形态**（字段名与 `/v3/config` 或小浣熊 `/model_catalog` 一致）。
-//! 因此本模块只做「字段名归一 + 类型修正」（源实现 `normalizeCatalogEntry`），
-//! 不提前翻译成 OpenAI 条目 —— 翻译只发生在聚合出口，单家与聚合两个视角
-//! 因此永远共用同一份字段映射（见 `core::models::shape` 的模块头）。
-//!
-//! ── 一处**必须**做的键名映射（与源实现的差异，实测发现）────────
-//! 小浣熊目录用 `name` 当**模型 id**（源实现 `resolveModelRoute` 就是拿
-//! `model.name` 与请求里的 model 比对），而聚合层与 `list_item` 认的是 `id`
-//! （workbuddy 的清单里 `id` 是模型 id、`name` 是展示名）。不做这层映射，
-//! `/v1/models` 会输出一批**没有 id 的条目**（本机实测：`meta.count` 有值、
-//! `data` 里每条的 id 全空），路由匹配也只能退化成按 name 比 —— 那是静默的
-//! 功能缺失。因此 `list()` 返回前把源形态翻成聚合层要的形状：
-//!   `name`（模型 id）→ `id`；`displayName` → `name`（展示名）；
-//!   `contextWindow` → `maxInputTokens`、`maxTokens` → `maxOutputTokens`
-//!   （`list_item` 认的是后两个键）；
-//!   `supportImage` / `supportThinking` → `supportsImages` / `supportsReasoning`。
-//! `displayName` / `description` / `tags` 等源字段**原样保留**（前端与排障要用）。
-//!
-//! ── 进程级句柄 ──────────────────────────────────────────────
-//! 与 `core::models::global_catalog()` 同一模式（`OnceLock` + `RwLock`）：
-//! 适配器是无状态单例，清单必须挂在进程级的共享句柄上，刷新才能对所有
-//! 调用点（`/v1/models`、路由判定、后台刷新）同时可见。
-//!
-//! ── 与 workbuddy 清单的差异（有意）──────────────────────────
-//!   1. **不过滤**：workbuddy 有「非对话模型排除前缀 + 白名单」这套准入规则
-//!      （它的 /v3/config 会下发补全/图像模型）；小浣熊的 `/model_catalog`
-//!      本身就是对话模型目录，源实现也没有过滤，因此这里全量采用。
-//!   2. **默认模型**：源实现的 `defaultModel` 只用于「请求没给 model」时的
-//!      回退，而那个回退在网关层由 `providerRoute` 与 `defaultModel` 配置承担
-//!      （架构文档 §4.4：小浣熊不认默认模型概念，`supports_default_model()`
-//!      返回 false）。因此这里**不保存 defaultModel**。
+//! 远程 model_catalog 的 name 是模型 ID，displayName 是展示名；聚合层
+//! 分别映射为 id/name。上下文和输出上限缺失时保持 null，不虚构限制。
+//! 目录需要登录与组织身份；刷新失败保留旧缓存，冷启动使用 fallback.rs。
 
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use agent2api_provider_protocol as proto;
 
@@ -62,7 +24,7 @@ pub fn default_model_id() -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "raccoon-chat-ml-5-5".to_string())
+        .unwrap_or_else(|| "raccoon-405a1c".to_string())
 }
 
 /// 远程目录缓存有效期（源实现 `CATALOG_CACHE_TTL_MS`：10 分钟）
@@ -71,82 +33,9 @@ const CATALOG_CACHE_TTL_MS: i64 = 10 * 60_000;
 /// 目录请求超时（源实现 `CATALOG_TIMEOUT_MS`）
 const CATALOG_TIMEOUT_MS: u64 = 10_000;
 
-/// 静态兜底清单（照抄源实现 `FALLBACK_MODELS` 的 5 条）。
-///
-/// 字段名与远程 `normalizeCatalogEntry` 的输出**完全同形**（`name` /
-/// `displayName` / `description` / `tags` / `contextWindow` / `maxTokens` /
-/// `supportImage` / `supportThinking`）—— 于是「远程目录」与「静态兜底」两条
-/// 来源在下游（聚合目录）看来没有区别，不会出现「离线时字段少一半」。
-///
-/// ── `credits` 是静态快照，取**基准倍率** ────────────────────────
-/// 与远程路径同形（`"x1 credits"`）。取 `billing_multiplier`（基准/原价）而
-/// 不是折后的 `billing_effective_multiplier`：折扣带明确的活动期
-/// （目录里 `sn-glm-5-3-flash` 的折扣到 2026-09-30、`sn-sensenova-6-8-flash-lite`
-/// 的限免到 2026-09-28），写死折后价会在活动结束后继续显示低价 ——
-/// 折扣由远程刷新如实带回来，兜底表只保证「离线也有一个不会说谎的数」。
-///
-/// `raccoon-chat-ml-5-5` **刻意不给**：它不在远程目录里（是桌面端本地配置的
-/// 默认模型），没有任何官方倍率可查 —— 编一个不如显示 `—`。
+/// 静态兜底使用基准倍率，不把临时折扣写成永久价格。
 pub fn fallback_models() -> Vec<Value> {
-    json!([
-        {
-            "name": "raccoon-8c4485",
-            "displayName": "Raccoon-Work",
-            "description": "适合复杂办公任务、代码开发、调试和图像识别等任务（目录默认旗舰，自称 GPT-5）",
-            "tags": ["general", "office", "code", "vision"],
-            "contextWindow": 1_000_000,
-            "maxTokens": 100_000,
-            "supportImage": true,
-            "supportThinking": false,
-            "credits": "x1 credits",
-        },
-        {
-            "name": "raccoon-19b265",
-            "displayName": "Raccoon-Work-260817-A",
-            "description": "适合复杂办公任务、代码开发和综合分析等任务（A/B 变体 A，自称 GPT-5）",
-            "tags": ["general", "office", "code", "analysis"],
-            "contextWindow": 1_000_000,
-            "maxTokens": 100_000,
-            "supportImage": false,
-            "supportThinking": false,
-            "credits": "x1 credits",
-        },
-        {
-            "name": "raccoon-405a1c",
-            "displayName": "Raccoon-Work-260817-B",
-            "description": "适合通用对话、轻量代码和内容处理等任务（A/B 变体 B，自称 GPT-5）",
-            "tags": ["general", "chat", "rewrite", "summary", "fast"],
-            "contextWindow": 1_000_000,
-            "maxTokens": 100_000,
-            "supportImage": false,
-            "supportThinking": false,
-            "credits": "x1 credits",
-        },
-        {
-            "name": default_model_id(),
-            "displayName": "Raccoon Chat (默认)",
-            "description": "小浣熊默认对话模型（default-llm-config.json 预置）。",
-            "tags": [],
-            "contextWindow": 180_000,
-            "maxTokens": 80_000,
-            "supportImage": false,
-            "supportThinking": true,
-        },
-        {
-            "name": "sn-sensenova-6-8-flash-lite",
-            "displayName": "SenseNova 6.8 Flash Lite",
-            "description": "轻量模型，用于标题生成等小任务。",
-            "tags": [],
-            "contextWindow": 256_000,
-            "maxTokens": 63_999,
-            "supportImage": false,
-            "supportThinking": true,
-            "credits": "x0.5 credits",
-        },
-    ])
-    .as_array()
-    .cloned()
-    .unwrap_or_default()
+    super::fallback::models()
 }
 
 /// 目录的内部状态：远程清单 + 刷新元信息。
@@ -265,10 +154,13 @@ fn fallback_visibility(id: &str) -> &'static str {
     };
     // ≤8 位纯十六进制 = 内部 Work 模型（与 `model_rules::is_opaque_raccoon_id`
     // 同一判据；那边是私有的，这里按同一形态判，两处结论必须一致）
-    let opaque = !suffix.is_empty()
-        && suffix.len() <= 8
-        && suffix.chars().all(|ch| ch.is_ascii_hexdigit());
-    if opaque { "hidden" } else { "shown" }
+    let opaque =
+        !suffix.is_empty() && suffix.len() <= 8 && suffix.chars().all(|ch| ch.is_ascii_hexdigit());
+    if opaque {
+        "hidden"
+    } else {
+        "shown"
+    }
 }
 
 /// 是否已经成功采用过远程清单（排障与 `meta.source` 用）
@@ -304,6 +196,7 @@ pub fn last_refreshed_at() -> i64 {
 ///     目录为空）。清单仍按既有行为保留（不清空），失败原因如实带给调用方。
 pub async fn refresh(
     token: &str,
+    org_code: &str,
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
     force: bool,
 ) -> proto::RefreshOutcome {
@@ -311,9 +204,7 @@ pub async fn refresh(
     // `force` 时整块跳过 —— 手动刷新就是要打这一次上游
     if !force {
         let state = read_state();
-        if !state.models.is_empty()
-            && logging::now_ms() - state.fetched_at < CATALOG_CACHE_TTL_MS
-        {
+        if !state.models.is_empty() && logging::now_ms() - state.fetched_at < CATALOG_CACHE_TTL_MS {
             return proto::RefreshOutcome::unchanged();
         }
     }
@@ -323,27 +214,32 @@ pub async fn refresh(
     if !token.is_empty() {
         headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     }
-    let outcome = send_raw(
-        "GET",
-        &url,
-        None,
-        &headers,
-        proxy,
-        Some(CATALOG_TIMEOUT_MS),
-    )
-    .await;
+    if let Err(message) = super::headers::append_org(&mut headers, org_code) {
+        return proto::RefreshOutcome::failed(message);
+    }
+    let outcome = send_raw("GET", &url, None, &headers, proxy, Some(CATALOG_TIMEOUT_MS)).await;
     // 「沿用哪一份」的措辞在三条失败路径上都要用：它决定了用户看到的是
     // 「刷新失败（保留旧目录）」还是「刷新失败（仍在用静态兜底清单）」。
     // 写成闭包而不是提前算好：判据是**失败那一刻**的缓存状态，提前到请求前
     // 求值会因为期间别处刷新成功而说错（与改造前逐处内联的求值时机一致）
-    let kept = || if remote_refreshed() { "旧缓存" } else { "静态兜底" };
+    let kept = || {
+        if remote_refreshed() {
+            "旧缓存"
+        } else {
+            "静态兜底"
+        }
+    };
     let payload = match outcome {
         Ok(response) => {
             if !response.ok {
                 let reason = format!("上游返回 HTTP {}", response.status);
                 logging::verbose(
                     "[Models]",
-                    &format!("小浣熊模型目录拉取失败（沿用{}）: HTTP {}", kept(), response.status),
+                    &format!(
+                        "小浣熊模型目录拉取失败（沿用{}）: HTTP {}",
+                        kept(),
+                        response.status
+                    ),
                 );
                 return proto::RefreshOutcome::failed(reason);
             }
@@ -358,6 +254,9 @@ pub async fn refresh(
             return proto::RefreshOutcome::failed(reason);
         }
     };
+    if super::upstream_errors::business_code(&payload).is_some_and(|code| code != 0) {
+        return proto::RefreshOutcome::failed(super::upstream_errors::message(&payload));
+    }
     let models = parse_catalog(&payload);
     if models.is_empty() {
         logging::verbose("[Models]", &format!("小浣熊模型目录为空（沿用{}）", kept()));
@@ -371,12 +270,18 @@ pub async fn refresh(
         .filter_map(|model| model.get("name").map(super::jwt::js_text))
         .collect();
     let count = models.len();
-    let next = CatalogState { models, fetched_at: logging::now_ms() };
+    let next = CatalogState {
+        models,
+        fetched_at: logging::now_ms(),
+    };
     match catalog().write() {
         Ok(mut guard) => *guard = next,
         Err(poisoned) => *poisoned.into_inner() = next,
     }
-    logging::log("[Models]", &format!("✅ 小浣熊模型目录已更新（{count} 个）"));
+    logging::log(
+        "[Models]",
+        &format!("✅ 小浣熊模型目录已更新（{count} 个）"),
+    );
     // 默认规则种子（raccoon-* 内部模型默认禁用 / sn-* 默认加去前缀映射）留给
     // **网关**：那是用户的模型规则配置，插件没有也不该有那份存储。这里只把
     // id 清单记进详细日志，网关刷新后按自己的规则表补种子。
@@ -400,6 +305,13 @@ pub(super) fn parse_catalog(payload: &Value) -> Vec<Value> {
         return models;
     };
     for category in categories {
+        if category
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != "chat")
+        {
+            continue;
+        }
         let Some(entries) = category.get("models").and_then(Value::as_array) else {
             continue;
         };
@@ -430,8 +342,8 @@ pub(super) fn parse_catalog(payload: &Value) -> Vec<Value> {
 ///      更长的多半是句子，用它当展示名会把列表撑爆）。
 ///   ② `params` 是嵌套对象，`context_window` / `max_tokens` 可能出现在
 ///      `params` 里、也可能在顶层（两种都实测过）—— 两级都要看。
-///   ③ `supportThinking` 恒为 true（目录里没有对应字段，源实现就是这么写的）；
-///      `supportImage` 由 tags 推断（vision / image / image-understanding）。
+/// `supportThinking` 优先读取显式能力，否则按官方运行时已确认的模型家族判断。
+/// `supportImage` 由目录的显式字段或 vision / image / image-understanding 标签决定。
 fn normalize_catalog_entry(entry: &Value) -> Option<Value> {
     let object = entry.as_object()?;
     let name = object
@@ -462,7 +374,7 @@ fn normalize_catalog_entry(entry: &Value) -> Option<Value> {
     let tag_names: Vec<String> = tags
         .iter()
         .filter_map(Value::as_str)
-        .map(str::to_string)
+        .map(str::to_ascii_lowercase)
         .collect();
     let params = object.get("params").and_then(Value::as_object);
     let pick_int = |keys: &[&str]| -> Value {
@@ -470,10 +382,7 @@ fn normalize_catalog_entry(entry: &Value) -> Option<Value> {
             if let Some(number) = object.get(*key).and_then(int_of) {
                 return Value::from(number);
             }
-            if let Some(number) = params
-                .and_then(|params| params.get(*key))
-                .and_then(int_of)
-            {
+            if let Some(number) = params.and_then(|params| params.get(*key)).and_then(int_of) {
                 return Value::from(number);
             }
         }
@@ -503,9 +412,20 @@ fn normalize_catalog_entry(entry: &Value) -> Option<Value> {
         .unwrap_or_default()
         .trim()
         .to_string();
-    let support_image = ["vision", "image", "image-understanding"]
-        .iter()
-        .any(|wanted| tag_names.iter().any(|tag| tag == wanted));
+    let support_image = object
+        .get("supports_images")
+        .or_else(|| object.get("supportImage"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            ["vision", "image", "image-understanding"]
+                .iter()
+                .any(|wanted| tag_names.iter().any(|tag| tag == wanted))
+        });
+    let support_thinking = object
+        .get("supports_reasoning")
+        .or_else(|| object.get("supportThinking"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| super::reasoning::supported(&name));
     let mut normalized = serde_json::Map::new();
     normalized.insert("name".to_string(), Value::String(name));
     normalized.insert("displayName".to_string(), Value::String(display_name));
@@ -514,11 +434,28 @@ fn normalize_catalog_entry(entry: &Value) -> Option<Value> {
     // 上下文窗口/输出上限用 `Value::Null` 表示「目录没给」——
     // 聚合出口的 `list_item` 对 null 的处理是**不输出该键**（与源实现的
     // `undefined` 一致），所以这里必须用 null 而不是 0
-    normalized.insert("contextWindow".to_string(), pick_int(&["context_window", "contextWindow"]));
-    normalized.insert("maxTokens".to_string(), pick_int(&["max_tokens", "maxTokens"]));
+    normalized.insert(
+        "contextWindow".to_string(),
+        pick_int(&["context_window", "contextWindow"]),
+    );
+    normalized.insert(
+        "maxTokens".to_string(),
+        pick_int(&["max_tokens", "maxTokens"]),
+    );
     normalized.insert("supportImage".to_string(), Value::Bool(support_image));
-    // 源实现恒为 true（目录没有这个字段，客户端按「支持思考」渲染）
-    normalized.insert("supportThinking".to_string(), Value::Bool(true));
+    normalized.insert("supportThinking".to_string(), Value::Bool(support_thinking));
+    for (source, target) in [
+        ("ability_level", "abilityLevel"),
+        ("billing_category", "billingCategory"),
+        ("billing_multiplier", "billingMultiplier"),
+        ("billing_effective_multiplier", "billingEffectiveMultiplier"),
+        ("billing_status_note", "billingStatusNote"),
+        ("billing_discounts", "billingDiscounts"),
+    ] {
+        if let Some(value) = object.get(source) {
+            normalized.insert(target.to_string(), value.clone());
+        }
+    }
     // 倍率：上游目录里的 `billing_multiplier`（基准/原价倍率）与
     // `billing_effective_multiplier`（计入活动与限免后的**实付**倍率）。
     //

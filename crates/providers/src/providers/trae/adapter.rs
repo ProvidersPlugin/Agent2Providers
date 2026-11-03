@@ -86,10 +86,8 @@ impl Provider for TraeProvider {
                 },
             ])
             .with_models(models::list())
-            // 账号行：`edition: false` 是事实 —— 国内 SOLO 与国际版是**两套协议**
-            // 而不是一个地区的两种拼法，国际版将来接入时另立 provider id。
-            //   `usage` 对应 `usage` 模块（上游两份账：`ide_user_ent_usage` 的
-            //     权益包 / 积分池 + `ide_user_pay_status` 的快请求与 SOLO 并发）。
+            // 国际版需要独立的 provider id；国内 Agent / IDE 共用本家身份。
+            // `usage` 读取权益包与快请求额度，
             //   `credit_detail` —— 同一份 ent_usage 里还读得到**逐份权益包**的
             //     `start_time` / `expire_time`（领取 → 到期）。签到发的包会按天
             //     堆起来，哪一份先作废只有这份清单答得上来。
@@ -103,20 +101,28 @@ impl Provider for TraeProvider {
                 expiry: vec!["expiresAt".to_string(), "expiresAtMs".to_string()],
                 ..Default::default()
             })
-        .with_checkin(proto::CheckinInfo {
-            description: Some("SOLO 的 checkin_credits 领取 · 按自然日 0 点刷新".to_string()),
-            modes: vec![proto::CheckinMode::Checkin],
-            ..Default::default()
-        })
+            .with_checkin(proto::CheckinInfo {
+                description: Some("Trae 每日签到积分领取 · 按自然日 0 点刷新".to_string()),
+                modes: vec![proto::CheckinMode::Checkin],
+                ..Default::default()
+            })
     }
 
     /// 模型清单 = 上一次成功刷到的那张远程表（没刷到时为空，见 `models.rs`）。
     fn models<'a>(
         &'a self,
-        _ctx: &'a PluginCtx,
-        _account: &'a str,
+        ctx: &'a PluginCtx,
+        account: &'a str,
     ) -> SendFuture<'a, proto::ModelList> {
         Box::pin(async move {
+            if !account.trim().is_empty() {
+                let record = crate::store::record(ctx, PROVIDER_ID, account).await?;
+                let credential = Credential::from_payload(&record)?;
+                return Ok(proto::ModelList {
+                    models: models::list_for(&credential),
+                    meta: models::meta_for(&credential),
+                });
+            }
             Ok(proto::ModelList {
                 models: models::list(),
                 meta: proto::CatalogMeta {
@@ -138,7 +144,7 @@ impl Provider for TraeProvider {
             let mut sink = sink;
             super::forward::forward(ctx, req, &mut sink)
                 .await
-                .map_err(GatewayError::into_message)
+                .map_err(GatewayError::into_control_message)
         })
     }
 
@@ -175,7 +181,9 @@ impl Provider for TraeProvider {
             // 只有落到「其它 4xx」这一档才交给跨家的内容拦截判定：本家的
             // 请求级分类（过大 / 通道不可用 / 404）必须优先，把它们误判成
             // 内容拦截会触发一次无意义的同账号重试。
-            ErrorKind::Client => content_block::classify_or_fatal(status, error_body, message, code),
+            ErrorKind::Client => {
+                content_block::classify_or_fatal(status, error_body, message, code)
+            }
             // Server / NotFound / InputTooLarge / ModelUnavailable / None
             // 都不该罚账号。
             _ => proto::ErrorClass::Fatal {
@@ -188,7 +196,11 @@ impl Provider for TraeProvider {
 
     /// 取可用令牌：临期（24h 窗口）或签发龄超 15 天时主动续期并回写。
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
-        Box::pin(async move { ensure_token_inner(ctx, account).await.map_err(|error| error.message) })
+        Box::pin(async move {
+            ensure_token_inner(ctx, account)
+                .await
+                .map_err(|error| error.message)
+        })
     }
 
     /// 401 后的强制刷新：**无视临期判定直接换发**。
@@ -197,7 +209,11 @@ impl Provider for TraeProvider {
     /// `ensure_token` 的临期门（那会原样返回刚被拒的串，让编排层的
     /// 「刷新后重试一次」退化成「用同一个坏 token 再打一次」）。
     fn refresh_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
-        Box::pin(async move { refresh_token_inner(ctx, account).await.map_err(|error| error.message) })
+        Box::pin(async move {
+            refresh_token_inner(ctx, account)
+                .await
+                .map_err(|error| error.message)
+        })
     }
 
     /// 后台凭证维护问「这条账号是不是快到期了」。
@@ -266,6 +282,7 @@ impl Provider for TraeProvider {
                 // 「从本机看得到」的表，而用户以为刷的是那条账号的出口。
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
             };
+            let credential = renew_if_due(ctx, &record, &credential, proxy.as_ref()).await?;
             Ok(models::refresh(&credential, proxy.as_ref(), force).await)
         })
     }

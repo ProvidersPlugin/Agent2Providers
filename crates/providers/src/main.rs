@@ -36,6 +36,8 @@
 // 连 `unwrap` 都不允许（网关只是「尽量不写」，这里是编译期禁止）。
 // 确实需要的地方用 `guard()` 显式兜住并记日志。
 
+#[cfg(any(feature = "loomy", feature = "zcode"))]
+mod anthropic;
 mod beijing;
 mod catalog_backoff;
 mod catalog_ledger;

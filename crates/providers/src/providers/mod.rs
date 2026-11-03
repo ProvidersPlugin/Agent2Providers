@@ -118,6 +118,14 @@ pub fn registry() -> Vec<BoxProvider> {
         list.push(Box::new(qoder::QODER_INTL));
     }
 
+    // 千问办公与 Qoder 是同一套协议栈，实现共用 `qoder` 模块（见
+    // `qoder/endpoints.rs` 的模块头）；两版同样是两个 provider、两个实例。
+    #[cfg(feature = "qwenwork")]
+    {
+        list.push(Box::new(qoder::QWENWORK_CN));
+        list.push(Box::new(qoder::QWENWORK_INTL));
+    }
+
     #[cfg(feature = "raccoon")]
     list.push(Box::new(raccoon::RaccoonProvider));
 

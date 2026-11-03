@@ -64,12 +64,55 @@ impl SseParser {
     }
 }
 
+/// 生成结果块的类型。豆包的生图不走独立接口：它就是**对话里的一次任务**
+/// （`agent_mode` 的工作任务模式），由 agent 调用 `image_gen` 产出图片，
+/// 结果挂在同一条 SSE 流里。实测（2026-11-03，客户端抓包 + 本机复现）两种块：
+///   · `10010` `content.gen_image_block.images[]` —— 交付结果，`uri` 给的是
+///     **带水印**的压缩预览（`~tplv-…-downsize_watermark…`）；
+///   · `10084` `content.rich_media_layout_block.media[].creation.image` —— 画布
+///     渲染，这里同时给了 `key`（对象键）与 `image_ori_raw`（**无水印原图**）。
+/// 后者总在稍后到达 —— 所以图片**不随块即时发出**：先记下来，流末由
+/// [`Decoder::drain_images`] 统一交出去，才交得到无水印那份。
+const IMAGE_BLOCK: u64 = 10010;
+const MEDIA_BLOCK: u64 = 10084;
+
+/// 流里收到的一张图（同一张图两种块都会报，按对象键合并）。
+#[derive(Default)]
+struct Image {
+    /// 对象键（`tos-cn-i-…/rc_gen_image/x.jpeg`）：两种块都用它标识同一张图。
+    key: String,
+    /// 无水印原图（`~tplv-…-image_raw.png`）。
+    ///
+    /// ── 为什么认它、而不去调去水印接口 ──────────────────────────
+    /// 实测同一张图：流里这份 `image_raw` 与官方
+    /// `/creativity/resource/get_without_watermark` 返回的 `cgen_wm0` **字节完全
+    /// 相同**（4624288 字节、同一 md5）。流里既然就有，就不必再发第二次请求。
+    raw: Option<String>,
+    /// 带水印的预览（`uri` / `thumb_url` / `image_ori`），拿不到原图时的兜底。
+    preview: String,
+}
+
+/// 图片地址 → 对象键：`https://host/tos-cn-i-…/rc_gen_image/x.jpeg~tplv-…?…`
+/// 的对象键是 `~` 之前、去掉协议与 host 的那一段。
+fn object_key(url: &str) -> Option<String> {
+    let without_query = url.split('?').next().unwrap_or(url);
+    let path = without_query.split('~').next().unwrap_or(without_query);
+    let key = path
+        .strip_prefix("https://")
+        .or_else(|| path.strip_prefix("http://"))
+        .map(|rest| rest.split_once('/').map(|(_, path)| path).unwrap_or(""))
+        .unwrap_or(path);
+    (!key.is_empty()).then(|| key.to_string())
+}
+
 #[derive(Default)]
 pub struct Decoder {
     pub text: String,
     pub reasoning: String,
     reasoning_blocks: BTreeSet<String>,
     blocks: BTreeMap<String, String>,
+    /// 生成图片，按到达先后排（一次任务通常一张，流里会重复报同一张）。
+    images: Vec<Image>,
     pub done: bool,
     received: usize,
 }
@@ -81,11 +124,129 @@ pub enum Delta {
 }
 
 impl Decoder {
+    /// 记下 `10010`（交付结果）里的图片：这一份是**带水印的预览**。
+    fn note_generated(&mut self, block: &Value) {
+        for image in block["content"]["gen_image_block"]["images"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(url) = ["uri", "thumb_url"].iter().find_map(|key| {
+                image[*key]
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+            }) else {
+                continue;
+            };
+            let key = object_key(url).unwrap_or_else(|| url.to_string());
+            if let Some(known) = self.images.iter_mut().find(|known| known.key == key) {
+                if known.preview.is_empty() {
+                    known.preview = url.to_string();
+                }
+                continue;
+            }
+            self.images.push(Image {
+                key,
+                raw: None,
+                preview: url.to_string(),
+            });
+        }
+    }
+
+    /// 记下 `10084`（画布渲染）里的图片：这一份带着**无水印原图** [`Image::raw`]。
+    ///
+    /// 与 `10010` 按对象键合并：先到的是预览、后到的补上原图，两种先后顺序都成立
+    /// （实测是 10010 在前，但流里块的先后不由我们定，所以两边都按 key 合并）。
+    fn note_media(&mut self, block: &Value) {
+        for image in block["content"]["rich_media_layout_block"]["media"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let image = &image["creation"]["image"];
+            let key = image["key"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    ["image_ori", "image_preview", "image_thumb"]
+                        .iter()
+                        .find_map(|field| object_key(image[*field]["url"].as_str()?))
+                });
+            let Some(key) = key else { continue };
+            let raw = image["image_ori_raw"]["url"]
+                .as_str()
+                .filter(|url| !url.trim().is_empty())
+                .map(str::to_string);
+            let preview = ["image_ori", "image_preview", "image_thumb"]
+                .iter()
+                .find_map(|field| image[*field]["url"].as_str())
+                .filter(|url| !url.trim().is_empty())
+                .map(str::to_string);
+            if let Some(known) = self.images.iter_mut().find(|known| known.key == key) {
+                if known.raw.is_none() {
+                    known.raw = raw;
+                }
+                if known.preview.is_empty() {
+                    known.preview = preview.unwrap_or_default();
+                }
+                continue;
+            }
+            self.images.push(Image {
+                key,
+                raw,
+                preview: preview.unwrap_or_default(),
+            });
+        }
+    }
+
+    /// 本次流里有没有出图（`chat::run` 用它决定"只有图片、没有正文"算不算成功）。
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
+
+    /// 把攒下来的图片交出去（流末调用一次）。
+    ///
+    /// ── 为什么是 markdown，不是图片内容块 ────────────────────────
+    /// 网关这条对话流一路上都是**文本增量**（插件只推 `delta.content`，
+    /// 下游各家客户端也都按 markdown 渲染）。要塞一个 `image_url` 内容块出去，
+    /// 多数客户端会连整条 delta 一起丢掉 —— 图片反而更看不见。渲成
+    /// `![](url)` 则所有客户端都能显示，且下游的用量统计/报文记录不用改。
+    ///
+    /// 一张图只发一次：`10010` 会随进度重复下发同一张，这里按对象键合并过。
+    /// 首选无水印原图 [`Image::raw`]，没有才退回带水印的预览（旧账号/旧版本
+    /// 可能不下发 `10084`）—— 有图总比没图好，只是带水印。
+    pub fn drain_images(&mut self) -> Vec<Delta> {
+        let mut output = Vec::new();
+        for image in std::mem::take(&mut self.images) {
+            let url = match image
+                .raw
+                .clone()
+                .or_else(|| (!image.preview.is_empty()).then(|| image.preview.clone()))
+            {
+                Some(url) => url,
+                None => continue,
+            };
+            let delta = format!("\n\n![图片]({url})\n\n");
+            self.text.push_str(&delta);
+            output.push(Delta::Text(delta));
+        }
+        output
+    }
+
     fn blocks(&mut self, value: &Value, append: bool) -> Result<Vec<Delta>, GatewayError> {
         let mut output = Vec::new();
         for block in value.as_array().into_iter().flatten() {
             let kind = api::number(&block["block_type"]);
             if kind == Some(10040) {
+                continue;
+            }
+            if kind == Some(IMAGE_BLOCK) {
+                self.note_generated(block);
+                continue;
+            }
+            if kind == Some(MEDIA_BLOCK) {
+                self.note_media(block);
                 continue;
             }
             if kind != Some(10000) {

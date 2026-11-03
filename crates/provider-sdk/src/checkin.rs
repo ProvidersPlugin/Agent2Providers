@@ -9,6 +9,8 @@ pub struct CheckinResult {
     #[serde(flatten)]
     pub report: proto::CheckinReport,
     pub retry_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl From<proto::CheckinReport> for CheckinResult {
@@ -16,6 +18,7 @@ impl From<proto::CheckinReport> for CheckinResult {
         Self {
             report,
             retry_at: None,
+            details: None,
         }
     }
 }

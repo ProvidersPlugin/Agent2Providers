@@ -17,6 +17,30 @@ pub struct ClaimablePlan {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OwnedPlan {
+    pub plan_id: String,
+    pub user_plan_id: Option<String>,
+    pub name: String,
+    pub state: String,
+    pub starts_at: Option<i64>,
+    pub ends_at: Option<i64>,
+    pub pending_until: Option<i64>,
+    pub entitlements: Vec<PlanEntitlement>,
+}
+
+impl OwnedPlan {
+    pub(super) fn matches_activity(&self, plan: &ClaimablePlan) -> bool {
+        if self.plan_id != plan.plan_id || !matches!(self.state.as_str(), "active" | "pending") { return false; }
+        if self.ends_at.is_some_and(|end| end <= crate::http::now_ms() / 1000) { return false; }
+        // 同一商品的旧实例不能证明当前领取单元已到账。
+        match (plan.starts_at, self.ends_at) {
+            (Some(activity_start), Some(owned_end)) => owned_end > activity_start,
+            _ => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PlanEntitlement {
     pub show_name: String,
     pub unit_type: String,

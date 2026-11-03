@@ -200,7 +200,7 @@ pub fn anthropic_request_from_chat(chat: &Value, model: &str) -> Result<Value, S
         let dropped = super::native_tool::Downgrade { tools: natives, choice: choice_reason };
         crate::logging::log(
             "[Anthropic]",
-            &dropped.describe("zcode", Some("目标上游按 anthropic 协议收，承载不了别的协议的原生类型")),
+            &dropped.describe("anthropic", Some("目标上游按 anthropic 协议收，承载不了别的协议的原生类型")),
         );
     }
     Ok(Value::Object(out))

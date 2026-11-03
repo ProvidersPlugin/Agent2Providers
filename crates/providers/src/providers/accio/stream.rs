@@ -216,10 +216,22 @@ pub struct FrameStream {
     pending: VecDeque<Frame>,
     ended: bool,
     read_error: Option<std::io::Error>,
+    status: u16,
+    content_type: String,
+    bxpunish: bool,
+    bytes_seen: usize,
+    saw_sse_event: bool,
 }
 
 impl FrameStream {
     pub fn new(response: reqwest::Response) -> Self {
+        let status = response.status().as_u16();
+        let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("未提供")
+            .chars().take(128).collect();
+        let bxpunish = response.headers().get("bxpunish")
+            .is_some_and(|value| value.as_bytes() == b"1");
         let source = response.bytes_stream().map(|item| {
             item.map_err(|error| std::io::Error::other(crate::http::describe_chain(&error)))
         });
@@ -232,7 +244,31 @@ impl FrameStream {
             pending: VecDeque::new(),
             ended: false,
             read_error: None,
+            status,
+            content_type,
+            bxpunish,
+            bytes_seen: 0,
+            saw_sse_event: false,
         }
+    }
+
+    pub fn no_output_error(&self) -> GatewayError {
+        if self.bytes_seen == 0 || self.saw_sse_event {
+            return GatewayError::with_status(502, "Accio 上游返回空响应（没有有效正文、思考或工具调用）")
+                .with_code("accio_empty_response");
+        }
+        let mime = self.content_type.split(';').next().unwrap_or("").trim();
+        let hint = if self.bxpunish {
+            "；上游返回风控拦截页（bxpunish: 1）"
+        } else if mime.eq_ignore_ascii_case("text/html") || mime.eq_ignore_ascii_case("application/xhtml+xml") {
+            "；上游返回 HTML 页面"
+        } else {
+            ""
+        };
+        GatewayError::with_status(502, format!(
+            "Accio 上游未返回 SSE 数据帧（HTTP {}，Content-Type: {}，已接收 {} 字节）{hint}",
+            self.status, self.content_type, self.bytes_seen,
+        )).with_code("accio_non_sse_response")
     }
 
     pub async fn next(&mut self) -> Result<Option<Frame>, GatewayError> {
@@ -251,9 +287,12 @@ impl FrameStream {
             }
             match self.source.next().await {
                 Some(Ok(bytes)) => {
+                    self.bytes_seen = self.bytes_seen.saturating_add(bytes.len());
                     let pending = &mut self.pending;
+                    let saw_sse_event = &mut self.saw_sse_event;
                     let mut done = false;
                     self.decoder.feed(&bytes, |data| {
+                        *saw_sse_event = true;
                         if is_done(data) || std::str::from_utf8(data).is_ok_and(|text| text.trim() == "[done]") {
                             done = true;
                             return true;
@@ -273,7 +312,9 @@ impl FrameStream {
                     self.read_error = item.and_then(Result::err);
                     let interrupted = self.read_error.is_some();
                     let pending = &mut self.pending;
+                    let saw_sse_event = &mut self.saw_sse_event;
                     self.decoder.finish(|data| {
+                        *saw_sse_event = true;
                         if let Some(mut frame) = std::str::from_utf8(data).ok().and_then(parse_frame) {
                             if interrupted { frame.turn_complete = false; }
                             pending.push_back(frame);

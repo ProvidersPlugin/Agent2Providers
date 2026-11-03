@@ -47,7 +47,6 @@ use serde_json::{json, Map, Value};
 use agent2api_provider_sdk::PluginCtx;
 
 use crate::errors::GatewayError;
-use crate::http::send_raw;
 use crate::logging;
 
 use super::jwt;
@@ -83,6 +82,8 @@ pub struct RaccoonCredentials {
     pub expires_at: Option<f64>,
     /// 用户 ID（JWT 的十六进制 id 约定，见 `jwt::extract_user_id`）
     pub user_id: String,
+    pub org_code: String,
+    pub auth_path: Option<PathBuf>,
     /// 凭证来源：决定刷新结果回写到哪里
     pub origin: CredentialOrigin,
 }
@@ -101,17 +102,19 @@ impl RaccoonCredentials {
     /// 现在是否需要刷新（源实现 `isCredentialsExpiring`：expiresAt 缺失时
     /// 不刷新 —— 没有依据就说「临期」会让每个请求都去打一次刷新接口）。
     pub fn is_expiring(&self) -> bool {
-        match self.expires_at {
-            Some(expires_at) => {
-                expires_at - PROACTIVE_REFRESH_MARGIN_MS <= logging::now_ms() as f64
-            }
-            None => false,
+        if jwt::is_iam_token(&self.token) {
+            return self
+                .expires_at
+                .is_some_and(|expires| expires <= logging::now_ms() as f64);
         }
+        self.expires_at.is_some_and(|expires| {
+            expires - PROACTIVE_REFRESH_MARGIN_MS <= logging::now_ms() as f64
+        })
     }
 
-    /// 能否刷新：有 refreshToken 才行
+    /// IAM 没有旧版 refresh grant，磁盘上残留的刷新令牌不能继续使用。
     pub fn can_refresh(&self) -> bool {
-        !self.refresh_token.is_empty()
+        !self.refresh_token.is_empty() && !jwt::is_iam_token(&self.token)
     }
 }
 
@@ -119,35 +122,13 @@ impl RaccoonCredentials {
 
 /// 桌面端登录态的读取结果：JSON 对象 + 文件修改时间
 struct AuthFileSnapshot {
+    path: PathBuf,
     json: Map<String, Value>,
     modified_at: i64,
 }
 
-/// box-agent 配置目录（源实现 `defaultBoxAgentConfigDir`）：
-/// `RACCOON_BOX_AGENT_CONFIG_DIR` > `BOX_AGENT_CONFIG_DIR` > `~/.box-agent/config`。
-fn box_agent_config_dir() -> PathBuf {
-    for name in ["RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"] {
-        if let Ok(value) = std::env::var(name) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed);
-            }
-        }
-    }
-    home_dir().join(".box-agent").join("config")
-}
-
-/// 用户主目录（Windows 优先 USERPROFILE，其它平台 HOME）
-fn home_dir() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-}
-
-/// auth.json 的完整路径（导入与回写都要用）
 pub fn desktop_auth_file() -> PathBuf {
-    box_agent_config_dir().join("auth.json")
+    super::desktop::desktop_auth_file()
 }
 
 /// mtime 缓存：`(路径, mtime, 文件内容)`。
@@ -193,7 +174,11 @@ fn read_auth_file_raw(path: &Path) -> Result<AuthFileSnapshot, String> {
     let Value::Object(json) = value else {
         return Err("小浣熊登录态根节点不是 JSON 对象".to_string());
     };
-    Ok(AuthFileSnapshot { json, modified_at })
+    Ok(AuthFileSnapshot {
+        path: path.to_path_buf(),
+        json,
+        modified_at,
+    })
 }
 
 /// 读 auth.json（带 mtime 缓存与文件形态防御；防御项见 `auth_file_meta`）。
@@ -221,7 +206,11 @@ fn read_auth_file() -> Result<AuthFileSnapshot, String> {
             .map(|(_, _, json)| json.clone()),
     };
     if let Some(json) = cached {
-        return Ok(AuthFileSnapshot { json, modified_at });
+        return Ok(AuthFileSnapshot {
+            path,
+            json,
+            modified_at,
+        });
     }
     let snapshot = read_auth_file_raw(&path)?;
     if let Ok(mut guard) = auth_cache().lock() {
@@ -259,13 +248,18 @@ fn credentials_from_auth_file(snapshot: &AuthFileSnapshot) -> Result<RaccoonCred
     }
     let refresh_token = pick(&["refresh_token"]);
     let claims = jwt::decode_jwt_claims(&token);
-    let user_id = claims.as_ref().map(jwt::extract_user_id).unwrap_or_default();
+    let user_id = claims
+        .as_ref()
+        .map(jwt::extract_user_id)
+        .unwrap_or_default();
     Ok(RaccoonCredentials {
         id: DESKTOP_ACCOUNT_ID.to_string(),
         expires_at: jwt::jwt_expiry_ms(&token),
         token,
         refresh_token,
         user_id,
+        org_code: super::headers::org_code(&Value::Object(snapshot.json.clone())),
+        auth_path: Some(snapshot.path.clone()),
         origin: CredentialOrigin::AuthFile,
     })
 }
@@ -285,7 +279,10 @@ pub fn desktop_summary() -> Result<Value, String> {
             .expires_at
             .map(Value::from)
             .unwrap_or(Value::Null),
-        "hasRefreshToken": !credentials.refresh_token.is_empty(),
+        "hasRefreshToken": credentials.can_refresh(),
+        "officeIdentity": snapshot.json.get("office_identity"),
+        "officeOrgName": snapshot.json.get("office_org_name"),
+        "officeOrgRole": snapshot.json.get("office_org_role"),
         "mtime": snapshot.modified_at,
     }))
 }
@@ -317,13 +314,19 @@ fn persist_auth_file_if_current(
     access_token: &str,
     refresh_token: &str,
 ) -> Result<(), String> {
-    let path = desktop_auth_file();
+    let path = expected.auth_path.clone().unwrap_or_else(desktop_auth_file);
+    if desktop_auth_file() != path {
+        return Err(STALE_REFRESH_MESSAGE.to_string());
+    }
     // 读盘原值（不走缓存）：比较的是**文件此刻的内容**。
     // 读不到（缺失/损坏/被删）时**不重建**：登录态文件是用户的，网关无权替
     // 用户造一份；此时刷新结果无处可落，按「过期」处理，由调用方改用最新快照。
     let current = read_auth_file_raw(&path).map_err(|_| STALE_REFRESH_MESSAGE.to_string())?;
     let stored = credentials_from_auth_file(&current)?;
-    if stored.token != expected.token || stored.refresh_token != expected.refresh_token {
+    if stored.token != expected.token
+        || stored.refresh_token != expected.refresh_token
+        || stored.org_code != expected.org_code
+    {
         return Err(STALE_REFRESH_MESSAGE.to_string());
     }
     let seen_mtime = current.modified_at;
@@ -334,7 +337,9 @@ fn persist_auth_file_if_current(
             Value::String(jwt::strip_bearer(access_token)),
         );
     }
-    if !refresh_token.is_empty() {
+    if jwt::is_iam_token(access_token) {
+        current.remove("refresh_token");
+    } else if !refresh_token.is_empty() {
         current.insert(
             "refresh_token".to_string(),
             Value::String(jwt::strip_bearer(refresh_token)),
@@ -371,18 +376,16 @@ fn persist_auth_file_if_current(
 
 /// rename 前的最后确认：文件 mtime 未变，且内容仍是刷新前那份凭证。
 /// 读不到（被删/损坏/变成非常规文件）时视为「已变」→ 不替换。
-fn auth_file_still_matches(
-    path: &Path,
-    seen_mtime: i64,
-    expected: &RaccoonCredentials,
-) -> bool {
+fn auth_file_still_matches(path: &Path, seen_mtime: i64, expected: &RaccoonCredentials) -> bool {
     match read_auth_file_raw(path) {
         Ok(latest) => {
             latest.modified_at == seen_mtime
+                && desktop_auth_file() == path
                 && credentials_from_auth_file(&latest)
                     .map(|latest| {
                         latest.token == expected.token
                             && latest.refresh_token == expected.refresh_token
+                            && latest.org_code == expected.org_code
                     })
                     .unwrap_or(false)
         }
@@ -424,9 +427,7 @@ fn set_owner_only(_path: &Path) {}
 
 /// 取指定账号的凭证快照（**异步**：账号来自网关的 `store.get` 回调）。
 ///
-/// `account_id` 为空 → 该 provider 的队首账号（网关的 `store.get` 语义）；
-/// 读不到账号记录时回落到桌面端实时登录态 —— 那台机器上的「默认登录态」
-/// 事实上就是客户端登录的那个。
+/// 仅未指定账号时允许回落到本机登录态；显式账号缺失必须失败。
 ///
 /// ── 为什么判据是记录里的 `desktop` 标记而不是只看 id ──────────
 /// id `raccoon-desktop` 只是缺省值。判据落在标记上更稳，id 只作兜底。
@@ -436,10 +437,8 @@ pub async fn snapshot(
 ) -> Result<RaccoonCredentials, GatewayError> {
     let record = match crate::store::record(ctx, super::ID, account_id).await {
         Ok(record) => record,
-        Err(_) => {
-            // 没有账号记录：默认登录态 = 桌面端实时登录态
-            return desktop_credentials();
-        }
+        Err(_) if account_id.is_empty() => return desktop_credentials(),
+        Err(error) => return Err(error),
     };
     let is_desktop = record
         .get("desktop")
@@ -459,10 +458,7 @@ pub async fn snapshot(
             401,
             format!(
                 "账号 {} 没有可用凭证，请重新添加",
-                record
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("(未知)")
+                record.get("id").and_then(Value::as_str).unwrap_or("(未知)")
             ),
         ));
     }
@@ -489,6 +485,8 @@ pub async fn snapshot(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        org_code: super::headers::org_code(&record),
+        auth_path: None,
         origin: CredentialOrigin::AccountStore,
     })
 }
@@ -529,10 +527,16 @@ fn refresh_key(credentials: &RaccoonCredentials) -> String {
     let mut key = format!(
         "{}:{source}:{}",
         credentials.id,
-        flight::fingerprint(&credentials.refresh_token)
+        flight::fingerprint(&format!(
+            "{}:{}",
+            credentials.refresh_token, credentials.org_code
+        ))
     );
     if credentials.origin == CredentialOrigin::AuthFile {
-        let path = desktop_auth_file();
+        let path = credentials
+            .auth_path
+            .clone()
+            .unwrap_or_else(desktop_auth_file);
         let version = std::fs::symlink_metadata(&path)
             .ok()
             .map(|meta| mtime_ms(&meta))
@@ -568,6 +572,23 @@ pub async fn refresh(
     credentials: &RaccoonCredentials,
     force: bool,
 ) -> Result<RaccoonCredentials, GatewayError> {
+    if jwt::is_iam_token(&credentials.token) {
+        if force {
+            let latest = latest_credentials(ctx, credentials).await?;
+            if latest.token != credentials.token {
+                if jwt::is_iam_token(&latest.token) {
+                    jwt::validate_iam_token(&latest.token)?;
+                }
+                return Ok(latest);
+            }
+            return Err(GatewayError::with_status(
+                401,
+                "小浣熊 IAM 登录态已被上游拒绝，不能用旧刷新接口续期，请重新登录该账号",
+            ));
+        }
+        jwt::validate_iam_token(&credentials.token)?;
+        return Ok(credentials.clone());
+    }
     if !force && !credentials.is_expiring() {
         return Ok(credentials.clone());
     }
@@ -588,95 +609,13 @@ pub async fn refresh(
         flight::Join::Waiter(waiter) => return waiter.wait().await,
     };
     // leader：真实刷新（await 期间不持任何 std 锁；guard 只负责取消清理）
-    let result = match call_refresh_api(credentials).await {
+    let result = match super::refresh_api::call(credentials).await {
         Ok(next) => apply_refresh(ctx, credentials, &next).await,
         Err(error) => Err(error),
     };
     // 结果交给已加入这一轮的等待者，随后释放表项（先释放表项、再唤醒）
     guard.finish(result.clone());
     result
-}
-
-/// 调鉴权 API 刷新一次（源实现 `callRefreshApi`）：
-/// `POST {authBase}/refresh`，body `{"refresh_token": "..."}`，
-/// 响应 `data.access_token` / `data.refresh_token`（后者为空时沿用旧的）。
-async fn call_refresh_api(
-    credentials: &RaccoonCredentials,
-) -> Result<RaccoonCredentials, GatewayError> {
-    let url = format!("{}/refresh", super::auth_api_base());
-    let headers: Vec<(String, String)> = vec![(
-        "Content-Type".to_string(),
-        "application/json".to_string(),
-    )];
-    let body = json!({ "refresh_token": credentials.refresh_token });
-    // 鉴权接口**不走账号级代理**：账号代理是给转发（流式长请求）准备的出口，
-    // 而鉴权域与 LLM 域是两个不同的站点；源实现同样用裸 fetch。
-    let response = send_raw(
-        "POST",
-        &url,
-        Some(&body),
-        &headers,
-        None,
-        Some(AUTH_REQUEST_TIMEOUT_MS),
-    )
-    .await
-    .map_err(|error| {
-        GatewayError::with_status(502, format!("小浣熊刷新 token 请求失败: {error}"))
-    })?;
-    let payload = response.payload.unwrap_or(Value::Null);
-    if !response.ok {
-        return Err(GatewayError::with_status(
-            if response.status == 401 { 401 } else { 502 },
-            format!(
-                "小浣熊刷新接口失败（HTTP {}）: {}",
-                response.status,
-                error_message(&payload).unwrap_or_else(|| "服务器未返回错误说明".to_string())
-            ),
-        ));
-    }
-    let data = payload.get("data").cloned().unwrap_or(Value::Null);
-    let access_token = data
-        .get("access_token")
-        .map(jwt::js_text)
-        .map(|text| jwt::strip_bearer(&text))
-        .unwrap_or_default();
-    if access_token.is_empty() {
-        return Err(GatewayError::with_status(
-            401,
-            format!(
-                "小浣熊 token 刷新失败 code={} msg={}",
-                payload
-                    .get("code")
-                    .map(jwt::js_text)
-                    .unwrap_or_else(|| "null".to_string()),
-                payload
-                    .get("message")
-                    .or_else(|| payload.get("msg"))
-                    .map(jwt::js_text)
-                    .unwrap_or_else(|| "服务器未返回新 token".to_string()),
-            ),
-        ));
-    }
-    let next_refresh = data
-        .get("refresh_token")
-        .map(jwt::js_text)
-        .map(|text| jwt::strip_bearer(&text))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| credentials.refresh_token.clone());
-    let mut next = credentials.clone();
-    next.expires_at = jwt::jwt_expiry_ms(&access_token).or(credentials.expires_at);
-    next.user_id = jwt::decode_jwt_claims(&access_token)
-        .as_ref()
-        .map(jwt::extract_user_id)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| credentials.user_id.clone());
-    next.token = access_token;
-    next.refresh_token = next_refresh;
-    logging::verbose(
-        "[Raccoon]",
-        &format!("账号 {} 的小浣熊 token 已刷新", credentials.id),
-    );
-    Ok(next)
 }
 
 /// 刷新结果落地：**比较-再写**，过期结果改用最新快照（本次修复的核心）。
@@ -708,7 +647,9 @@ async fn apply_refresh(
                 return stale_or_latest(ctx, previous).await;
             };
             if crate::store::pick(&record, &["accessToken"]) != previous.token
-                || crate::store::pick(&record, &["refreshToken"]) != previous.refresh_token {
+                || crate::store::pick(&record, &["refreshToken"]) != previous.refresh_token
+                || super::headers::org_code(&record) != previous.org_code
+            {
                 return stale_or_latest(ctx, previous).await;
             }
             let expect = secret_of(&record);
@@ -716,12 +657,15 @@ async fn apply_refresh(
                 &expect,
                 &[
                     ("accessToken", Value::String(next.token.clone())),
-                    (
-                        "refreshToken",
-                        Value::String(next.refresh_token.clone()),
-                    ),
+                    ("refreshToken", Value::String(next.refresh_token.clone())),
                 ],
             );
+            if jwt::is_iam_token(&next.token) {
+                if let Some(object) = next_secret.as_object_mut() {
+                    object.remove("refreshToken");
+                    object.remove("refresh_token");
+                }
+            }
             if let Some(expires_at) = next.expires_at {
                 next_secret = crate::store::with_fields(
                     &next_secret,
@@ -735,10 +679,8 @@ async fn apply_refresh(
                 .then_some(())
                 .map_or(Some(next.user_id.clone()), |_| None)
             {
-                next_secret = crate::store::with_fields(
-                    &next_secret,
-                    &[("userId", Value::String(user_id))],
-                );
+                next_secret =
+                    crate::store::with_fields(&next_secret, &[("userId", Value::String(user_id))]);
             }
             match crate::store::save(ctx, &next.id, &expect, &next_secret).await {
                 Ok(written) => Ok(written),
@@ -749,9 +691,10 @@ async fn apply_refresh(
     match outcome {
         Ok(true) => Ok(next.clone()),
         Ok(false) => stale_or_latest(ctx, previous).await,
-        Err(reason) => {
-            Err(GatewayError::with_status(502, format!("账号 {} 刷新结果回写失败: {reason}", previous.id)))
-        }
+        Err(reason) => Err(GatewayError::with_status(
+            502,
+            format!("账号 {} 刷新结果回写失败: {reason}", previous.id),
+        )),
     }
 }
 
@@ -770,11 +713,20 @@ async fn stale_or_latest(
     let latest = latest_credentials(ctx, previous).await.map_err(|error| {
         GatewayError::with_status(
             error.status_code,
-            format!("{}（刷新结果已过期，且读取最新凭证失败：{}）", STALE_REFRESH_MESSAGE, error.message),
+            format!(
+                "{}（刷新结果已过期，且读取最新凭证失败：{}）",
+                STALE_REFRESH_MESSAGE, error.message
+            ),
         )
     })?;
-    if latest.token == previous.token && latest.refresh_token == previous.refresh_token {
-        return Err(GatewayError::with_status(409, "小浣熊续期结果未能落盘，请重新登录该账号"));
+    if latest.token == previous.token
+        && latest.refresh_token == previous.refresh_token
+        && latest.org_code == previous.org_code
+    {
+        return Err(GatewayError::with_status(
+            409,
+            "小浣熊续期结果未能落盘，请重新登录该账号",
+        ));
     }
     Ok(latest)
 }
@@ -804,7 +756,9 @@ async fn latest_credentials(
         }
         CredentialOrigin::AccountStore => {
             if previous.id.is_empty()
-                || crate::store::record(ctx, super::ID, &previous.id).await.is_err()
+                || crate::store::record(ctx, super::ID, &previous.id)
+                    .await
+                    .is_err()
             {
                 return Err(GatewayError::with_status(
                     401,
@@ -826,21 +780,3 @@ fn secret_of(record: &Value) -> Value {
 /// 刷新结果被判定过期时的统一文案（比较写回的失败原因；调用方据此改用最新快照）
 pub(super) const STALE_REFRESH_MESSAGE: &str =
     "刷新结果已过期：凭证在此期间被更换（重新登录或重导入）";
-
-/// 从上游错误体里取人类可读的文案（message / msg / error.message）
-fn error_message(payload: &Value) -> Option<String> {
-    for key in ["message", "msg"] {
-        if let Some(text) = payload
-            .get(key)
-            .map(jwt::js_text)
-            .filter(|text| !text.is_empty())
-        {
-            return Some(text);
-        }
-    }
-    payload
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .map(jwt::js_text)
-        .filter(|text| !text.is_empty())
-}

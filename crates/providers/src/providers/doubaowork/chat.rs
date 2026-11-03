@@ -12,6 +12,17 @@ fn chunk(id: &str, model: &str, delta: Value, reason: Value) -> Vec<u8> {
     format!("data: {}\n\n",json!({"id":id,"object":"chat.completion.chunk","created":chrono::Utc::now().timestamp(),"model":model,"choices":[{"index":0,"delta":delta,"finish_reason":reason}]})).into_bytes()
 }
 
+/// 把 `drain_images` 交出来的图片增量拼成一段 markdown（正文之后补发用）。
+fn image_markdown(deltas: Vec<stream::Delta>) -> String {
+    deltas
+        .into_iter()
+        .filter_map(|delta| match delta {
+            stream::Delta::Text(text) => Some(text),
+            stream::Delta::Reasoning(_) => None,
+        })
+        .collect()
+}
+
 async fn head(sink: &mut ConversationSink<'_>, status: u16, stream: bool) -> Result<(), String> {
     sink.head(proto::StreamHead {
         status,
@@ -86,10 +97,20 @@ async fn forward(
     let id = crate::ids::random_id("chatcmpl");
     if bridge.active() {
         while turn.next().await?.is_some() {}
-        if turn.decoder.text.is_empty() {
+        // 出图的链接由 `drain_images` 在流末才交出来（见 `stream::Decoder`：
+        // 无水印原图比预览晚到），所以这里先取正文、再补图片链接。
+        let text = turn.decoder.text.clone();
+        let images = image_markdown(turn.decoder.drain_images());
+        if text.is_empty() && images.is_empty() {
             return Err(GatewayError::with_status(502, "豆包工作没有返回回答"));
         }
-        let mut message = bridge.message(&turn.decoder.text)?;
+        // 解析工具调用要用**不含图片链接**的正文：那段 markdown 会让 JSON 解析
+        // 失败，进而被当成"工具调用不完整"报错。
+        let mut message = bridge.message(&text)?;
+        if !images.is_empty() && message["tool_calls"].is_null() {
+            let content = message["content"].as_str().unwrap_or("");
+            message["content"] = json!(format!("{content}{images}"));
+        }
         if !turn.decoder.reasoning.is_empty() {
             message["reasoning_content"] = json!(turn.decoder.reasoning);
         }
@@ -117,11 +138,12 @@ async fn forward(
             turn.next(),
         )
         .await
-        .map_err(|_| GatewayError::with_status(504, "豆包工作未在限时内开始回答"))??
-        .ok_or_else(|| GatewayError::with_status(502, "豆包工作没有返回回答"))?;
+        .map_err(|_| GatewayError::with_status(504, "豆包工作未在限时内开始回答"))??;
         head(sink, 200, true).await.map_err(GatewayError::from)?;
         *sent_head = true;
-        let mut next = Some(first);
+        // 允许第一帧就是流末（`None`）：生图这一类回答可能**只有图片没有正文**，
+        // 图片在流末由 `drain_images` 补发，这里把"没有正文"提前判死会误报。
+        let mut next = first;
         while let Some(delta) = next {
             let body = match delta {
                 stream::Delta::Text(text) => json!({"role":"assistant","content":text}),
@@ -132,11 +154,23 @@ async fn forward(
                 .map_err(GatewayError::from)?;
             next = turn.next().await?;
         }
-        if turn.decoder.text.is_empty() {
+        if turn.decoder.text.is_empty() && !turn.decoder.has_images() {
             return Err(GatewayError::with_status(
                 502,
                 "豆包工作完成响应但没有回答正文",
             ));
+        }
+        // 图片排在正文之后：这里已经是流末，`drain_images` 拿得到无水印原图。
+        let images = image_markdown(turn.decoder.drain_images());
+        if !images.is_empty() {
+            sink.send(&chunk(
+                &id,
+                &request.wire_model,
+                json!({"role":"assistant","content":images}),
+                Value::Null,
+            ))
+            .await
+            .map_err(GatewayError::from)?;
         }
         sink.send(&chunk(&id, &request.wire_model, json!({}), json!("stop")))
             .await

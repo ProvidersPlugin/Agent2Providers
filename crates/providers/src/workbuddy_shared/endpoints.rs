@@ -35,7 +35,7 @@ use serde_json::{json, Map, Value};
 // ─── 端点与版本 ─────────────────────────────────────────────
 
 /// 默认端点（国内版）
-pub const DEFAULT_ENDPOINT: &str = "https://copilot.tencent.com";
+pub const DEFAULT_ENDPOINT: &str = "https://www.workbuddy.cn";
 /// 预发布端点
 pub const STAGING_ENDPOINT: &str = "https://staging-copilot.tencent.com";
 /// 国际版端点（CodeBuddy 海外站，prefixPath 为空）
@@ -67,7 +67,7 @@ pub const DOMAINS_IOA: &[&str] = &[
 ];
 
 /// 桌面端版本（X-IDE-Version / User-Agent 用）
-pub const WORKBUDDY_CLIENT_VERSION: &str = "5.5.4";
+pub const WORKBUDDY_CLIENT_VERSION: &str = "5.9.3";
 /// 产品名
 // Node 版 workbuddy-endpoints.mjs 同名导出 WORKBUDDY_PRODUCT 的对等物，保留标注
 #[allow(dead_code)]
@@ -76,7 +76,7 @@ pub const WORKBUDDY_PRODUCT: &str = "WorkBuddy";
 ///
 /// 服务端按该段识别桌面 CLI 通道：缺失时 `/v3/config` 只下发旧版兼容模型清单
 /// （37 个，无 v4.1/5.3/hy4/modelPromotions），带上才下发完整清单（51 个）。
-pub const WORKBUDDY_CLI_VERSION: &str = "2.137.1";
+pub const WORKBUDDY_CLI_VERSION: &str = "2.165.0";
 /// 鉴权 platform 参数（auth/state?platform=…）
 pub const WORKBUDDY_PLATFORM: &str = "workbuddy";
 /// 鉴权路径前缀（国内版 /plugin）
@@ -156,7 +156,7 @@ const EDITION_CN: EditionInfo = EditionInfo {
     client_version: WORKBUDDY_CLIENT_VERSION,
     cli_version: WORKBUDDY_CLI_VERSION,
     chat_ide_version: WORKBUDDY_CLIENT_VERSION,
-    chat_ua: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
+    chat_ua: "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0",
     data_folder_name: ".workbuddy",
 };
 
@@ -170,8 +170,8 @@ const EDITION_INTL: EditionInfo = EditionInfo {
     platform: "workbuddy-ai",
     ua_platform: "WorkBuddy",
     product_name: "WorkBuddy AI",
-    client_version: "5.5.2",
-    cli_version: WORKBUDDY_CLI_VERSION,
+    client_version: "5.8.4",
+    cli_version: "2.161.0",
     chat_ide_version: "5.8.4",
     chat_ua: "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
     data_folder_name: ".workbuddy-ai",
@@ -214,6 +214,9 @@ pub fn resolve_edition(value: Option<&str>) -> &'static EditionInfo {
 /// platform 段两版都用 `WorkBuddy`，末尾固定追加 `CLI/<版本>`。
 pub fn user_agent_for_edition(edition: Option<&str>) -> String {
     let info = resolve_edition(edition);
+    if info.id == "intl" {
+        return format!("workbuddy-ai/{version} WorkBuddy/{version} CLI/{cli}", version = info.client_version, cli = info.cli_version);
+    }
     format!(
         "{ua}/{version} {product}/{version} CLI/{cli}",
         ua = info.ua_platform,

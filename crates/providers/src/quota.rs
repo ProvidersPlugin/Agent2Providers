@@ -38,6 +38,9 @@ pub fn sources(provider: &str, report: &Value) -> Vec<Value> {
         "atomcode" => atomcode(provider, report, &mut sources),
         "accio" | "accio-cn" => accio(provider, report, &mut sources),
         "qoder" | "qoder-intl" => credits(provider, report, unit, &mut sources),
+        // 千问办公的额度文档与 Qoder 是同一个形状（逐桶明细在 `credits` 里，
+        // 见 `qoder/balance.rs` 的 `qwenwork_document`）；单位固定 credits。
+        "qwenwork" | "qwenwork-intl" => credits(provider, report, "credits", &mut sources),
         "workbuddy" | "workbuddy-intl" => credits(provider, report, "积分", &mut sources),
         "trae" | "officeace" | "lobsterai" => credits(provider, report, unit, &mut sources),
         "loomy" | "raccoon" | "autoclaw" | "autoclaw-intl" => wallets(provider, report, unit, &mut sources),

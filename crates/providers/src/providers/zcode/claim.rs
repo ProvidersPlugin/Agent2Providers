@@ -68,14 +68,17 @@
 // 保留的理由与 `captcha` 相同：这些判据是 parity 的对照材料，而且将来若把
 // 调度也搬进插件，它们就是现成的实现。
 #![allow(dead_code)]
+mod catalog;
 mod discovery;
 mod marketing;
+mod ownership;
 mod plans;
 mod state;
 
 pub(super) use discovery::resolve_target;
-pub use discovery::preview;
+pub use discovery::{preview, PreviewPurpose};
 pub use plans::ClaimablePlan;
+pub(super) use plans::integer;
 pub use state::{claim_plan, ClaimAttempt};
 
 use std::sync::{Mutex, OnceLock};
@@ -506,31 +509,31 @@ pub fn outcome_hold(outcome: &ClaimOutcome) -> NextAttempt {
     }
 }
 
-/// 探测当前可领取的套餐。
-///
-/// `jwt` 为空时按上游语义发**匿名探测**（参考实现：匿名 preview 不带头）。
-/// 匿名也能看到「有没有活动」，因此调度可以在登录态失效时继续探测；
-/// 但真正领取必须有 JWT（见 [`claim`]）。
-///
-/// `device_mid` **事实上是必需的**（2026-09-28 起上游这么要求，见模块头）：
-/// 调用方（`api::zcode_claim`）保证传进来的一定是 UUID 形态的稳定标识，
-/// 这里只在真的没有时才省略那个头 —— 那种情况会稳定拿到 3001，
-/// 而那正是「谁漏了这一步」的信号，不该由本函数偷偷补一个随机值（现编的值
-/// 每次都不一样，风控看到的是「同一个账号天天换设备」）。
+/// 账号预览不能证明活动不存在或套餐已领取；匿名目录使用独立探测标识。
 async fn preview_billing(
     region: Region,
     jwt: &str,
     device_mid: Option<&str>,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Option<Vec<ClaimablePlan>>, GatewayError> {
+    preview_billing_with_version(region, jwt, device_mid, proxy, &app_version()).await
+}
+
+async fn preview_billing_with_version(
+    region: Region,
+    jwt: &str,
+    device_mid: Option<&str>,
+    proxy: Option<&ResolvedProxy>,
+    version: &str,
+) -> Result<Option<Vec<ClaimablePlan>>, GatewayError> {
     let url = format!(
         "{}{PREVIEW_PATH}?app_version={}&platform={}",
         region.zcode_origin(),
-        urlencode(&app_version()),
+        urlencode(version),
         urlencode(platform())
     );
     let mut headers: Vec<(String, String)> = Vec::new();
-    // 匿名探测：一个头都不带（**不是**带一个空 Bearer）
+    // 匿名探测不能携带空 Bearer 或账号凭证。
     if !jwt.trim().is_empty() {
         headers.push(("Authorization".to_string(), format!("Bearer {}", jwt.trim())));
     }

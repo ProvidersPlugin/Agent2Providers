@@ -474,7 +474,7 @@ pub struct AccountStreakReport {
 /// 企业版与 global 的判据来自账号记录，本模块拿得到 —— 放在这里，
 /// 调用方（签到末尾 / 手动入口）就不必各自抄一遍。
 pub async fn run_for_accounts(
-    _ctx: &agent2api_provider_sdk::PluginCtx,
+    ctx: &agent2api_provider_sdk::PluginCtx,
     accounts: &[Value],
 ) -> Vec<AccountStreakReport> {
     /// 账号间错峰（毫秒）：与参考项目 `travelAccountDelay` 同口径。
@@ -508,9 +508,10 @@ pub async fn run_for_accounts(
         // 账号记录是扁平 secret → 折成会话形状（与网关 `session_from_record`
         // 同形），再交给 `from_session`。
         let session = super::super::session_of_record(account, super::super::Region::Cn);
-        let Some(growth_account) = GrowthAccount::from_session(&session) else {
+        let Some(mut growth_account) = GrowthAccount::from_session(&session) else {
             continue;
         };
+        growth_account.ctx = Some(ctx.clone());
         if !first {
             tokio::time::sleep(std::time::Duration::from_millis(ACCOUNT_GAP_MS)).await;
         }

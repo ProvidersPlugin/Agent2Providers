@@ -31,8 +31,7 @@ use crate::http::{self, send_raw};
 use crate::logging;
 use crate::workbuddy_shared::endpoints::RESPONSE_CODE_OK;
 
-use super::growth::WEB_UA;
-use super::{chat_completions_url, chat_headers, session_of_record, web_conversations_url, Region};
+use super::{chat_completions_url, chat_headers, session_of_record, Region};
 
 /// 国际版每日活跃任务默认使用的免费模型，按可用性优先级尝试。
 ///
@@ -105,6 +104,7 @@ fn chain(models: &[String]) -> Vec<String> {
 /// 返回网关 `workbuddy_daily_activity` 的**同形 JSON**（`status` / `claim` /
 /// `activity` 三段）。
 pub async fn run(
+    ctx: &agent2api_provider_sdk::PluginCtx,
     record: &Value,
     mode: Mode,
     models: &[String],
@@ -117,7 +117,7 @@ pub async fn run(
     if mode == Mode::Keepalive {
         let report = report_activity(&session).await;
         let (poke_succeeded, poke_model) = poke_daily_activity(&session, &models).await;
-        let web = create_web_conversation(&session, &models).await;
+        let web = create_web_conversation(ctx, &session, &models).await;
         let web_ok = web.get("succeeded").and_then(Value::as_bool) == Some(true);
         if web.get("status").and_then(Value::as_i64) == Some(401)
             || (report.get("status").and_then(Value::as_i64) == Some(401) && !web_ok && !poke_succeeded) {
@@ -250,7 +250,7 @@ pub async fn run(
         if !succeeded {
             logging::verbose("[Checkin]", "WorkBuddy 国际版免费模型活跃保活未成功");
         }
-        let web = create_web_conversation(&session, &models).await;
+        let web = create_web_conversation(ctx, &session, &models).await;
         if web.get("succeeded").and_then(Value::as_bool) != Some(true) {
             logging::verbose("[Checkin]", "WorkBuddy 国际版网页会话保活未成功");
         }
@@ -327,9 +327,7 @@ async fn billing_call(
         Some(body.cloned().unwrap_or_else(|| json!({})))
     };
     let headers = super::billing::headers::build_headers(session, &[]);
-    let proxy: Option<agent2api_provider_protocol::WireProxy> = session
-        .get("proxy")
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    let proxy = super::contract::proxy_of(session)?;
     let response = send_raw(
         method,
         &url,
@@ -590,9 +588,13 @@ async fn poke_daily_activity(session: &Value, models: &[String]) -> (bool, Optio
         // 头集合与真对话共用一份（chat_headers 已带全会话头族 / 链路头族与
         // Origin / Referer —— 正是渠道校验的对齐项），这里不再补丁。
         let headers = chat_headers(session, Region::Intl, Some("text/event-stream"));
-        let proxy: Option<agent2api_provider_protocol::WireProxy> = session
-            .get("proxy")
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let proxy = match super::contract::proxy_of(session) {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                logging::verbose("[Checkin]", &error.message);
+                return (false, None);
+            }
+        };
         let client = http::control_client(proxy.as_ref(), "direct");
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(TIMEOUT_MS),
@@ -668,121 +670,23 @@ async fn poke_daily_activity(session: &Value, models: &[String]) -> (bool, Optio
 /// 模型沿用同一条免费链；成功判定沿用参考实现口径 —— 响应 `code ∈ {0, 缺失}`
 /// 且 `data.id` 存在。返回 `{succeeded, conversationId, msg}`，原样进
 /// `activity.webConversation` 给前端与台账读。
-async fn create_web_conversation(session: &Value, models: &[String]) -> Value {
-    const TIMEOUT_MS: u64 = 20_000;
-    const MAX_WEB_BYTES: usize = 1 << 16;
-    let token = session
-        .get("auth")
-        .and_then(|auth| auth.get("accessToken"))
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty());
-    let uid = session
-        .get("account")
-        .and_then(|account| account.get("uid"))
-        .and_then(Value::as_str)
-        .filter(|uid| !uid.is_empty());
-    let (Some(token), Some(uid)) = (token, uid) else {
-        // 构造失败是凭据层面的缺失（缺 token / uid），换模型也救不了
-        let reason = "会话缺少账号凭据（accessToken / uid），无法走网页通道";
-        logging::verbose(
-            "[Checkin]",
-            &format!("WorkBuddy 国际版网页会话请求构造失败: {reason}"),
-        );
-        return json!({ "succeeded": false, "conversationId": Value::Null, "msg": reason });
-    };
-    // 网页链路**只认**这两个凭据头：不带桌面端 X-IDE-* 指纹与 CLI UA，
-    // UA 用浏览器串（与 growth 的 web 域同一份）。
-    let headers = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-        (
-            "Accept".to_string(),
-            "application/json, text/plain, */*".to_string(),
-        ),
-        ("User-Agent".to_string(), WEB_UA.to_string()),
-        ("Origin".to_string(), "https://www.workbuddy.ai".to_string()),
-        (
-            "Referer".to_string(),
-            "https://www.workbuddy.ai/app".to_string(),
-        ),
-        ("Authorization".to_string(), format!("Bearer {token}")),
-        ("X-User-Id".to_string(), uid.to_string()),
-    ];
-    let proxy: Option<agent2api_provider_protocol::WireProxy> = session
-        .get("proxy")
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
-    let client = http::control_client(proxy.as_ref(), "direct");
-    let url = web_conversations_url(session, Region::Intl);
+async fn create_web_conversation(ctx: &agent2api_provider_sdk::PluginCtx, session: &Value, models: &[String]) -> Value {
+    let id = session.get("id").and_then(Value::as_str).unwrap_or("");
     for model in models {
         let body = json!({
-            "prompt": "Hi",
-            "model": model,
-            // 网页端建会话时固定带上这两项（抓包所得），保持请求形态一致
-            "conversationOrigin": "workbuddy-app",
+            "prompt": "Hi", "model": model, "conversationOrigin": "workbuddy-app",
             "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
         });
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(TIMEOUT_MS),
-            http::post_stream(&client, &url, &headers, &body, "application/json"),
-        )
-        .await;
-        let response = match result {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                logging::verbose(
-                    "[Checkin]",
-                    &format!("WorkBuddy 国际版网页会话（{model}）请求失败: {error}"),
-                );
-                continue;
-            }
-            Err(_) => {
-                logging::verbose(
-                    "[Checkin]",
-                    &format!("WorkBuddy 国际版网页会话（{model}）请求超时"),
-                );
-                continue;
-            }
+        let response = match super::web_session::request(ctx, Region::Intl, id, "POST",
+            "/console/as/conversations/", Some(&body), &[]).await {
+            Ok(response) => response,
+            Err(error) => return json!({ "succeeded": false, "status": error.status_code, "msg": error.message }),
         };
         if response.status == 401 || response.status == 403 {
-            return json!({ "succeeded": false, "status": 401, "msg": "WorkBuddy 国际版网页登录态已失效" });
+            return json!({ "succeeded": false, "status": response.status, "msg": "WorkBuddy 国际版网页登录态被拒绝" });
         }
-        if !response.is_success() {
-            logging::verbose(
-                "[Checkin]",
-                &format!(
-                    "WorkBuddy 国际版网页会话（{model}）返回 HTTP {}",
-                    response.status
-                ),
-            );
-            continue;
-        }
-        let Some(raw) = response.response else {
-            continue;
-        };
-        let bytes = match tokio::time::timeout(
-            std::time::Duration::from_millis(TIMEOUT_MS),
-            consume_bytes(raw, MAX_WEB_BYTES),
-        )
-        .await
-        {
-            Ok(Ok(bytes)) => bytes,
-            _ => {
-                logging::verbose(
-                    "[Checkin]",
-                    &format!("WorkBuddy 国际版网页会话（{model}）响应读取失败"),
-                );
-                continue;
-            }
-        };
-        let payload: Value = match serde_json::from_slice(&bytes) {
-            Ok(value) => value,
-            Err(error) => {
-                logging::verbose(
-                    "[Checkin]",
-                    &format!("WorkBuddy 国际版网页会话（{model}）响应不是 JSON: {error}"),
-                );
-                continue;
-            }
-        };
+        if !response.ok { continue; }
+        let Some(payload) = response.payload else { continue };
         // 参考实现的判定口径：code 缺失 / null / 0 都算业务成功
         let code_ok = match payload.get("code") {
             None | Some(Value::Null) => true,

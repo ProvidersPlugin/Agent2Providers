@@ -687,7 +687,7 @@ impl Provider for CodeArtsProvider {
                     .map_err(GatewayError::into_control_message)?,
                 _ => None,
             };
-            Ok(agent2api_provider_sdk::CheckinResult { report: welfare_report(outcome), retry_at })
+            Ok(agent2api_provider_sdk::CheckinResult { report: welfare_report(outcome), retry_at, details: None })
         })
     }
 

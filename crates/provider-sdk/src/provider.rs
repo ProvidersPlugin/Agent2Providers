@@ -375,6 +375,16 @@ pub trait Provider: Send + Sync + 'static {
         }
     }
 
+    /// 可选传输与响应策略；未声明时沿用原有单次发送。
+    fn chat_policy(&self, _body: &Value) -> Value {
+        Value::Null
+    }
+
+    /// 分类之外的处置约束，不新增 ErrorClass 变体。
+    fn error_policy(&self, _status: u16, _body: &Value) -> Value {
+        Value::Null
+    }
+
     /// 上游响应是否「其实是错误」（HTTP 200 但正文是失败话术）。
     fn is_error_response(&self, _status: u16, _headers: &BTreeMap<String, String>) -> bool {
         false
@@ -410,6 +420,22 @@ pub trait Provider: Send + Sync + 'static {
     /// 思考档位翻译（默认不注入）。
     fn reasoning_patch(&self, _level: &str, _model: &str, _body: &Value) -> proto::ReasoningPatch {
         proto::ReasoningPatch::Skip { reason: "该提供商不支持思考等级".to_string() }
+    }
+
+    /// 需要宿主目录缓存的实现可在异步入口恢复目录；旧实现仍走同步翻译。
+    fn reasoning_patch_async<'a>(
+        &'a self,
+        _ctx: &'a crate::ctx::PluginCtx,
+        level: &'a str,
+        model: &'a str,
+        body: &'a Value,
+    ) -> SendFuture<'a, proto::ReasoningPatch> {
+        Box::pin(async move { Ok(self.reasoning_patch(level, model, body)) })
+    }
+
+    /// 最外层 None 表示未提供遥测；Some(None) 明确表示本次没有思考档位。
+    fn outbound_reasoning(&self, _body: &Value) -> Option<Option<String>> {
+        None
     }
 
     /// 限额冷却的连带模型（默认只有请求的那个）。

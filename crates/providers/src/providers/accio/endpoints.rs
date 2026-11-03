@@ -72,6 +72,9 @@ pub const DEFAULT_IAI_TAG: &str = "phoenix-desktop";
 /// 推理请求头里的客户端版本（桌面端取 appVersion；缺省给一个近版号）
 pub const DEFAULT_APP_VERSION: &str = "0.32.6";
 
+/// 推理网关会把通用 `undici` 标识拦成 HTTP 200 的 HTML 挑战页，必须单独覆盖。
+pub const ADAPTER_USER_AGENT: &str = "agent2api-accio/3.3.0";
+
 /// 推理请求头 `appKey`（**必填**，见下）。
 ///
 /// ── 为什么它必须有（2026-09 实测）────────────────────────────

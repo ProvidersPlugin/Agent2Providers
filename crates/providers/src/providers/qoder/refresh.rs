@@ -1,7 +1,9 @@
-//! Qoder 凭证续期：同一凭证只刷新一次，保存时确认账号未被重新导入或删除。
+//! 凭证续期：同一凭证只刷新一次，保存时确认账号未被重新导入或删除。
 //!
 //! 两条续期路径，都挂在 **openapi 主机**上、都不需要 COSY 签名：
-//!   - 设备流凭据（`dt-` / `drt-`）→ `POST /api/v1/deviceToken/refresh`；
+//!   - 设备流凭据（`dt-` / `drt-`）→ `POST /api/v1/deviceToken/refresh`
+//!     （千问办公这一族还会多带一个 `target`，见
+//!     [`endpoints::Site::refresh_target`]）；
 //!   - PAT 换来的作业令牌（`jt-` / `jrt-`）→ `POST /api/v1/jobToken/refresh`，
 //!     或直接用 PAT 重新兑换（记录里带 PAT 时优先走这条）。
 //!
@@ -11,66 +13,75 @@
 
 use std::sync::OnceLock;
 
-use serde_json::{json, Value};
+use serde_json::{Map, Value};
 
-use agent2api_provider_sdk::PluginCtx;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
-use crate::flight::{self, Join, Table};
+use agent2api_provider_sdk::PluginCtx;
+
 use crate::errors::GatewayError;
+use crate::flight::{self, Join, Table};
 use crate::logging;
 
 use super::auth;
 use super::credentials::{self, Credentials};
 use super::endpoints;
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 static FLIGHTS: OnceLock<Table<Credentials>> = OnceLock::new();
 
+/// 取某账号的凭证快照。
+///
+/// ── 站点以 provider 身份为准（不是记录里的 `mode`）───────────────
+/// 四个站点的记录形态是同一套，`mode` 只有 `cn` / `global` 两个值，
+/// 不足以区分「Qoder 中国版」与「千问办公国内版」。拿着 provider 身份的入口
+/// 必须在这里盖一次站点，否则一条千问办公的记录会被当成 Qoder 去签 COSY ——
+/// 症状是上游报签名/客户端身份不符，而记录看上去完全正常。
 pub async fn snapshot(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     account_id: &str,
 ) -> Result<(Value, Credentials), GatewayError> {
     if account_id.trim().is_empty() {
-        return Err(GatewayError::with_status(400, "Qoder 需要指定账号（没有环境变量旁路）"));
+        return Err(GatewayError::with_status(400, "需要指定账号（没有环境变量旁路）"));
     }
-    let record = crate::store::record(ctx, region.provider_id(), account_id).await?;
+    let record = crate::store::record(ctx, site.provider_id(), account_id).await?;
     if record.is_null() {
-        return Err(GatewayError::with_status(404, "Qoder 账号不存在，请先添加账号"));
+        return Err(GatewayError::with_status(404, "账号不存在，请先添加账号"));
     }
     let mut credentials = Credentials::from_payload(&record)?;
+    credentials.set_site(site);
     credentials.complete_identity()?;
     Ok((record, credentials))
 }
 
 pub async fn ensure_fresh(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     account_id: &str,
     force: bool,
 ) -> Result<Credentials, GatewayError> {
-    let (record, credentials) = snapshot(ctx, region, account_id).await?;
+    let (record, credentials) = snapshot(ctx, site, account_id).await?;
     if !force && !credentials.expiring() {
         return Ok(credentials);
     }
     if !credentials.can_refresh() {
-        return Err(GatewayError::with_status(400, "Qoder 账号没有刷新凭证，请重新登录或添加 PAT"));
+        return Err(GatewayError::with_status(400, "账号没有刷新凭证，请重新登录"));
     }
-    // 单飞键：插件里只有一个进程、一个账号库，用 provider + 账号 + 凭证指纹
+    // 单飞键：插件里只有一个进程、一个账号库，用站点 + 账号 + 凭证指纹
     // 就够了（网关那份还带 `store.file_string()` —— 那是「同一进程里可能开着
     // 多个账号库」才需要的维度，插件没有那个形态）。
     let key = format!(
         "{}:{}:{}:{}:{}",
-        region.provider_id(),
+        site.provider_id(),
         account_id,
-        credentials.region.id(),
+        credentials.site.id(),
         flight::fingerprint(&credentials.access_token),
         flight::fingerprint(&credentials.refresh_token)
     );
     match FLIGHTS.get_or_init(Table::new).join(&key) {
         Join::Waiter(waiter) => waiter.wait().await,
         Join::Leader(leader) => {
-            let result = refresh_and_save(ctx, &record, &credentials).await;
+            let result = refresh_and_save(ctx, site, &record, &credentials).await;
             leader.finish(result.clone());
             result
         }
@@ -79,21 +90,22 @@ pub async fn ensure_fresh(
 
 async fn refresh_and_save(
     ctx: &PluginCtx,
+    site: Site,
     record: &Value,
     credentials: &Credentials,
 ) -> Result<Credentials, GatewayError> {
     let proxy = auth::account_proxy(record)?;
     let mut fresh = if let Some(pat) = credentials.pat() {
-        let mut fresh = auth::exchange_pat(pat, credentials.region, proxy.as_ref()).await?;
+        let mut fresh = auth::exchange_pat(pat, site, proxy.as_ref()).await?;
         fresh.machine_id = credentials.machine_id.clone();
         fresh.complete_identity()?;
         fresh
     } else {
-        refresh_via_open_api(credentials, proxy.as_ref()).await?
+        refresh_via_open_api(credentials, site, proxy.as_ref()).await?
     };
     fresh.complete_identity()?;
-    if fresh.user_id != credentials.user_id || fresh.region != credentials.region {
-        return Err(GatewayError::with_status(400, "Qoder 续期返回了不同账号，旧凭证未被覆盖"));
+    if fresh.user_id != credentials.user_id || fresh.site != credentials.site {
+        return Err(GatewayError::with_status(400, "续期返回了不同账号，旧凭证未被覆盖"));
     }
     // ── 写回（比较再写）─────────────────────────────────────────
     // 网关那份用 `update_qoder_credentials_if_current`：逐键比对 6 个字段后整份
@@ -105,13 +117,13 @@ async fn refresh_and_save(
     // 仍然有效的值洗成空。与网关 `update_qoder_credentials_if_current` 同一条规则。
     let expect = crate::store::secret_view(record);
     let next = merge_secret(&expect, &fresh.to_value());
-    let written = crate::store::save(ctx, credentials_account_id(record), &expect, &next).await?;
+    let account_id = credentials_account_id(record).to_string();
+    let written = crate::store::save(ctx, &account_id, &expect, &next).await?;
     if written {
         return Ok(fresh);
     }
     // 期望值已变（另一个刷新先落盘 / 账号被重新导入）：重读一次再决定
-    let id = credentials_account_id(record).to_string();
-    snapshot(ctx, credentials.region, &id)
+    snapshot(ctx, site, &account_id)
         .await
         .map(|(_, credentials)| credentials)
 }
@@ -145,39 +157,47 @@ fn merge_secret(expect: &Value, fresh: &Value) -> Value {
 /// 两个端点不可互换，所以判据是**令牌前缀**而不是「记录里有没有 PAT」：
 /// PAT 与设备刷新令牌可能同时存在于一条记录里（PAT 是兜底），按存在性分派会让
 /// PAT 劫持设备刷新，把设备令牌换成作业令牌，那之后 COSY 身份就与记录里的
-/// `machineId` 对不上了。
+/// `machineId` 对不上了。千问办公没有作业令牌，一律走设备端点。
 ///
 /// 上游**每次刷新都轮换**：返回新的访问令牌 + 新的刷新令牌，旧的立刻失效。
 /// 因此新令牌必须整体回写（`refresh_token` 缺失时才退回旧值，见下）。
 async fn refresh_via_open_api(
     credentials: &Credentials,
+    site: Site,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Credentials, GatewayError> {
     let refresh = credentials.oauth_refresh();
     if refresh.is_empty() {
-        return Err(GatewayError::with_status(400, "Qoder 账号没有刷新凭证，请重新登录或添加 PAT"));
+        return Err(GatewayError::with_status(400, "账号没有刷新凭证，请重新登录"));
     }
-    let path = if refresh.starts_with("jrt-") {
+    // 作业端点只对 Qoder 的 `jrt-` 那一族成立。
+    let path = if !site.device_only() && refresh.starts_with("jrt-") {
         endpoints::JOB_REFRESH_PATH
     } else {
         endpoints::DEVICE_REFRESH_PATH
     };
+    // 请求体：字段名是 snake_case 的 `refresh_token`（与取令牌时的 camelCase
+    // `refreshToken` 不是同一套 —— 发错名字上游按缺参处理）。千问办公多带
+    // 一个 `target`（`c` = 客户端形态），不带会拿到另一族的令牌。
+    let mut body: Map<String, Value> = Map::new();
+    body.insert("refresh_token".to_string(), Value::String(refresh.to_string()));
+    if let Some(target) = site.refresh_target() {
+        body.insert("target".to_string(), Value::String(target.to_string()));
+    }
     let response = auth::request(
         "POST",
-        &format!("{}{}", credentials.region.open_api(), path),
-        // 字段名是 snake_case 的 `refresh_token`，与取令牌时的 camelCase
-        // （`refreshToken`）不是同一套 —— 发错名字上游按缺参处理。
-        Some(&json!({ "refresh_token": refresh })),
-        &endpoints::refresh_headers(),
+        &format!("{}{}", credentials.site.open_api(), path),
+        Some(&Value::Object(body)),
+        &endpoints::refresh_headers_for(site),
         proxy,
     ).await?;
     // 401/403 在续期语义下只有一个含义：这把刷新令牌已经不能用了（过期、
-    // 被轮换掉，或与所选地区不符 —— 两站令牌不通用）。给一句能照做的提示，
+    // 被轮换掉，或与所选站点不符 —— 各站令牌不通用）。给一句能照做的提示，
     // 而不是把上游的 `Request discarded` 原样透出去。
     if matches!(response.status, 401 | 403) {
         return Err(GatewayError::with_status(
             401,
-            "Qoder 刷新令牌已失效或与所选地区不符，请重新登录该账号",
+            "刷新令牌已失效或与所选站点不符，请重新登录该账号",
         ));
     }
     let data = auth::payload(response, "凭证续期")?;
@@ -187,19 +207,20 @@ async fn refresh_via_open_api(
     // （对照实现专门标注过这个坑）。
     let returned_user = credentials::text(&data, &["user_id", "uid", "userId"]);
     if !returned_user.is_empty() && !credentials.user_id.is_empty() && returned_user != credentials.user_id {
-        return Err(GatewayError::with_status(502, "Qoder 续期返回了不同账号，旧凭证未被覆盖"));
+        return Err(GatewayError::with_status(502, "续期返回了不同账号，旧凭证未被覆盖"));
     }
     // 访问令牌的键名不固定：设备端点回 `device_token`，作业端点回 `token`。
     // `secret` 按给定顺序取第一个非空值，命中即用。
     let token = credentials::secret(&data, &["device_token", "deviceToken", "token", "access_token"])?;
     if token.is_empty() {
-        return Err(GatewayError::with_status(502, "Qoder 续期响应缺少令牌，旧凭证未被覆盖"));
+        return Err(GatewayError::with_status(502, "续期响应缺少令牌，旧凭证未被覆盖"));
     }
     let refresh_token = credentials::secret(&data, &["refresh_token", "refreshToken"])?;
     if refresh_token.contains('|') {
-        return Err(GatewayError::with_status(502, "Qoder 续期响应的 refresh_token 格式无效"));
+        return Err(GatewayError::with_status(502, "续期响应的 refresh_token 格式无效"));
     }
     let mut fresh = credentials.clone();
+    fresh.set_site(site);
     fresh.access_token = token;
     // 续期响应没带新刷新令牌时保留旧值：上游按「轮换」语义工作，此处只做兜底，
     // 免得把仍然有效的那一半洗成空（空刷新令牌会让账号再也刷不动）。
@@ -219,3 +240,4 @@ async fn refresh_via_open_api(
     );
     Ok(fresh)
 }
+

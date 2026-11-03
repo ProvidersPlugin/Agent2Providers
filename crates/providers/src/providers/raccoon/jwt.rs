@@ -38,6 +38,52 @@ pub fn decode_jwt_claims(token: &str) -> Option<Value> {
     }
 }
 
+/// IAM 的 issuer 以 `/iam` 结尾；这里只识别协议，签名仍由上游校验。
+pub fn is_iam_token(token: &str) -> bool {
+    decode_jwt_claims(token)
+        .and_then(|claims| {
+            claims
+                .get("iss")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|issuer| issuer.ends_with("/iam"))
+}
+
+pub(super) fn validate_iam_token(token: &str) -> Result<(), crate::errors::GatewayError> {
+    let claims = decode_jwt_claims(token).unwrap_or(Value::Null);
+    let issuer = std::env::var("RACCOON_IAM_ISSUER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            url::Url::parse(&super::auth_api_base())
+                .ok()
+                .and_then(|url| {
+                    let host = url.host_str()?;
+                    Some(match url.port() {
+                        Some(port) => format!("{host}:{port}/iam"),
+                        None => format!("{host}/iam"),
+                    })
+                })
+                .unwrap_or_else(|| "xiaohuanxiong.com/iam".to_string())
+        });
+    let valid = claims.get("iss").and_then(Value::as_str) == Some(issuer.as_str())
+        && claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .is_some_and(|subject| !subject.trim().is_empty())
+        && jwt_expiry_ms(token).is_some_and(|expires| expires > crate::logging::now_ms() as f64);
+    if valid {
+        Ok(())
+    } else {
+        Err(crate::errors::GatewayError::with_status(
+            401,
+            "小浣熊 IAM 登录态无效或已过期，请在官方客户端重新登录后再导入",
+        ))
+    }
+}
+
 /// token 的过期时间（毫秒）；没有 `exp` 或 token 不可解析时 None
 /// （源实现 `jwtExpiryMs`）。`exp` 是**秒**，这里换算成毫秒。
 pub fn jwt_expiry_ms(token: &str) -> Option<f64> {
@@ -60,6 +106,18 @@ pub fn jwt_expiry_ms(token: &str) -> Option<f64> {
 /// 两条路径都必须实现：少了任何一条都会让一批账号的 userId 变成空串，
 /// 而 userId 正是小浣熊账号的标识。
 pub fn extract_user_id(claims: &Value) -> String {
+    if claims
+        .get("iss")
+        .and_then(Value::as_str)
+        .is_some_and(|issuer| issuer.ends_with("/iam"))
+    {
+        return claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+    }
     for key in ["sid", "iss"] {
         if let Some(value) = claims.get(key).and_then(hex_id_to_decimal) {
             if !value.is_empty() {

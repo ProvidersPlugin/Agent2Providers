@@ -1,18 +1,17 @@
-//! Qoder 账号面：PAT 兑换 / 设备授权收尾 + 归一化 + 公开视图。
+//! 账号面：设备授权收尾 / PAT 兑换 + 归一化 + 公开视图。
 //!
-//! ── 两条添加路径（对应网关 `api::accounts` 的 qoder 分支）────────
+//! ── 两条添加路径（对应网关 `api::accounts` 的分派）──────────────
 //! ```text
-//!   Manual{payload}  粘贴 PAT（个人访问令牌）→ 换令牌 + 拉资料 → 落账号
-//!   Desktop          不支持（Qoder 没有客户端登录态文件）
+//!   Manual{payload}  粘贴凭证（Qoder 还可以粘贴 PAT）→ 拉资料 → 落账号
+//!   Desktop          不支持（没有客户端登录态文件）
 //!   FileText/Base64  不支持（凭证是令牌，不是文件）
 //! ```
 //! 网页登录（设备授权）由 `oauth::login_start` / `login_poll` 走另一条路，
-//! 收尾时调 [`account_of`]（与 PAT 路径共用同一份落库形态）。
+//! 收尾时调 [`account_of`]（与手工粘贴共用同一份落库形态）。
 //!
-//! ── 地区由 provider 身份决定（不是 payload）────────────────────
-//! 拆家后界面上是两张卡片，点哪张就落哪一站；payload 里的 `mode` 只是兼容
-//! 字段，不再当权威（两边不一致时以 provider 为准 —— 与网关
-//! `add_qoder_account` 同一条规则）。
+//! ── 站点由 provider 身份决定（不是 payload）────────────────────
+//! 界面上是几张卡片，点哪张就落哪一站；payload 里的 `mode` 只是兼容字段，
+//! 不再当权威（两边不一致时以 provider 为准）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -23,32 +22,29 @@ use agent2api_provider_protocol as proto;
 
 use super::auth;
 use super::credentials::Credentials;
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 /// 账号名长度上限
 const MAX_NAME_LENGTH: usize = 64;
 
 /// 添加账号入口。
 pub(super) async fn normalize(
-    region: Region,
+    site: Site,
     input: proto::NormalizeInput,
 ) -> Result<proto::NormalizedAccount, String> {
     let payload = match input.source {
         proto::NormalizeSource::Manual { payload } => payload,
         proto::NormalizeSource::Desktop => {
-            return Err(format!(
-                "Qoder {}请使用网页登录或个人访问令牌（PAT）添加",
-                region.label()
-            ))
+            return Err(format!("{}请使用网页登录添加", site.display_name()))
         }
         proto::NormalizeSource::FileText { .. } | proto::NormalizeSource::FileBase64 { .. } => {
             return Err(format!(
-                "Qoder {}没有可导入的凭证文件（凭证是个人访问令牌），请粘贴 PAT 添加",
-                region.label()
+                "{}没有可导入的凭证文件，请用网页登录或粘贴账号记录",
+                site.display_name()
             ))
         }
     };
-    let credentials = auth::prepare_account(&payload, region)
+    let credentials = auth::prepare_account(&payload, site)
         .await
         .map_err(|error| error.message)?;
     let name = input
@@ -57,17 +53,16 @@ pub(super) async fn normalize(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| crate::json::truncate_text(value, MAX_NAME_LENGTH));
-    Ok(account_of(region, &credentials, "manual", name))
+    Ok(account_of(site, &credentials, "manual", name))
 }
 
-/// 凭证 → 可落库的账号（PAT 与设备授权两条路共用）。
+/// 凭证 → 可落库的账号（网页登录与手工粘贴两条路共用）。
 ///
-/// ── 记录结构与网关 `add_qoder_account` 的字段逐一对应 ─────────
-/// `Credentials::to_value()` 产出的就是网关那份记录的形态（`accessToken` /
-/// `refreshToken` / `mode` / `userId` / `machineId` / `expiresAt` …），所以
-/// 这里直接用它，`refresh::snapshot` 的 `from_payload` 能逐字复用。
+/// ── 记录字段 ────────────────────────────────────────────────
+/// `Credentials::to_value()` 产出的就是落库形态（`accessToken` / `refreshToken`
+/// / `mode` / `userId` / `machineId` / `expiresAt` …），所以这里直接用它。
 pub(super) fn account_of(
-    region: Region,
+    site: Site,
     credentials: &Credentials,
     source: &str,
     explicit_name: Option<String>,
@@ -76,30 +71,19 @@ pub(super) fn account_of(
         Value::Object(map) => map,
         _ => Map::new(),
     };
-    // 地区以 provider 身份为准（payload / 凭证里的 mode 只是兼容字段）
-    secret.insert("mode".to_string(), Value::String(region.id().to_string()));
+    // 站点以 provider 身份为准（payload / 凭证里的 mode 只是兼容字段）
+    secret.insert("mode".to_string(), Value::String(site.id().to_string()));
     secret.insert("source".to_string(), Value::String(source.to_string()));
-    let upstream_name = {
-        let name = credentials.name.trim();
-        if name.is_empty() {
-            None
-        } else {
-            Some(name.to_string())
-        }
-    };
     let name = explicit_name
-        .or(upstream_name)
-        .unwrap_or_else(|| {
-            if credentials.user_id.is_empty() {
-                format!("Qoder {}", region.label())
-            } else {
-                format!("Qoder {}", credentials.user_id)
-            }
-        });
+        .or_else(|| {
+            let upstream = credentials.name.trim();
+            if upstream.is_empty() { None } else { Some(upstream.to_string()) }
+        })
+        .unwrap_or_else(|| default_name(site, credentials));
     secret.insert("name".to_string(), Value::String(name));
     let secret = Value::Object(secret);
-    let public = account_view(region, &secret);
-    let identity = identity_of(&secret);
+    let public = account_view(site, &secret);
+    let identity = identity_of(site, &secret);
     proto::NormalizedAccount {
         secret,
         public,
@@ -108,9 +92,32 @@ pub(super) fn account_of(
     }
 }
 
-/// 账号公开视图（界面账号页读的那几个键，与网关
-/// `to_qoder_public_account` 逐键对应）。
-pub(super) fn account_view(region: Region, secret: &Value) -> Value {
+/// 没给名字时怎么命名。
+///
+/// 千问办公的账号上下文里通常没有昵称（`name` 多为空），它自己的客户端是按
+/// **邮箱**认号的；拿不到邮箱才退到 uid。
+fn default_name(site: Site, credentials: &Credentials) -> String {
+    if site.is_qwenwork() {
+        if !credentials.email.trim().is_empty() {
+            return crate::json::truncate_text(credentials.email.trim(), MAX_NAME_LENGTH);
+        }
+        if !credentials.user_id.is_empty() {
+            return format!("{} {}", site.display_name(), credentials.user_id);
+        }
+        return site.display_name();
+    }
+    if credentials.user_id.is_empty() {
+        site.display_name()
+    } else {
+        format!("{} {}", site.product(), credentials.user_id)
+    }
+}
+
+/// 账号公开视图（界面账号页读的那几个键）。
+///
+/// **绝不能含 accessToken / refreshToken 本体** —— 只留令牌尾号与
+/// 「有没有令牌」两个布尔。这条是安全边界。
+pub(super) fn account_view(site: Site, secret: &Value) -> Value {
     let access_token = crate::store::pick(secret, &["accessToken", "access_token", "token"]);
     let user_id = crate::store::pick(secret, &["userId", "user_id"]);
     let name = {
@@ -118,9 +125,9 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
         if !explicit.is_empty() {
             explicit
         } else if !user_id.is_empty() {
-            format!("Qoder {}", user_id)
+            format!("{} {}", site.product(), user_id)
         } else {
-            format!("Qoder {}", region.label())
+            site.display_name()
         }
     };
     let email = crate::store::pick(secret, &["email"]);
@@ -128,11 +135,12 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
         "name": name,
         "uid": user_id,
         "tokenTail": crate::store::token_tail(&access_token),
-        "edition": region.provider_id(),
-        "editionLabel": region.label(),
+        // 站点身份（徽章显示用；值就是落盘的 provider id）
+        "edition": site.provider_id(),
+        "editionLabel": site.label(),
         "source": crate::store::pick(secret, &["source"]),
         "hasSession": !access_token.is_empty(),
-        // 有刷新令牌 = 能续期（PAT 与设备授权都带）
+        // 有刷新令牌 = 能续期（网页登录与 PAT 都带）
         "canRefresh": !crate::store::pick(secret, &["refreshToken", "refresh_token"]).is_empty(),
         "desktop": false,
     });
@@ -153,11 +161,15 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
     view
 }
 
-/// 账号的稳定身份：`qoder-<userId>`（没有 userId 时返回空串让网关按凭证去重）。
-pub(super) fn identity_of(secret: &Value) -> String {
+/// 账号的稳定身份（没有 userId 时返回空串让网关按凭证去重）。
+///
+/// 前缀按产品分：`qoder-<uid>` / `qwenwork-<uid>`。它是**同 provider 内**的
+/// 去重键，跨产品不会相撞；改前缀会让存量账号在下次导入时被当成新账号。
+pub(super) fn identity_of(site: Site, secret: &Value) -> String {
     let user_id = crate::store::pick(secret, &["userId", "user_id"]);
     if user_id.is_empty() {
         return String::new();
     }
-    format!("qoder-{user_id}")
+    let prefix = if site.is_qwenwork() { "qwenwork" } else { "qoder" };
+    format!("{prefix}-{user_id}")
 }

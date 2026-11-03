@@ -4,7 +4,7 @@
 //! ```text
 //!   账号 CAccount     https://account.xfinfr.com        （HMAC-SHA1 签名头）
 //!   集成网关（积分）  https://loomyad.xunfei.cn          （明文 session 放 `token` 头）
-//!   模型网关          {集成网关}/api/v1                  （OpenAI 兼容，token + Bearer 双头）
+//!   模型网关          {集成网关}/api/v1                  （按目录 protocol 选择 Chat / Messages）
 //! ```
 //!
 //! 前两个值来自安装包内加密的 `.env.prod`；模型网关没有独立配置 —— 客户端把
@@ -30,6 +30,9 @@ pub const DEFAULT_ACCESS_KEY_SECRET: &str = "zsak6eadrbawz683wf5r3m2snrwj868r";
 /// 客户端 AppID（请求信封 `base.appid`；Loomy 桌面端的固定值）
 pub const DEFAULT_APP_ID: &str = "GM3LOOMY";
 
+/// 推理请求版本头，与 Loomy 桌面端 package.json 一致。
+pub const DEFAULT_CLIENT_VERSION: &str = "0.9.39";
+
 /// 读环境变量覆盖（空值视为未设置），去掉尾部斜杠
 fn env_override(name: &str) -> Option<String> {
     std::env::var(name)
@@ -51,7 +54,16 @@ pub fn integration_base_url() -> String {
 
 /// 模型网关基址：`{集成网关}/api/v1`
 pub fn model_base_url() -> String {
-    format!("{}/api/v1", integration_base_url())
+    let base = integration_base_url();
+    if base.ends_with("/api/v1") {
+        base
+    } else {
+        format!("{base}/api/v1")
+    }
+}
+
+pub fn client_version() -> String {
+    env_override("LOOMY_CLIENT_VERSION").unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string())
 }
 
 /// 签名用 AccessKeyId

@@ -1,40 +1,25 @@
-//! Qoder 模型目录（移植来源 `Qoder-Proxy/src/models.mjs`）。
+//! Qoder / 千问办公模型目录（移植来源 `Qoder-Proxy/src/models.mjs`）。
 //!
 //! ── 清单从哪来 ──────────────────────────────────────────────
-//!   1. **静态兜底**：`FALLBACK` 里按地区的两个清单。进程启动即可用，
-//!      网络不通 / 没账号时 `/v1/models` 仍然有内容。
+//!   1. **静态兜底**：Qoder 两个站点的两张表（照客户端内置抄的），以及
+//!      千问办公的 `高级 / 标准 / Qwen3.8-Max`（见 [`Site::fallback_models`]）。
+//!      进程启动即可用，网络不通 / 没账号时 `/v1/models` 仍然有内容。
 //!   2. **远程刷新**：`GET {gateway}algo/api/v2/model/list?Encode=1`（COSY 签名，
-//!      缓存 1 小时）。失败保留现有清单 —— 与源实现 `refreshModels` 的两级兜底
-//!      逐条一致。
-//!   3. **账号台账**：刷新成功时把两个地区的清单写进账号台账
+//!      缓存 1 小时）。失败保留现有清单。
+//!   3. **账号台账**：刷新成功时把四个站点的清单写进账号台账
 //!      （[`crate::catalog_ledger`]，kind = [`LEDGER_KIND`]），进程重启后由转发
-//!      链路读回来。**为什么需要它**：兜底表是"照客户端内置抄的"一份旧清单，
-//!      上游新加的模型不在里面 —— 而 `resolve` 找不到就给 400「模型不存在」，
-//!      于是重启后到那轮刷新成功之间，界面列得出来（网关那份是从它的库里恢复
-//!      的）、一调却说没有。
+//!      链路读回来。
 //!
-//! ── 为什么按地区分开缓存（与其它四家不同）─────────────────────
-//! Qoder 分国际版（`api3.qoder.sh`）与中国版（`gateway.qoder.com.cn`），
-//! 两边的目录**不是同一份**（套餐档位不同）。缓存按 region 分开。
-//! **拆家（2026-10）后两个地区是两家 provider**（`qoder` 中国版 /
-//! `qoder-intl` 国际版）：`list_for(region)` 只返回**本地区**的清单
-//! （适配器 `list_models` 按自己的地区取）；`list()` 保留两地区的并集
-//! （按 id 去重，global 优先）——只供种子与排障使用。
-//! 请求时 `resolve` 先在**账号所属地区**的目录里找，再退到另一地区 ——
-//! 于是「这个账号能不能用这个模型」由上游说了算，而不是我们猜。
+//! ── 为什么按站点分开缓存 ────────────────────────────────────
+//! 四个站点的目录**互不相同**（Qoder 的套餐档位、千问办公的 qwork 场景），
+//! 且同名模型的意义也不同。缓存按 [`Site`] 分开。
 //!
-//! ── 条目的键名口径（与另外四家对齐）──────────────────────────
-//! 聚合层的 `models::list_item` 认的是 `id` / `name` / `maxInputTokens` /
-//! `maxOutputTokens` / `supportsImages` / `supportsReasoning` /
-//! `supportsToolCall` / `isDefault` / `kind`（见 `core::models::shape`）。
-//! 本模块直接**按这套键名产出**，不再走中间形态；协议层要的 `upstreamKey`
-//! 与 `config` 另存两个键 —— 它们不会被 `list_item` 带进 `/v1/models`
-//! （那个函数只挑它认识的键），但路由与请求构造要读。
-//!
-//! ── 进程级句柄 ──────────────────────────────────────────────
-//! 与 `raccoon::models` / `core::models` 同一模式（`OnceLock` + `RwLock`）：
-//! 适配器是无状态单例，清单必须挂在进程级的共享句柄上，刷新才能对所有调用点
-//! （`/v1/models`、路由判定、后台刷新）同时可见。
+//! ── 千问办公的目录形状与 Qoder 不同 ─────────────────────────
+//! Qoder：`{"chat": [ {key, display_name, enable, price_factor, …} ]}`，
+//! 只列 `enable` 为真的条目，场景是 `app` + `chat` 合并。
+//! 千问办公：`{"qwork": [ {key, display_name, max_input_tokens, …} ]}`，
+//! **整份目录都在 `qwork` 这一个场景里**（含上游标了 `enable: false` 的），
+//! 所以要读的那一个数组与「要不要过滤 enable」都由 [`Site`] 决定。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：零 unwrap/expect/panic；持锁期间绝不做网络请求
@@ -51,7 +36,7 @@ use crate::logging;
 use super::context;
 use super::cosy::{self, CosyIdentity};
 use super::credentials::Credentials;
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 /// 远程目录缓存有效期（源实现 `CACHE_TTL_MS`：1 小时）
 const CACHE_TTL_MS: i64 = 60 * 60 * 1000;
@@ -64,13 +49,23 @@ const REQUEST_TIMEOUT_MS: u64 = 20_000;
 ///
 /// 源实现取这个值而不是更大：实测超过约 32K 后上游行为会退化
 /// （关闭思考时仍输出思考内容，约 49K 起返回空内容甚至直接断连）。
-/// 这是上游的实际约束，不是保守取值。
+/// 这是上游的实际约束，不是保守取值。千问办公的客户端发 32000，同档。
 pub const MAX_OUTPUT_TOKENS: i64 = 32_768;
 
 /// 目录条目没给上下文长度时的兜底
 const DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
 
-/// 内置兜底清单。
+/// 站点在缓存数组里的下标（[`CatalogState::slots`] 的索引）。
+fn slot(site: Site) -> usize {
+    match site {
+        Site::QoderCn => 0,
+        Site::QoderIntl => 1,
+        Site::QwenworkCn => 2,
+        Site::QwenworkIntl => 3,
+    }
+}
+
+/// Qoder 的静态兜底清单。
 ///
 /// `enabled` 在这里只是「免费档通常可用」的保守猜测（源实现同款注释）；
 /// 真实可用性以运行时从上游拉回的清单为准 —— 拉回来的 `enable` 字段才是
@@ -84,7 +79,7 @@ const DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
 /// 折扣价：断网 / 未登录时才用这张表，而折扣是错峰时段的临时态，把它写死
 /// 会让离线用户在非折扣时段看到低一档的价 —— 折扣由远程刷新如实带回来。
 /// 空串 = 上游也没有这个值（会显示成 `—`）。
-fn fallback(region: Region) -> Vec<Value> {
+fn qoder_fallback(site: Site) -> Vec<Value> {
     let global: &[(&str, &str, bool, bool, &[&str], bool, bool, &str)] = &[
         ("Qwen3.8-Flash", "qfmodel", true, true, &["low", "medium", "xhigh"], true, true, "0.1"),
         ("Qwen3.8-Max", "qmodel_38max", true, true, &["low", "medium", "xhigh"], true, true, "0.5"),
@@ -120,7 +115,7 @@ fn fallback(region: Region) -> Vec<Value> {
         ("Kimi-K2.8-Preview", "kmodel", true, false, &[], true, false, "0.3"),
         ("MiniMax-M3", "mmodel", false, false, &[], false, false, "0.2"),
     ];
-    let rows = if region == Region::Cn { cn } else { global };
+    let rows = if site == Site::QoderCn { cn } else { global };
     rows.iter()
         .map(|(id, key, reasoning, supports_effort, efforts, vision, enabled, factor)| {
             entry(
@@ -139,7 +134,16 @@ fn fallback(region: Region) -> Vec<Value> {
         .collect()
 }
 
-/// 静态兜底表的可见性：按**世代 + 档位别名**判。
+/// 本站点的静态兜底清单（Qoder 两张表 / 千问办公的 `Site::fallback_models`）。
+fn fallback(site: Site) -> Vec<Value> {
+    if site.is_qwenwork() {
+        site.fallback_models()
+    } else {
+        qoder_fallback(site)
+    }
+}
+
+/// Qoder 静态兜底表的可见性：按**世代 + 档位别名**判。
 ///
 /// 官方 IDE 的模型选择器只列当前一代的模型；`Qwen3.7-Max` / `Qwen3.7-Plus` /
 /// `Kimi-K2.8-Preview` 这些是上一代，`Auto` / `Ultimate` / `Performance` /
@@ -219,7 +223,7 @@ fn format_factor(value: f64) -> String {
 
 /// 构造一条目录条目（协议层与聚合层共用同一形状）。
 ///
-/// `config` 是发往上游的 `model_config` 素材（见 `protocol::slim_model_config`）：
+/// `config` 是发往上游的 `model_config` 素材（见 `protocol::shape_model_config`）：
 /// 只保留上游判定推理链路要用的几个字段 —— 源实现明确剥掉 `thinking_config`，
 /// 因为它会**覆盖** `parameters.enable_thinking`，让「关闭思考」失效。
 ///
@@ -251,7 +255,7 @@ fn entry(
         "reasoning": reasoning,
         "supportsReasoning": reasoning,
         "supportsImages": vision,
-        // Qoder 的上游是 agent 形态，工具调用是固有能力
+        // 本家的上游是 agent 形态，工具调用是固有能力
         "supportsToolCall": true,
         "efforts": efforts,
         "maxInputTokens": context_window,
@@ -276,98 +280,96 @@ fn entry(
     model
 }
 
-/// 内部状态：每个地区一份远程清单
+/// 一个站点那一格：远程清单 + 拉到的时刻。
+#[derive(Default, Clone)]
+struct CatalogSlot {
+    models: Vec<Value>,
+    fetched_at: i64,
+}
+
+/// 内部状态：四个站点各一份
 #[derive(Default, Clone)]
 struct CatalogState {
-    global: Vec<Value>,
-    cn: Vec<Value>,
-    global_fetched_at: i64,
-    cn_fetched_at: i64,
+    slots: [CatalogSlot; 4],
 }
 
-/// 进程级目录句柄。首次初始化时**先从持久化缓存恢复**（两个地区各一份，
-/// 按地区分开的理由见模块头「为什么按地区分开缓存」），没有再留空 ——
-/// 空状态的读取语义就是「回落到静态兜底清单」。
+impl CatalogState {
+    fn slot(&self, site: Site) -> &CatalogSlot {
+        &self.slots[slot(site)]
+    }
+
+    fn slot_mut(&mut self, site: Site) -> &mut CatalogSlot {
+        let index = slot(site);
+        &mut self.slots[index]
+    }
+}
+
+/// 进程级目录句柄。
+///
+/// 与 `raccoon::models` / `core::models` 同一模式（`OnceLock` + `RwLock`）：
+/// 适配器是无状态单例，清单必须挂在进程级的共享句柄上，刷新才能对所有调用点
+/// （`/v1/models`、路由判定、后台刷新）同时可见。
 fn catalog() -> &'static RwLock<CatalogState> {
     static CATALOG: OnceLock<RwLock<CatalogState>> = OnceLock::new();
-    CATALOG.get_or_init(|| RwLock::new(restored_state()))
-}
-
-/// 首次初始化的状态：**空**。
-///
-/// ── 恢复在哪里发生 ──────────────────────────────────────────
-/// 网关那份先从 `providers::catalog_cache` 读回两个地区的落盘清单；插件侧那份
-/// 在**账号台账**里（[`crate::catalog_ledger`]），读它是异步的，所以恢复不在
-/// 本函数里：转发链路由 `ensure_catalog` 补（内存空了先读台账、再就地补拉），
-/// 刷新链路在成功那一步写台账。空状态的读取语义是「回落到静态兜底清单」——
-/// 那条路仍然在（网络不通 / 没账号时界面照样有内容），只是不再是唯一一条。
-fn restored_state() -> CatalogState {
-    CatalogState::default()
+    CATALOG.get_or_init(|| RwLock::new(CatalogState::default()))
 }
 
 /// 账号台账里那份目录的 kind（网关存成 `pluginLedger.qoder-catalog`）。
 pub const LEDGER_KIND: &str = "qoder-catalog";
 
-/// 台账 payload：两个地区各一份远程清单 + 各自拉到的时刻。
-///
-/// 两个地区都写进去（哪怕本次只刷新了一边）：台账按**账号**存，读回来时装进
-/// 两格缓存，于是重启后两边都不必等刷新。
+/// 台账 payload：四个站点各一份远程清单 + 各自拉到的时刻。
 pub fn saved_payload() -> Value {
     let state = read_state();
-    json!({
-        "global": state.global,
-        "globalFetchedAt": state.global_fetched_at,
-        "cn": state.cn,
-        "cnFetchedAt": state.cn_fetched_at,
-    })
+    let mut out = serde_json::Map::new();
+    for site in Site::ALL {
+        let id = site.provider_id();
+        let slot = state.slot(site);
+        out.insert(id.to_string(), Value::Array(slot.models.clone()));
+        out.insert(format!("{id}FetchedAt"), Value::from(slot.fetched_at));
+    }
+    Value::Object(out)
 }
 
-/// 从台账恢复两格缓存，返回是否装进了东西。
+/// 从台账恢复四格缓存，返回是否装进了东西。
 ///
-/// **只填空格**：某个地区内存里已经有远程清单就不覆盖它 —— 恢复只该补上
+/// **只填空格**：某个站点内存里已经有远程清单就不覆盖它 —— 恢复只该补上
 /// 「进程重启后丢掉的那部分」，不该拿旧数据盖掉刚拉到的新数据。
 pub fn restore_from_saved(payload: &Value) -> bool {
     let mut restored = false;
     let mut state = read_state();
-    for (region, key, at_key) in [
-        (Region::Global, "global", "globalFetchedAt"),
-        (Region::Cn, "cn", "cnFetchedAt"),
-    ] {
+    for site in Site::ALL {
+        let id = site.provider_id();
         let Some(models) = payload
-            .get(key)
+            .get(id)
             .and_then(Value::as_array)
             .filter(|items| !items.is_empty())
             .cloned()
         else {
             continue;
         };
-        let filled = match region {
-            Region::Global => !state.global.is_empty(),
-            Region::Cn => !state.cn.is_empty(),
-        };
-        if filled {
+        if !state.slot(site).models.is_empty() {
             continue;
         }
-        let fetched_at = payload.get(at_key).and_then(Value::as_i64).unwrap_or(0);
-        match region {
-            Region::Global => {
-                state.global = models;
-                state.global_fetched_at = fetched_at;
-            }
-            Region::Cn => {
-                state.cn = models;
-                state.cn_fetched_at = fetched_at;
-            }
-        }
+        let fetched_at = payload
+            .get(&format!("{id}FetchedAt"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let target = state.slot_mut(site);
+        target.models = models;
+        target.fetched_at = fetched_at;
         restored = true;
     }
     if restored {
-        match catalog().write() {
-            Ok(mut guard) => *guard = state,
-            Err(poisoned) => *poisoned.into_inner() = state,
-        }
+        write_state(state);
     }
     restored
+}
+
+fn write_state(state: CatalogState) {
+    match catalog().write() {
+        Ok(mut guard) => *guard = state,
+        Err(poisoned) => *poisoned.into_inner() = state,
+    }
 }
 
 fn read_state() -> CatalogState {
@@ -377,29 +379,26 @@ fn read_state() -> CatalogState {
     }
 }
 
-/// 某地区当前生效的清单（远程优先，否则静态兜底）
-fn catalog_for(state: &CatalogState, region: Region) -> Vec<Value> {
-    let remote = match region {
-        Region::Global => &state.global,
-        Region::Cn => &state.cn,
-    };
+/// 某站点当前生效的清单（远程优先，否则静态兜底）
+fn catalog_for(state: &CatalogState, site: Site) -> Vec<Value> {
+    let remote = &state.slot(site).models;
     if remote.is_empty() {
-        fallback(region)
+        fallback(site)
     } else {
         remote.clone()
     }
 }
 
-/// 当前清单（两个地区的**并集**，按 id 去重、global 优先）。
+/// 当前清单（四个站点的**并集**，按 id 去重、靠前的站点优先）。
 ///
-/// 拆家后聚合目录与路由判定读的是**各家自己的** `list_for`（地区是 provider
-/// 身份）；并集只留给种子与排障 —— 种子按地区分别种，见 `seed_default_rules`。
+/// 拆家后聚合目录与路由判定读的是**各家自己的** `list_for`（站点是 provider
+/// 身份）；并集只留给「反查上游回传的模型名」这类不知道站点的场合。
 pub fn list() -> Vec<Value> {
     let state = read_state();
     let mut out: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    for region in [Region::Global, Region::Cn] {
-        for model in catalog_for(&state, region) {
+    for site in Site::ALL {
+        for model in catalog_for(&state, site) {
             let id = text_of(&model, "id");
             if id.is_empty() {
                 continue;
@@ -411,7 +410,10 @@ pub fn list() -> Vec<Value> {
             seen.push(key);
             let mut model = model;
             if let Some(object) = model.as_object_mut() {
-                object.insert("region".to_string(), Value::String(region.id().to_string()));
+                object.insert(
+                    "providerId".to_string(),
+                    Value::String(site.provider_id().to_string()),
+                );
             }
             out.push(model);
         }
@@ -419,58 +421,61 @@ pub fn list() -> Vec<Value> {
     out
 }
 
-/// **本地区**的当前清单（远程优先，否则静态兜底）。
-///
-/// 拆家后每家 provider 只列本地区（适配器 `list_models` 按 `self.region` 取）：
-/// 模型管理、`/v1/models` 广告与「某模型由哪些家提供」的判定都由 provider
-/// 身份自动分开了 —— 中国版的账号/清单/启停归 `qoder`，国际版归 `qoder-intl`。
-pub fn list_for(region: Region) -> Vec<Value> {
+/// **本站点**的当前清单（远程优先，否则静态兜底）。
+pub fn list_for(site: Site) -> Vec<Value> {
     let state = read_state();
-    catalog_for(&state, region)
+    catalog_for(&state, site)
         .into_iter()
         .filter(|model| !text_of(model, "id").is_empty())
         .map(|mut model| {
             if let Some(object) = model.as_object_mut() {
-                object.insert("region".to_string(), Value::String(region.id().to_string()));
+                object.insert(
+                    "providerId".to_string(),
+                    Value::String(site.provider_id().to_string()),
+                );
             }
             model
         })
         .collect()
 }
 
-/// 把客户端的模型名解析成「上游标识 + 模型配置 + 地区」。
+/// 把客户端的模型名解析成「上游标识 + 模型配置 + 站点」。
 ///
 /// ── 匹配顺序（与 `catalog::providers_for_model` 同口径）──────────
-/// 先按 `id` 全等（忽略大小写），再按 `name` 全等。源实现还允许按
-/// `upstreamKey` 匹配 —— 那是同一条链路上「客户端恰好写了内部 key」的容错，
-/// 这里一并保留（客户端真写 `qfmodel` 时不该报「模型不存在」）。
+/// 先按 `id` 全等（忽略大小写），再按 `name` 全等，最后按 `upstreamKey`。
 ///
-/// `region` 是**账号所属地区**：先在该地区的目录里找，找不到再看另一地区 ——
-/// 这样「国际版账号请求中国版专属模型」会拿到一个明确的解析结果，
+/// `site` 是**账号所属站点**：先在它自己的目录里找，找不到再看其余站点 ——
+/// 这样「某站账号请求另一站专属模型」会拿到一个明确的解析结果，
 /// 由上游报出真实原因（而不是网关谎报「模型不存在」）。
-pub fn resolve(model_id: &str, region: Region) -> Option<Value> {
+pub fn resolve(model_id: &str, site: Site) -> Option<Value> {
     let wanted = model_id.trim().to_lowercase();
     if wanted.is_empty() {
         return None;
     }
     let state = read_state();
-    // ① 账号所属地区优先，② 另一地区兜底，③ 两边都没有 → None
-    let other = if region == Region::Cn { Region::Global } else { Region::Cn };
-    for candidate_region in [region, other] {
-        let models = catalog_for(&state, candidate_region);
+    // ① 账号所属站点优先，② 其余站点按注册表顺序兜底
+    let mut order: Vec<Site> = vec![site];
+    order.extend(Site::ALL.into_iter().filter(|candidate| *candidate != site));
+    for candidate in &order {
+        let models = catalog_for(&state, *candidate);
         if let Some(found) = find_in(&models, &wanted) {
             return Some(found);
         }
     }
-    // ④ 兜底清单也在两个地区都查一遍（远程目录为空时上面已经用过兜底，
+    // ③ 兜底清单也在四个站点都查一遍（远程目录为空时上面已经用过兜底，
     //    这一步覆盖「远程目录在一边有、另一边没有」的交错情形）
-    for candidate_region in [other, region] {
-        let models = fallback(candidate_region);
+    for candidate in &order {
+        let models = fallback(*candidate);
         if let Some(found) = find_in(&models, &wanted) {
             return Some(found);
         }
     }
     None
+}
+
+/// 不知道站点时的解析（上游回传的模型名 → 对外 id）：四个站点都查。
+pub fn resolve_any_site(model_id: &str) -> Option<Value> {
+    resolve(model_id, Site::QoderIntl)
 }
 
 /// 在一个清单里按 id → name → upstreamKey 的顺序找（都与源实现同序）
@@ -491,34 +496,16 @@ fn find_in(models: &[Value], wanted: &str) -> Option<Value> {
 }
 
 /// 是否已经成功采用过远程清单（`catalog_refresh_meta` 用）
-pub fn remote_refreshed(region: Region) -> bool {
-    let state = read_state();
-    match region {
-        Region::Global => !state.global.is_empty(),
-        Region::Cn => !state.cn.is_empty(),
-    }
+pub fn remote_refreshed(site: Site) -> bool {
+    !read_state().slot(site).models.is_empty()
 }
 
-/// 某地区最后一次成功刷新远程目录的时间（毫秒；从未成功过为 0）。
-///
-/// 拆家后「来源 / 更新日期」列按**各家**取值（`catalog::refresh_meta` 的
-/// Qoder / QoderIntl 两个分支各查一格），不再取两地区的最大值 —— 那会让
-/// 两家显示同一次拉取时刻。
-pub fn last_refreshed_at(region: Region) -> i64 {
-    let state = read_state();
-    match region {
-        Region::Global => state.global_fetched_at,
-        Region::Cn => state.cn_fetched_at,
-    }
+/// 某站点最后一次成功刷新远程目录的时间（毫秒；从未成功过为 0）。
+pub fn last_refreshed_at(site: Site) -> i64 {
+    read_state().slot(site).fetched_at
 }
 
-/// 最后一次成功刷新远程目录的时间（毫秒；从未成功过为 0）——两地区的最大值。
-#[allow(dead_code)]
-pub fn last_refreshed_at_any() -> i64 {
-    read_state().global_fetched_at.max(read_state().cn_fetched_at)
-}
-
-/// 拉取并落地某地区的远程目录。
+/// 拉取并落地某站点的远程目录。
 ///
 /// 三档返回值与 `ModelRefreshOutcome` 的契约一致（成功 / 没刷 / 失败了）。
 /// `force = false` 时命中 TTL 直接早退（自动路径）；用户手动点刷新时
@@ -528,19 +515,15 @@ pub async fn refresh(
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
     force: bool,
 ) -> ModelRefreshOutcome {
-    let region = credentials.region;
+    let site = credentials.site;
     if !force {
-        let state = read_state();
-        let (models, fetched_at) = match region {
-            Region::Global => (&state.global, state.global_fetched_at),
-            Region::Cn => (&state.cn, state.cn_fetched_at),
-        };
-        if !models.is_empty() && logging::now_ms() - fetched_at < CACHE_TTL_MS {
+        let slot = read_state().slot(site).clone();
+        if !slot.models.is_empty() && logging::now_ms() - slot.fetched_at < CACHE_TTL_MS {
             return ModelRefreshOutcome::unchanged();
         }
     }
 
-    let url = format!("{}algo/api/v2/model/list?Encode=1", region.gateway());
+    let url = format!("{}algo/api/v2/model/list?Encode=1", site.gateway());
     let identity = CosyIdentity {
         user_id: &credentials.user_id,
         auth_token: &credentials.access_token,
@@ -549,7 +532,7 @@ pub async fn refresh(
         machine_id: &credentials.machine_id,
     };
     // 目录是 GET：请求体为空，签名覆盖空体（源实现传 null 同上）
-    let headers = match cosy::build_auth_headers(None, &url, &identity) {
+    let headers = match cosy::build_auth_headers(None, &url, &identity, site) {
         Ok(headers) => headers,
         Err(error) => return ModelRefreshOutcome::failed(error.message),
     };
@@ -579,39 +562,23 @@ pub async fn refresh(
     if let Some(message) = envelope_error(&payload) {
         return ModelRefreshOutcome::failed(message);
     }
-    let models = parse_catalog(&payload);
+    let models = parse_catalog(&payload, site);
     if models.is_empty() {
         return ModelRefreshOutcome::failed("上游返回的模型目录为空");
     }
     let count = models.len();
     let mut state = read_state();
     let now = logging::now_ms();
-    // 只更新本次刷新的这一边，另一边的清单原样留着（它有自己的刷新周期）。
-    // 插件里没有落盘缓存（见 `restored_state` 的说明），所以这里只改内存。
-    match region {
-        Region::Global => {
-            state.global = models;
-            state.global_fetched_at = now;
-        }
-        Region::Cn => {
-            state.cn = models;
-            state.cn_fetched_at = now;
-        }
-    }
-    match catalog().write() {
-        Ok(mut guard) => *guard = state,
-        Err(poisoned) => *poisoned.into_inner() = state,
-    }
+    // 只更新本次刷新的这一格，其余站点原样留着（它们有自己的刷新周期）。
+    // 插件里没有落盘缓存（恢复走账号台账），所以这里只改内存。
+    let target = state.slot_mut(site);
+    target.models = models;
+    target.fetched_at = now;
+    write_state(state);
     logging::log(
         "[Models]",
-        &format!("✅ Qoder 模型目录已更新（{}，{count} 个）", region.label()),
+        &format!("✅ {} 模型目录已更新（{count} 个）", site.display_name()),
     );
-    // ── 默认规则种子（迁移时不迁）─────────────────────────────
-    // 网关那份在这里调 `seed_default_rules()` 把 `QODER_DEFAULT_ENABLED` 白名单
-    // 里的模型种进「模型映射」配置（决定哪些模型默认可见 / 启用）。那份配置
-    // 是**网关的状态**（`config.json` 的 modelRules），插件写不了 —— 而且插件的
-    // 目录刷新只回答「有哪些模型」，可见性由网关按它的规则决定。因此这里
-    // 不做种子：网关侧的目录合并仍会按它自己的种子逻辑处理。
     ModelRefreshOutcome::refreshed(count)
 }
 
@@ -635,18 +602,33 @@ fn envelope_error(payload: &Value) -> Option<String> {
     }
 }
 
-/// 解析目录响应：`{ chat: [ { key, display_name, enable, is_vl, ... } ] }`。
+/// 解析目录响应。
 ///
-/// 字段口径照抄源实现：只收 `chat` 数组，缺 `key` 或缺 `display_name` 的条目丢弃。
-/// 对外的模型 id 用 `display_name` **去掉空白**（源实现 `toModelId`）——
+/// Qoder：`{ chat: [ { key, display_name, enable, is_vl, … } ] }`，只收 `chat`
+/// 数组，缺 `key` 或缺 `display_name` 的条目丢弃，且只保留 `enable` 为真的条目。
+/// 千问办公：`{ qwork: [ … ] }`，读 `qwork`，**整份保留**（含 `enable: false`）。
+///
+/// 两边的对外模型 id 都用 `display_name` **去掉空白**（源实现 `toModelId`）——
 /// 于是客户端看到的名称可读，请求时再映射回 `key`。
-fn parse_catalog(payload: &Value) -> Vec<Value> {
-    let Some(chat) = payload.get("chat").and_then(Value::as_array) else {
-        return Vec::new();
+fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
+    let scene = site.model_scene();
+    let rows: &[Value] = match scene {
+        Some(name) => {
+            match payload.get(name).and_then(Value::as_array) {
+                Some(items) => items,
+                None => return Vec::new(),
+            }
+        }
+        None => {
+            match payload.get("chat").and_then(Value::as_array) {
+                Some(items) => items,
+                None => return Vec::new(),
+            }
+        }
     };
     let mut models: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    for item in chat {
+    for item in rows {
         let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
         let display = item.get("display_name").and_then(Value::as_str).unwrap_or("").trim();
         if key.is_empty() || display.is_empty() {
@@ -671,13 +653,20 @@ fn parse_catalog(payload: &Value) -> Vec<Value> {
             .and_then(Value::as_object)
             .map(|map| map.keys().map(|key| Value::String(key.clone())).collect())
             .unwrap_or_default();
-        let context_window = context_window_of(item);
+        let context_window = context_window_of(item, site);
         let source = item.get("source").and_then(Value::as_str).unwrap_or("system");
         // 倍率（官方中文名「Credit 消耗倍率」，界面标签「消耗」）：
         // 上游在模型条目**顶层**给 `price_factor`，取值 0～3.2。
         // 折扣时段 `price_factor` 本身就是折后价（另有 `original_price_factor`
-        // 记原价）—— 这里取实际生效的那个，与 Qoder 界面一致。
+        // 记原价）—— 这里取实际生效的那个，与客户端界面一致。
         let credits = credits_of(item);
+        let enabled = match scene {
+            // 千问办公把整份目录放在一个场景里，`enable` 只是「本套餐能不能用」，
+            // 而它的客户端列表里这些模型是**列出来**的（含未开通的），
+            // 所以按站点声明整份保留。
+            Some(_) if site.list_all_models() => true,
+            _ => item.get("enable").map(js_truthy).unwrap_or(false),
+        };
 
         let mut model = entry(
             &id,
@@ -685,27 +674,21 @@ fn parse_catalog(payload: &Value) -> Vec<Value> {
             reasoning,
             &[],
             vision,
-            item.get("enable").map(js_truthy).unwrap_or(false),
+            enabled,
             context_window,
             source,
             &credits,
             // ── 可见性**不能**读上游 `enable`（2026-10-17 修正）──────────
             // 早先把 `enable` 当可见性判据是**错的**，实测数据否掉了它：
-            // 一个普通账号拉回来的目录里 17 条只有 `Qwen3.8-Flash` 是
+            // 一个普通 Qoder 账号拉回来的目录里 17 条只有 `Qwen3.8-Flash` 是
             // `enable: true`，其余（`GLM-5.3` / `Kimi-K3` / `DeepSeek-V4-Pro`
-            // …）全是 `false` —— 而它们明明出现在 Qoder 官方客户端的模型列表
-            // 里。`enable` 的语义是「**当前账号当前套餐**能不能用这个模型」，
-            // 是**逐账号的权益位**，不是「客户端展不展示」。
+            // …）全是 `false` —— 而它们明明出现在官方客户端的模型列表里。
+            // `enable` 的语义是「**当前账号当前套餐**能不能用这个模型」，是
+            // **逐账号的权益位**，不是「客户端展不展示」。
             //
-            // 参考实现那两处也不是在说「可见性」：9router 那行注释讲的是
-            // 「IDE picker 里不列、但 chat 仍接受」——它描述的是**这种情况会
-            // 发生**，不是判据；magpie 按 `Enable` 丢弃是为了只广告「本账号
-            // 现在能用」的模型（它自己的取舍），与官方展示口径无关。
-            //
-            // 所以这里改回与静态兜底同一套**世代 / 档位**判据：那条才是
-            // 「官方客户端会列什么」的依据，而且远程与兜底两条路的结论一致
-            // （不会出现「断网时显示 X、联网后变成 Y」）。
-            fallback_visibility(&id),
+            // 所以 Qoder 改回与静态兜底同一套**世代 / 档位**判据；千问办公的
+            // 目录只有三个模型、且都是当前一代，一律 shown。
+            if site.is_qwenwork() { "shown" } else { fallback_visibility(&id) },
         );
         if let Some(object) = model.as_object_mut() {
             object.insert(
@@ -739,14 +722,26 @@ fn parse_catalog(payload: &Value) -> Vec<Value> {
     models
 }
 
-/// 上下文窗口：取 `context_config` 里各档位的最大 `token_count`（源实现同款）
-fn context_window_of(item: &Value) -> i64 {
+/// 上下文窗口。
+///
+/// Qoder：取 `context_config` 里各档位的最大 `token_count`（源实现同款），
+/// 没有档位就退回文档默认值。
+/// 千问办公：它的目录没有 `context_config`，只有一个 `max_input_tokens`
+/// （客户端声明值），所以那一档就以它为准。
+fn context_window_of(item: &Value, site: Site) -> i64 {
     let max = context::max_tokens(&context::tiers_from_catalog(item));
     if max > 0 {
-        max
-    } else {
-        DEFAULT_CONTEXT_WINDOW
+        return max;
     }
+    if site.is_qwenwork() {
+        if let Some(declared) = item.get("max_input_tokens").and_then(Value::as_i64) {
+            if declared > 0 {
+                return declared;
+            }
+        }
+        return site.max_input_tokens();
+    }
+    DEFAULT_CONTEXT_WINDOW
 }
 
 /// 条目里某个键的文本形态（沿用小浣熊那边同一份 JS 语义）

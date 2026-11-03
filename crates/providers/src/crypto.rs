@@ -1,4 +1,6 @@
-//! 桌面端 Electron safeStorage 凭证解密（**两家共用**：chatglm / autoclaw）。
+//! 桌面端 Electron / Chromium 本地凭证解密（chatglm、autoclaw 的 safeStorage
+//! 字段，以及豆包工作客户端 Cookie 库的 os_crypt 密文，共用同一套 AES 密钥与
+//! 解密原语）。
 //!
 //! 移植来源：AutoClaw 的 `crypto-helper.mjs`（**唯一事实来源**；本文件逐步骤
 //! 对照它实现，切分口径不得自行发挥）。
@@ -141,12 +143,12 @@ pub fn os_crypt_aes_key(local_state_path: &Path) -> Result<Vec<u8>, String> {
 fn load_os_crypt_aes_key(local_state_path: &Path) -> Result<Vec<u8>, String> {
     let text = std::fs::read_to_string(local_state_path).map_err(|error| {
         format!(
-            "无法读取 AutoClaw Local State（{}）：{error}",
+            "无法读取 Local State（{}）：{error}",
             local_state_path.display()
         )
     })?;
     let value = serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|_| "AutoClaw Local State 无法解析（不是有效 JSON）".to_string())?;
+        .map_err(|_| "Local State 无法解析（不是有效 JSON）".to_string())?;
     let encoded = value
         .get("os_crypt")
         .and_then(|os_crypt| os_crypt.get("encrypted_key"))
@@ -154,29 +156,26 @@ fn load_os_crypt_aes_key(local_state_path: &Path) -> Result<Vec<u8>, String> {
         .unwrap_or("")
         .trim();
     if encoded.is_empty() {
-        return Err("AutoClaw Local State 里没有 os_crypt.encrypted_key".to_string());
+        return Err("Local State 里没有 os_crypt.encrypted_key".to_string());
     }
     // 形态校验照抄源实现（`/^[A-Za-z0-9+/]+={0,2}$/`）：明显不是 base64 的值
     // 不必进 DPAPI，先给一个更清楚的错误
     if !is_base64_like(encoded) {
-        return Err("AutoClaw Local State 的 os_crypt.encrypted_key 不是合法 base64".to_string());
+        return Err("Local State 的 os_crypt.encrypted_key 不是合法 base64".to_string());
     }
     let blob = OS_CRYPT_BASE64
         .decode(encoded)
-        .map_err(|_| "AutoClaw Local State 的 os_crypt.encrypted_key 解码失败".to_string())?;
+        .map_err(|_| "Local State 的 os_crypt.encrypted_key 解码失败".to_string())?;
     if blob.len() <= DPAPI_PREFIX_LEN {
-        return Err("AutoClaw os_crypt 密钥 blob 长度异常（不足以去掉 DPAPI 前缀）".to_string());
+        return Err("os_crypt 密钥 blob 长度异常（不足以去掉 DPAPI 前缀）".to_string());
     }
     if &blob[..DPAPI_PREFIX_LEN] != b"DPAPI" {
-        return Err(
-            "AutoClaw os_crypt 密钥前缀不是 DPAPI（这不是 Windows 平台的 Local State）"
-                .to_string(),
-        );
+        return Err("os_crypt 密钥前缀不是 DPAPI（这不是 Windows 平台的 Local State）".to_string());
     }
     let key = dpapi::unprotect(&blob[DPAPI_PREFIX_LEN..])?;
     if key.len() != AES_KEY_LEN {
         return Err(format!(
-            "AutoClaw os_crypt 密钥长度异常（期望 {AES_KEY_LEN} 字节，实际 {} 字节）",
+            "os_crypt 密钥长度异常（期望 {AES_KEY_LEN} 字节，实际 {} 字节）",
             key.len()
         ));
     }
@@ -234,9 +233,9 @@ pub fn decrypt_enc_value(value: &str, aes_key: Option<&[u8]>) -> Result<String, 
     };
     let blob = OS_CRYPT_BASE64
         .decode(encoded.trim())
-        .map_err(|_| "AutoClaw 加密字段不是合法 base64".to_string())?;
+        .map_err(|_| "加密字段不是合法 base64".to_string())?;
     if blob.len() < 3 {
-        return Err("AutoClaw 加密字段长度异常（不足版本前缀）".to_string());
+        return Err("加密字段长度异常（不足版本前缀）".to_string());
     }
     let prefix = String::from_utf8_lossy(&blob[..3]).to_string();
     if prefix != OS_CRYPT_VERSION {
@@ -253,11 +252,37 @@ pub fn decrypt_enc_value(value: &str, aes_key: Option<&[u8]>) -> Result<String, 
     String::from_utf8(plaintext).map_err(|_| "解密结果不是合法 UTF-8 文本".to_string())
 }
 
+/// 解密一段**裸 os_crypt blob**（`v10` + nonce + 密文 + 尾部 tag）。
+///
+/// 与 [`decrypt_enc_value`] 的区别只在入口形态：那个收的是 Electron
+/// `enc:<base64>` 字段，这个收 Chromium 的 Cookies SQLite 里 `encrypted_value`
+/// 列的原始字节（豆包工作客户端的 Cookie 就走这条路，见 `doubaowork::cookies_db`）。
+pub fn decrypt_os_crypt_blob(blob: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+    if blob.len() < 3 {
+        return Err("os_crypt 密文长度异常（不足版本前缀）".to_string());
+    }
+    let prefix = String::from_utf8_lossy(&blob[..3]).to_string();
+    if prefix != OS_CRYPT_VERSION {
+        return Err(format!("不支持的 os_crypt 密文版本: {prefix}"));
+    }
+    let payload = &blob[3..];
+    if payload.len() <= NONCE_LEN + TAG_LEN {
+        return Err("os_crypt 密文长度异常".to_string());
+    }
+    let nonce = &payload[..NONCE_LEN];
+    let body = &payload[NONCE_LEN..];
+    aes_gcm_decrypt(key, nonce, body)
+}
+
 /// AES-256-GCM 解密（无 AAD，tag 附在密文尾部）。
 ///
 /// 全程无 panic：密钥长度由 `new_from_slice` 校验，nonce 由 `try_from` 转换
 /// （都是 Result），解密失败由 GCM 的 tag 校验给出 Error。
-fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext_with_tag: &[u8]) -> Result<Vec<u8>, String> {
+fn aes_gcm_decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext_with_tag: &[u8],
+) -> Result<Vec<u8>, String> {
     use aes_gcm::aead::consts::U12;
     use aes_gcm::aead::Aead as _;
     use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce};

@@ -46,14 +46,9 @@ use num_bigint::BigUint;
 
 use crate::errors::GatewayError;
 
+use super::endpoints::Site;
 use super::machine;
 
-/// 推理网关（`/algo/...`）使用的 COSY 协议版本
-pub const GATEWAY_COSY_VERSION: &str = "1.1.38";
-/// 客户端类型标识（桌面端为 0，这里沿用 CLI 形态，与源项目一致）
-pub const CLIENT_TYPE: &str = "5";
-/// 数据策略：不同意用于训练
-pub const DATA_POLICY: &str = "disagree";
 /// 登录版本标识
 pub const LOGIN_VERSION: &str = "v2";
 
@@ -100,10 +95,16 @@ pub struct CosyIdentity<'a> {
 /// `body` 是**已编码**的请求体（GET 类请求传 `None`）。签名覆盖它，
 /// 所以调用方必须先 `encode_body` 再调本函数 —— 顺序颠倒会得到一个
 /// 「签名不匹配」的上游错误，且无法从错误里看出原因。
+///
+/// `site` 决定客户端身份那一组常量的取值（版本、ClientType、Data-Policy 与
+/// 三个 `Cosy-Business-*` / `Cosy-Scene` 头）。**这一组必须与请求体里的
+/// `session_type` / `business` 一致** —— 千问办公会因为「头说 6、body 说
+/// qodercli」这种自相矛盾直接拒绝，所以两边共用同一个 [`Site`]。
 pub fn build_auth_headers(
     body: Option<&[u8]>,
     request_url: &str,
     identity: &CosyIdentity<'_>,
+    site: Site,
 ) -> Result<Vec<(String, String)>, GatewayError> {
     if identity.user_id.is_empty() {
         return Err(GatewayError::with_status(400, "Qoder 账号缺少用户标识，无法签名"));
@@ -143,13 +144,14 @@ pub fn build_auth_headers(
 
     let request_id = machine::random_uuid()?;
     let timestamp = (crate::logging::now_ms() / 1000).to_string();
+    let cosy_version = site.cosy_version();
 
     // payload 同样按源实现的键序手写（理由见上）：version / requestId / info /
     // cosyVersion / ideVersion。`info` 是 base64、requestId 是 UUID、版本是常量，
     // 都不需要转义。
     let payload_src = format!(
         "{{\"version\":\"v1\",\"requestId\":\"{request_id}\",\"info\":\"{info}\",\
-         \"cosyVersion\":\"{GATEWAY_COSY_VERSION}\",\"ideVersion\":\"\"}}"
+         \"cosyVersion\":\"{cosy_version}\",\"ideVersion\":\"\"}}"
     );
     let payload = base64::engine::general_purpose::STANDARD.encode(payload_src.as_bytes());
 
@@ -181,23 +183,46 @@ pub fn build_auth_headers(
         ("Cosy-Key".to_string(), cosy_key),
         ("Cosy-User".to_string(), identity.user_id.to_string()),
         ("Cosy-Date".to_string(), timestamp),
-        ("Cosy-Version".to_string(), GATEWAY_COSY_VERSION.to_string()),
+        ("Cosy-Version".to_string(), cosy_version.to_string()),
         ("Cosy-Machineid".to_string(), identity.machine_id.to_string()),
         ("Cosy-Machinetoken".to_string(), identity.machine_id.to_string()),
         ("Cosy-Machinetype".to_string(), MACHINE_TYPE.to_string()),
         ("Cosy-Machineos".to_string(), machine_os()),
-        ("Cosy-Clienttype".to_string(), CLIENT_TYPE.to_string()),
-        ("Cosy-Clientip".to_string(), CLIENT_IP.to_string()),
+        ("Cosy-Clienttype".to_string(), site.cosy_client_type().to_string()),
+        ("Cosy-Clientip".to_string(), client_ip(site, identity.machine_id)),
         ("Cosy-Bodyhash".to_string(), body_hash),
         ("Cosy-Bodylength".to_string(), body_bytes.len().to_string()),
         ("Cosy-Sigpath".to_string(), sig_path),
-        ("Cosy-Data-Policy".to_string(), DATA_POLICY.to_string()),
+        ("Cosy-Data-Policy".to_string(), site.cosy_data_policy().to_string()),
         ("Cosy-Organization-Id".to_string(), String::new()),
         ("Cosy-Organization-Tags".to_string(), String::new()),
         ("Login-Version".to_string(), LOGIN_VERSION.to_string()),
         ("X-Request-Id".to_string(), request_id),
     ];
+    // 客户端身份那一组（只有声明了它们的站点才发，见 `Site` 的同名方法）。
+    let mut headers = headers;
+    for (key, value) in [
+        ("Cosy-Scene", site.cosy_scene()),
+        ("Cosy-Business-Product", site.cosy_business_product()),
+        ("Cosy-Business-Type", site.cosy_business_type()),
+    ] {
+        if let Some(value) = value {
+            headers.push((key.to_string(), value.to_string()));
+        }
+    }
     Ok(headers)
+}
+
+/// `Cosy-Clientip` 的取值。
+///
+/// Qoder 沿用既有实现的回环地址；千问办公的客户端把头填成机器标识
+/// （magpie 与 dumate2api 都如此），照它取值。
+fn client_ip(site: Site, machine_id: &str) -> String {
+    if site.is_qwenwork() && !machine_id.is_empty() {
+        machine_id.to_string()
+    } else {
+        CLIENT_IP.to_string()
+    }
 }
 
 /// 请求体编码（源实现 `encodeBody`）：上游带 `Encode=1` 时请求体不是裸 JSON。

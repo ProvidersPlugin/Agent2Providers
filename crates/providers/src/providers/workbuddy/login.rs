@@ -52,7 +52,7 @@ use crate::errors::GatewayError;
 use crate::http::{send_raw, ApiResponse};
 use crate::logging;
 use crate::workbuddy_shared::endpoints::{
-    Context, ANONYMOUS_HEADERS, RESPONSE_CODE_OK, SERVER_CODES_RETRY_FETCH_TOKEN,
+    Context, RESPONSE_CODE_OK, SERVER_CODES_RETRY_FETCH_TOKEN,
 };
 
 use super::accounts::{account_view, identity_of};
@@ -71,6 +71,8 @@ const FLOW_KEEP_MS: i64 = 10 * 60_000;
 /// 一次进行中的登录（`state` + 它属于哪个地区）。
 struct Flow {
     region: Region,
+    context: Context,
+    proxy: Option<agent2api_provider_protocol::WireProxy>,
     /// 发起时刻（毫秒），清理用。
     started_at: i64,
 }
@@ -82,11 +84,12 @@ fn flows() -> &'static Mutex<HashMap<String, Flow>> {
 }
 
 /// 发起登录：问上游要 state + authUrl。
-pub(super) async fn login_start(region: Region) -> Result<proto::LoginStart, GatewayError> {
+pub(super) async fn login_start(region: Region, payload: &Value) -> Result<proto::LoginStart, GatewayError> {
     let context = context_for(region);
-    let headers = anonymous_headers();
+    let proxy = super::contract::proxy_of(payload)?;
+    let headers = super::contract::login_headers(region, &context.authority(), true);
     let url = context.auth_url(&format!("/auth/state?platform={}", encode(&context.platform)));
-    let response = send("POST", &url, Some(&json!({})), &headers).await?;
+    let response = send("POST", &url, Some(&json!({})), &headers, proxy.as_ref()).await?;
     let data = unwrap(&response, "auth/state")?;
     let state = data
         .get("state")
@@ -110,7 +113,7 @@ pub(super) async fn login_start(region: Region) -> Result<proto::LoginStart, Gat
         Ok(mut table) => {
             // 顺手清掉过期条目（没有后台定时器，取用时扫一遍）
             table.retain(|_, flow| started_at.saturating_sub(flow.started_at) < FLOW_KEEP_MS);
-            table.insert(state.clone(), Flow { region, started_at });
+            table.insert(state.clone(), Flow { region, context: context.clone(), proxy: proxy.clone(), started_at });
         }
         Err(_) => {
             return Err(GatewayError::with_status(
@@ -159,10 +162,13 @@ pub(super) async fn login_poll(
         });
     }
 
-    let context = context_for(region);
-    let headers = anonymous_headers();
+    let (context, proxy) = flows().lock().ok().and_then(|table| table.get(state)
+        .filter(|flow| flow.region == region && logging::now_ms().saturating_sub(flow.started_at) < FLOW_KEEP_MS)
+        .map(|flow| (flow.context.clone(), flow.proxy.clone())))
+        .ok_or_else(|| GatewayError::with_status(410, "登录流程已经过期"))?;
+    let headers = super::contract::login_headers(region, &context.authority(), false);
     let url = context.auth_url(&format!("/auth/token?state={}", encode(state)));
-    let token_data = match send("GET", &url, None, &headers).await {
+    let token_data = match send("GET", &url, None, &headers, proxy.as_ref()).await {
         Ok(response) => match unwrap(&response, "auth/token") {
             Ok(data) => data,
             Err(error) => {
@@ -194,7 +200,7 @@ pub(super) async fn login_poll(
     if let Ok(mut table) = flows().lock() {
         table.remove(state);
     }
-    let secret = build_secret(&token_data, state, &context, region).await;
+    let secret = build_secret(&token_data, state, &context, region, proxy.as_ref()).await;
     let uid = crate::store::pick(&secret, &["uid"]);
     if uid.is_empty() {
         return Ok(proto::LoginPoll::Failed {
@@ -236,12 +242,12 @@ pub(super) fn login_cancel(state: &str) {
 /// 第三步是**网络之外**的来源，不能省：前两步都是网络调用，任何一条卡住
 /// 就会把整轮登录作废（2026-10-03 实测：国际版授权已成功、token 也拿到了，
 /// 只因 `login/account` 连了 30 秒没连上，用户看到的就是「缺少 uid」）。
-async fn build_secret(auth: &Value, state: &str, context: &Context, region: Region) -> Value {
+async fn build_secret(auth: &Value, state: &str, context: &Context, region: Region,
+    proxy: Option<&agent2api_provider_protocol::WireProxy>) -> Value {
     let enriched = with_expires_at(auth.clone());
     let mut account = Value::Object(serde_json::Map::new());
     if !state.is_empty() {
-        // 登录时机还没有任何账号上下文，因此出口固定为直连（与网关同口径）
-        match fetch_login_account(&enriched, state, context).await {
+        match fetch_login_account(&enriched, state, context, proxy).await {
             Ok(data) if data.is_object() => account = data,
             Ok(_) => {}
             Err(error) => logging::verbose(
@@ -250,7 +256,7 @@ async fn build_secret(auth: &Value, state: &str, context: &Context, region: Regi
             ),
         }
     }
-    let accounts = match fetch_accounts(&enriched, context).await {
+    let accounts = match fetch_accounts(&enriched, context, proxy).await {
         Ok(list) => list,
         Err(error) => {
             logging::log(
@@ -303,7 +309,7 @@ fn secret_of(account: &Value, auth: &Value, context: &Context, region: Region) -
     secret.insert("uid".to_string(), Value::String(uid.clone()));
     let access_token = text(auth, "accessToken");
     secret.insert("accessToken".to_string(), Value::String(access_token.clone()));
-    for key in ["refreshToken", "domain"] {
+    for key in ["refreshToken", "domain", "tokenType"] {
         let value = text(auth, key);
         if !value.is_empty() {
             secret.insert(key.to_string(), Value::String(value));
@@ -322,10 +328,11 @@ fn secret_of(account: &Value, auth: &Value, context: &Context, region: Region) -
         "enterpriseId",
         "enterpriseName",
         "departmentFullName",
+        "oneidAccountId",
+        "idp",
     ] {
-        let value = text(account, key);
-        if !value.is_empty() {
-            secret.insert(key.to_string(), Value::String(value));
+        if let Some(value) = account.get(key).filter(|value| value.is_string()) {
+            secret.insert(key.to_string(), value.clone());
         }
     }
     // 端点三项：登录时的上下文就是这次账号的落点（staging / 自建网关也走它）
@@ -364,21 +371,34 @@ async fn fetch_login_account(
     auth: &Value,
     state: &str,
     context: &Context,
+    proxy: Option<&agent2api_provider_protocol::WireProxy>,
 ) -> Result<Value, GatewayError> {
     let mut headers = bearer_headers(auth, context);
-    headers.push(("X-No-User-Id".to_string(), "true".to_string()));
-    headers.push(("X-No-Enterprise-Id".to_string(), "true".to_string()));
-    headers.push(("X-No-Department-Info".to_string(), "true".to_string()));
-    let url = context.auth_url(&format!("/login/account?state={}", encode(state)));
-    let response = send("GET", &url, None, &headers).await?;
-    unwrap(&response, "login/account")
+    let intl = context.edition == "intl";
+    if intl {
+        for name in ["X-No-User-Id", "X-No-Enterprise-Id", "X-No-Department-Info"] {
+            headers.push((name.into(), "true".into()));
+        }
+    }
+    let path = if intl { format!("/login/account?state={}", encode(state)) } else { "/account".into() };
+    let url = context.auth_url(&path);
+    for attempt in 0..6 {
+        let response = send("GET", &url, None, &headers, proxy).await?;
+        match unwrap(&response, "account") {
+            Err(error) if error.upstream_code == Some(12151) && attempt < 5 => {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            result => return result,
+        }
+    }
+    Err(GatewayError::with_status(502, "登录账号资料未就绪"))
 }
 
 /// `GET /accounts`（网关 `AuthService::fetch_accounts` 的插件侧副本）。
-async fn fetch_accounts(auth: &Value, context: &Context) -> Result<Vec<Value>, GatewayError> {
+async fn fetch_accounts(auth: &Value, context: &Context, proxy: Option<&agent2api_provider_protocol::WireProxy>) -> Result<Vec<Value>, GatewayError> {
     let headers = bearer_headers(auth, context);
     let url = context.auth_url("/accounts");
-    let response = send("GET", &url, None, &headers).await?;
+    let response = send("GET", &url, None, &headers, proxy).await?;
     let data = unwrap(&response, "accounts")?;
     Ok(data
         .get("accounts")
@@ -389,17 +409,9 @@ async fn fetch_accounts(auth: &Value, context: &Context) -> Result<Vec<Value>, G
 
 /// 企业扩展头 + Bearer（网关 `AuthService::enterprise_headers` + Authorization）。
 fn bearer_headers(auth: &Value, context: &Context) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = Vec::new();
-    if let Some(enterprise_id) = auth
-        .get("account")
-        .and_then(|account| account.get("enterpriseId"))
-        .and_then(Value::as_str)
-    {
-        if !enterprise_id.is_empty() {
-            headers.push(("X-Enterprise-Id".to_string(), enterprise_id.to_string()));
-            headers.push(("X-Tenant-Id".to_string(), enterprise_id.to_string()));
-        }
-    }
+    let region = Region::from_edition_id(Some(&context.edition));
+    let session = json!({ "auth": auth, "account": auth.get("account").unwrap_or(&Value::Null) });
+    let mut headers = super::contract::framework_headers(&session, region, true);
     // 总是带 X-Domain（`auth.domain` 缺省时回退端点 authority）
     let domain = auth
         .get("domain")
@@ -407,11 +419,9 @@ fn bearer_headers(auth: &Value, context: &Context) -> Vec<(String, String)> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| context.authority());
-    if !domain.is_empty() {
+    if !domain.is_empty() && !headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("X-Domain")) {
         headers.push(("X-Domain".to_string(), domain));
     }
-    let token = auth.get("accessToken").and_then(Value::as_str).unwrap_or("");
-    headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     headers
 }
 
@@ -422,7 +432,7 @@ fn bearer_headers(auth: &Value, context: &Context) -> Vec<(String, String)> {
 /// 鉴权判定，token 能不能用由上游说了算。
 fn account_from_token_claims(auth: &Value) -> Option<Value> {
     let token = auth.get("accessToken").and_then(Value::as_str)?;
-    let claims = crate::providers::raccoon::jwt::decode_jwt_claims(token)?;
+    let claims = crate::crypto::decode_jwt_claims(token)?;
     let uid = text_of(&claims, &["sub", "userId", "uid"]);
     if uid.is_empty() {
         return None;
@@ -505,22 +515,15 @@ fn context_for(region: Region) -> Context {
     )
 }
 
-/// 匿名登录请求的头（跳过鉴权的那四个 `X-No-*`）。
-fn anonymous_headers() -> Vec<(String, String)> {
-    ANONYMOUS_HEADERS
-        .iter()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
-}
-
-/// 发一次请求（登录时机没有账号上下文，固定直连）。
+/// 发一次请求（沿用本次登录发起时的出口）。
 async fn send(
     method: &str,
     url: &str,
     body: Option<&Value>,
     headers: &[(String, String)],
+    proxy: Option<&agent2api_provider_protocol::WireProxy>,
 ) -> Result<ApiResponse, GatewayError> {
-    send_raw(method, url, body, headers, None, Some(REQUEST_TIMEOUT_MS))
+    send_raw(method, url, body, headers, proxy, Some(REQUEST_TIMEOUT_MS))
         .await
         .map_err(|error| {
             if error.is_timeout() {

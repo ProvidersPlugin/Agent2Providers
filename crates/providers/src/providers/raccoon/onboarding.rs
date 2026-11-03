@@ -199,11 +199,13 @@ async fn probe_grant(
             "该账号没有可用凭证，无法领取新手任务",
         ));
     }
-    let headers = if task.mobile {
+    let mut headers = if task.mobile {
         mobile_client_headers()
     } else {
         desktop_client_headers()
     };
+    super::headers::append_org(&mut headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
     request_json_ex(
         &main_site_url(),
         "POST",
@@ -219,8 +221,11 @@ async fn probe_grant(
 ///
 /// 实际数额以响应 `popup.points` 为准（手机端实测带该字段），取不到回落名义值
 /// —— `granted=false` 时本轮没有入账，分值记 0。
-fn granted_outcome(data: &Value) -> (bool, i64) {
-    let granted = data.get("granted").and_then(Value::as_bool) == Some(true);
+fn granted_outcome(data: &Value) -> Result<(bool, i64), GatewayError> {
+    let granted = data
+        .get("granted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| GatewayError::with_status(502, "登录奖励响应缺少 granted，尚未确认领取"))?;
     let points = if granted {
         data.pointer("/popup/points")
             .and_then(Value::as_i64)
@@ -229,7 +234,7 @@ fn granted_outcome(data: &Value) -> (bool, i64) {
     } else {
         0
     };
-    (granted, points)
+    Ok((granted, points))
 }
 
 /// 查询任务状态（`GET /api/accounts/{id}/onboarding` 的小浣熊执行体，只读：
@@ -260,7 +265,11 @@ pub async fn get_tasks(
     // 顺手把「已结清」快照对齐一次：用户可能在官方客户端里领过（上游返回过
     // granted=false），那时台账已结算但快照还没写 —— 签到中心下次进页面才会
     // 走记忆路径。这里零上游请求，只是一次本地台账写。
-    let settled_at = if unclaimed == 0 { settled_at_of(&ledger) } else { 0 };
+    let settled_at = if unclaimed == 0 {
+        settled_at_of(&ledger)
+    } else {
+        0
+    };
     remember_settled(ctx, account_id, &rows, &ledger, unclaimed, settled_at).await;
     Ok(json!({
         "tasks": rows,
@@ -305,9 +314,11 @@ pub async fn claim_all(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gatew
         if settled_at(&ledger_before, task.key) > 0 {
             continue;
         }
-        match probe_grant(ctx, account_id, task).await {
-            Ok(data) => {
-                let (granted, points) = granted_outcome(&data);
+        match probe_grant(ctx, account_id, task)
+            .await
+            .and_then(|data| granted_outcome(&data))
+        {
+            Ok((granted, points)) => {
                 claimed += 1;
                 claimed_points += points;
                 settled.insert(task.key.to_string(), Value::from(now));
@@ -320,12 +331,18 @@ pub async fn claim_all(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gatew
                 if granted {
                     crate::logging::log(
                         "[Onboarding]",
-                        &format!("小浣熊账号 {account_id}：「{}」已发放（+{points}）", task.title),
+                        &format!(
+                            "小浣熊账号 {account_id}：「{}」已发放（+{points}）",
+                            task.title
+                        ),
                     );
                 } else {
                     crate::logging::log(
                         "[Onboarding]",
-                        &format!("小浣熊账号 {account_id}：「{}」此前已发放，跳过重复加分", task.title),
+                        &format!(
+                            "小浣熊账号 {account_id}：「{}」此前已发放，跳过重复加分",
+                            task.title
+                        ),
                     );
                 }
             }
@@ -336,7 +353,10 @@ pub async fn claim_all(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gatew
                 failed += 1;
                 crate::logging::verbose(
                     "[Onboarding]",
-                    &format!("小浣熊账号 {account_id}：「{}」领取失败: {}", task.title, error.message),
+                    &format!(
+                        "小浣熊账号 {account_id}：「{}」领取失败: {}",
+                        task.title, error.message
+                    ),
                 );
                 rows.push(json!({
                     "key": task.key,

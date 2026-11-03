@@ -6,7 +6,10 @@ mod accounts;
 mod api;
 mod catalog;
 mod chat;
+mod client;
+mod cookies_db;
 mod desktop;
+mod image_generation;
 mod login;
 mod prompt;
 mod quota;
@@ -36,7 +39,7 @@ impl Provider for DoubaoWorkProvider {
                     label: "Cookie".into(), placeholder: "sessionid=…; sessionid_ss=…（或 Cookie JSON）".into(), extra_fields: vec![],
                 },
                 proto::LoginMethod::Desktop {
-                    button: "导入本机登录态".into(), hint: Some("读取本机已登录客户端，需使用 --remote-debugging-port=9342 启动；不修改或重启客户端。".into()),
+                    button: "导入本机登录态".into(), hint: Some("直接读取本机客户端的登录数据并复制一份存进账号（不需要调试端口）；之后查余额、对话都不再依赖客户端，也不会修改或重启它。".into()),
                 },
             ])
             .with_account_features(proto::AccountFeatures {
@@ -148,6 +151,21 @@ impl Provider for DoubaoWorkProvider {
 
     fn classify(&self, status: u16, body: &Value) -> proto::ErrorClass {
         api::classify(status, body)
+    }
+
+    /// 生图：上游没有独立图片接口，出图是对话流里的一次 `image_gen` 任务
+    /// （见 `image_generation` 模块头）。编辑（参考图）不支持 ——
+    /// 上报 false，网关就不会把 `/v1/images/edits` 派到本家。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn build_image<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        req: agent2api_provider_sdk::images::ImageRequest,
+    ) -> SendFuture<'a, agent2api_provider_sdk::images::ImagePlan> {
+        Box::pin(image_generation::build(ctx, req))
     }
 
     fn reasoning_patch(&self, level: &str, _model: &str, body: &Value) -> proto::ReasoningPatch {

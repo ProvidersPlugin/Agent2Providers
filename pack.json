@@ -3,7 +3,7 @@
   "name": "提供商增强",
   "description": "为 Agent2API 扩展多家 AI 提供商，提供模型调用、账号登录与导入、凭证续期、模型目录、余额查询和签到等能力。具体功能以各提供商的支持情况为准。",
   "license": "AGPL-3.0",
-  "version": "3.3.0-beta.6",
+  "version": "3.4.0",
   "protocol": 1,
   "providers": [
     {
@@ -145,9 +145,21 @@
       "default_enabled": true
     },
     {
+      "id": "qwenwork",
+      "label": "千问办公 国内版",
+      "order": 24,
+      "default_enabled": true
+    },
+    {
+      "id": "qwenwork-intl",
+      "label": "千问办公 国际版",
+      "order": 25,
+      "default_enabled": true
+    },
+    {
       "id": "trae",
       "label": "Trae",
-      "order": 24,
+      "order": 26,
       "default_enabled": true
     },
     {

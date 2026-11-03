@@ -8,11 +8,7 @@
 //!
 //! 判定顺序：401 身份失效、其它非 2xx、业务码失败；403 保留上游拒绝原因。
 //!
-//! ── 头集合为什么不复用转发那套 ──────────────────────────────
-//! 计费版的 `build_headers` 与转发版的 `build_auth_headers` **不能互相替换**：
-//! 前者固定带 `Content-Type` / `Accept`、`X-User-Id` 缺省给空串、无 token 也给
-//! `Bearer `，且不带 `X-Department-Info`。这些差别是上游两个 buildHeaders 各自
-//! 的实现决定的（见 `billing::headers`）。
+//! 计费使用后台请求框架的身份头；对话专属头不应进入这条链路。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -25,9 +21,7 @@ use crate::errors::GatewayError;
 use crate::http::send_raw;
 use crate::logging;
 
-use crate::workbuddy_shared::endpoints::{
-    normalize_endpoint, DEFAULT_ENDPOINT, RESPONSE_CODE_OK,
-};
+use crate::workbuddy_shared::endpoints::RESPONSE_CODE_OK;
 use super::headers::{build_headers, whitelist_headers};
 
 /// 计费接口的请求超时（与网关 `billing::REQUEST_TIMEOUT_MS` 同档）。
@@ -95,13 +89,8 @@ pub(super) async fn call(
 ) -> Result<BillingCall, GatewayError> {
     // 账户级端点：国内版/国际版账号各走自己的站点。会话缺 endpoint 时回落到
     // 该账号所属地区的默认端点（由调用方在 session 里补好，见 `workbuddy::mod`）。
-    let endpoint = session
-        .get("endpoint")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalize_endpoint)
-        .unwrap_or_else(|| normalize_endpoint(DEFAULT_ENDPOINT));
+    let region = super::super::Region::from_edition_id(session.get("edition").and_then(Value::as_str));
+    let endpoint = super::super::session_endpoint_of(session, region);
     let base = options.base.map(str::to_string).unwrap_or(endpoint);
     let url = format!("{base}{path}{}", options.query.unwrap_or(""));
 

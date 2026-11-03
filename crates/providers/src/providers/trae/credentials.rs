@@ -11,8 +11,8 @@
 //! 它们必须与凭据同生共死：换掉它们等于换了一台设备，社区明确把
 //! "每次随机 deviceId" 标成风控隐患。
 //!
-//! `variant` 决定 ClientID / 平台码 / 目录血统，缺省按 `solo`
-//! （本仓只服务 SOLO 通道，见 `mod.rs` 模块头）。
+//! `variant` 只决定凭据的 ClientID / 平台码，缺省按 `solo`；
+//! 聊天 function 从模型目录读取，不再由凭据谱系决定。
 
 use serde_json::Value;
 
@@ -53,7 +53,7 @@ pub struct Credential {
     /// 字段叫 `authClientId`）。
     ///
     /// ── 为什么它必须落盘，而不是按 variant 现推 ──────────────
-    /// `variant` 是**转发面**的谱系（本家只服务 SOLO 通道），`ClientID` 是
+    /// `variant` 是凭据的历史谱系标记，`ClientID` 是
     /// **凭据的归属**。两者可以不一致：生产实测（2026-10-02，NAS 三条从 CPA
     /// 迁来的账号）库里 `variant=solo`，而 CPA 盘上的 `authClientId` 与当年
     /// 换证响应的 `Result.ClientID` 都是非 solo 的 `ono9krqynydwx5`。按
@@ -67,14 +67,9 @@ pub struct Credential {
 
 /// 国际版谱系（`intl` / `solo-intl`）。
 ///
-/// 本家**只接了国内 SOLO 那一条通道**：`trae-api-cn.mchost.guru` 上的
-/// `llm_utils_chat` + `solo_work_lite`，目录与积分两条链也都是 CN 域名。
-/// 国际版走的是另一套两步协议（`core-normal.trae.ai/api/remote/v1/chat_sessions`
-/// → `GET …/{id}/events`，`Origin`/`Referer` 必须是 `work.trae.ai`，流还是
-/// 累积式要还原增量），没实现之前这类凭据**不能落账号** —— 收下它只会在
-/// 第一次转发时收到一句来自 CN host 的 401，用户完全看不出是谱系不对。
-/// 判据本身是大小写无关的（`Credential::variant()` 归一后才走到闸门，
-/// 但这条函数也可能被别处直接拿去问原始值，所以不依赖调用前先归一）。
+/// 本 provider 只服务国内账号，国际版必须另立身份与目录。
+/// 两地令牌不通用，不能因为共用部分聊天信封就放行国际版凭据。
+/// 大小写无关，账号导入与转发入口使用同一道闸门。
 ///
 /// 反向验证：本家两处闸门（落账号与转发）都是拿**归一后**的值问它，
 /// 因此"未知值兜到 solo"这条老规则不会被误伤成"Intl 被放行"。
@@ -83,7 +78,7 @@ pub fn is_intl_variant(variant: &str) -> bool {
 }
 
 /// 拒绝 Intl 谱系时给的那句理由（三处入口共用一份文案，别说三种话）。
-pub const INTL_UNSUPPORTED: &str = "Trae 国际版（intl / solo-intl）暂未接入：本家只支持国内 SOLO 通道，国际版是另一套两步协议（chat_sessions → events）。请在 trae.cn 登录后再添加，或等 Intl 通道接入；国内 `cn` 与 `solo` 两个谱系在转发面等价（都发 solo_work_lite），不在此列。";
+pub const INTL_UNSUPPORTED: &str = "Trae 国际版（intl / solo-intl）暂未接入：本提供商支持 trae.cn 国内账号，按模型目录选择 Agent / IDE 聊天通道。请使用国内账号；国际版需要独立的提供商身份与目录，不能复用国内令牌。";
 
 impl Credential {
     pub fn valid(&self) -> bool {
@@ -94,7 +89,7 @@ impl Credential {
         !self.refresh_token.trim().is_empty()
     }
 
-    /// 上游 `function` 与 ClientID 都按 variant 选，未知值兜到 solo。
+    /// ClientID 按 variant 选，未知值兜到 solo。
     pub fn variant(&self) -> &str {
         match self.variant.as_str() {
             "cn" | "solo" | "intl" | "solo-intl" => &self.variant,
@@ -159,7 +154,8 @@ impl Credential {
     /// 有效到期时刻：JWT 声明优先（`exp`，缺席时退中国版自定义的 `TokenExpireAt`），
     /// 落盘字段兜底。
     pub fn effective_expiry_ms(&self) -> i64 {
-        self.jwt_expires_at_ms().unwrap_or_else(|| self.expires_at_ms())
+        self.jwt_expires_at_ms()
+            .unwrap_or_else(|| self.expires_at_ms())
     }
 
     /// 是否需要续期：临期（`lead` 之内）**或**签发龄超过 `max_age`。
@@ -185,7 +181,10 @@ impl Credential {
     /// 蛇形键**直接报错**而不是当空凭据收下 —— 那是别家的形状，
     /// 静默接受会让一个明显有数据的账号显示成"缺凭据"。
     pub fn from_payload(payload: &Value) -> Result<Self, String> {
-        let auth = payload.get("auth").filter(|value| value.is_object()).unwrap_or(payload);
+        let auth = payload
+            .get("auth")
+            .filter(|value| value.is_object())
+            .unwrap_or(payload);
         let account = payload.get("account").filter(|value| value.is_object());
         let text = text_of;
         let number = |object: &Value, key: &str| -> i64 {
@@ -252,10 +251,16 @@ impl Credential {
             ("variant", json_or_empty(self.variant())),
         ];
         if !self.device_public_key.is_empty() {
-            fields.push(("devicePublicKey", Value::String(self.device_public_key.clone())));
+            fields.push((
+                "devicePublicKey",
+                Value::String(self.device_public_key.clone()),
+            ));
         }
         if !self.device_private_key.is_empty() {
-            fields.push(("devicePrivateKey", Value::String(self.device_private_key.clone())));
+            fields.push((
+                "devicePrivateKey",
+                Value::String(self.device_private_key.clone()),
+            ));
         }
         // 只在知道的时候写：空串落盘会把 CPA 那边迁来的 `authClientId` 抹掉，
         // 而那个值一旦没了，续期就又只能按 variant 猜（猜错就是今天的 10101）
@@ -275,8 +280,14 @@ fn json_or_empty(value: &str) -> Value {
 /// 参考实现把身份放在 `account{uid,nickname,enterpriseId}`，而手工粘贴的
 /// 凭据常常是平铺的 —— 两个位置都读一次，才不会让"明明填了昵称却显示空"。
 fn text_either(account: Option<&Value>, auth: &Value, key: &str) -> String {
-    let from_account = account.map(|object| text_of(object, key)).unwrap_or_default();
-    if from_account.is_empty() { text_of(auth, key) } else { from_account }
+    let from_account = account
+        .map(|object| text_of(object, key))
+        .unwrap_or_default();
+    if from_account.is_empty() {
+        text_of(auth, key)
+    } else {
+        from_account
+    }
 }
 
 fn text_of(object: &Value, key: &str) -> String {
@@ -310,4 +321,3 @@ fn jwt_claim(token: &str, claim: &str) -> Option<i64> {
     }
     .map(|number| number as i64)
 }
-

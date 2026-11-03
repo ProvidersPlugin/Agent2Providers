@@ -79,12 +79,7 @@ pub async fn build(ctx: &PluginCtx, req: ImageRequest) -> Result<ImagePlan, Stri
     }
     Ok(ImagePlan::openai(
         format!("{}/images/generations", super::endpoints::model_base_url()),
-        vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Accept".to_string(), "application/json".to_string()),
-            ("token".to_string(), token.clone()),
-            ("Authorization".to_string(), format!("Bearer {token}")),
-        ],
+        super::request_headers::images(&token, &req.headers),
         body,
     ))
 }

@@ -107,11 +107,15 @@ pub fn headers(credentials: &Value) -> Result<Vec<(String, String)>, GatewayErro
     ])
 }
 
-pub fn request(
-    client: &reqwest::Client,
-    credentials: &Value,
-    path: &str,
-) -> Result<reqwest::RequestBuilder, GatewayError> {
+/// 组装一次上游请求的完整地址（含查询串）。
+///
+/// ── 为什么单独拆出来 ────────────────────────────────────────
+/// Images 扩展只交「地址 + 请求头 + 请求体」，不经 `reqwest` 的查询串编码，
+/// 但它必须用**同一份**查询参数：豆包风控认的是「这个账号在这台受信设备上」
+/// （见 [`super::client`] 模块头），少了 `device_id` / `fp` 一定会被人机验证
+/// 拦下 —— 生图走的就是同一个 `/chat/completion`，没有例外。所以两边共用本
+/// 函数，编码按 [`encode`] 的 RFC3986 未保留字符集自己来。
+pub fn endpoint(credentials: &Value, path: &str) -> Result<String, GatewayError> {
     let client_version = credentials["clientVersion"]
         .as_str()
         .map(str::trim)
@@ -136,8 +140,15 @@ pub fn request(
         ("region", "CN".into()),
         ("sys_region", "CN".into()),
     ];
+    // 设备号：先用账号自己的（网页登录态里可能带 `device_id` Cookie），没有
+    // 就兜底读本机豆包工作客户端的 —— 风控认的是「这个账号在这台受信设备上」，
+    // 不读客户端的设备号，转发一定会被人机验证拦下（见 `client` 模块头的实测）。
+    let device = credentials["deviceId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(super::client::device_id);
     for (wire, field) in [
-        ("device_id", "deviceId"),
         ("web_id", "webId"),
         ("chromium_version", "chromiumVersion"),
         ("channel", "channel"),
@@ -149,10 +160,8 @@ pub fn request(
             query.push((wire, value.into()));
         }
     }
-    if let Some(device) = credentials["deviceId"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(device) = device.as_deref() {
+        query.push(("device_id", device.into()));
         query.push(("fp", format!("verify_{device}")));
     } else if let Some(fingerprint) = credentials["fingerprint"]
         .as_str()
@@ -160,11 +169,107 @@ pub fn request(
     {
         query.push(("fp", fingerprint.into()));
     }
-    let mut builder = client.post(format!("{BASE_URL}{path}")).query(&query);
+    let query = query
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode(key), encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Ok(format!("{BASE_URL}{path}?{query}"))
+}
+
+pub fn request(
+    client: &reqwest::Client,
+    credentials: &Value,
+    path: &str,
+) -> Result<reqwest::RequestBuilder, GatewayError> {
+    let mut builder = client.post(endpoint(credentials, path)?);
     for (key, value) in headers(credentials)? {
         builder = builder.header(key, value);
     }
     Ok(builder)
+}
+
+/// 上游文案的统一前缀。
+const LABEL: &str = "豆包工作：";
+
+/// 给上游文案加一次「豆包工作：」前缀（**幂等**）。
+///
+/// ── 为什么必须幂等 ──────────────────────────────────────────
+/// 转发失败时插件先把错误体（[`error_body`]）推给宿主，宿主紧接着又拿
+/// **同一个体**回头调 `classify`；`classify` 会再走一次 [`error`]。不幂等的话
+/// 用户看到的是「豆包工作：豆包工作：rate limited」—— 同一件事说两遍，还把
+/// 真正有用的那半句挤到了后面（2026-11-02 在真实账号上逐字抓到）。
+///
+/// 判据用「是否已带前缀」而不是「调用次数」：两侧都可能先跑（宿主读 head 的
+/// 错误体 / 先到的正文），靠计数去重会在任何一条路径改动后失效。
+fn label_once(message: &str) -> String {
+    if message.starts_with(LABEL) {
+        message.to_string()
+    } else {
+        format!("{LABEL}{message}")
+    }
+}
+
+/// 上游风控的人机验证判据：命中时返回场景名（如 `doubao_message_web`）。
+///
+/// ── 为什么必须单独认这一档 ──────────────────────────────────
+/// 豆包风控（`shark_admin`）把「要人工过滑块」伪装成
+/// `error_code=710022004 / error_msg=rate limited`：照字面读就是一条账号限额，
+/// 于是用户看到的文案既说不清原因、也给不出下一步。实测（2026-11-02，两个
+/// 账号复现）：去掉 `pc_version`、换参数组合、用浏览器 TLS 指纹重发，全都被
+/// 同样拦下 —— 它是**账号 / 出口 IP 级的风控**，重发不会通过。
+///
+/// 真类型只写在 `extra.decision` 里（一段 JSON **字符串**）：
+/// `{"from":"shark_admin","type":"verify","subtype":"slide","verify_scene":"…"}`。
+/// 只认 `type=verify`，解析不出来就当普通错误，不去猜。
+fn risk_verify(value: &Value) -> Option<String> {
+    /// `decision` 里还塞着一段加密的挑战载荷，给个上限免得为一条错误体做大解析。
+    const MAX_DECISION: usize = 64 * 1024;
+    let extra = value
+        .get("extra")
+        .filter(|value| value.is_object())
+        .unwrap_or(value);
+    let decision = extra.get("decision").or_else(|| value.get("decision"))?;
+    let parsed = match decision {
+        Value::String(text) if text.len() <= MAX_DECISION => {
+            serde_json::from_str::<Value>(text).ok()?
+        }
+        Value::Object(_) => decision.clone(),
+        _ => return None,
+    };
+    if parsed.get("type").and_then(Value::as_str) != Some("verify") {
+        return None;
+    }
+    Some(
+        parsed
+            .get("verify_scene")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+/// 风控要求人工验证时的文案：说清「这不是额度问题」与「下一步做什么」。
+///
+/// 状态码仍取 **429** —— 编排层对此的处置正是我们要的（把这个账号从本模型上
+/// 挪开、换下一个候选），而 `mod.rs` 的 `classify` 按状态码分档，改动它的语义
+/// 会牵动「退避 / 熔断」那一套（那是给瞬时故障准备的，对一个需要人工介入的
+/// 账号更不合适）。
+///
+/// 文案里点明「所有模型都会被拦」：实测症状正是「请求任何模型都是同一条
+/// 429」，不写清的话用户会逐个模型试过去（2026-11-02 的原始报告就是这样）。
+fn verify_message(scene: &str) -> String {
+    let scene = scene.trim();
+    let scene = if scene.is_empty() {
+        String::new()
+    } else {
+        format!("（场景 {scene}）")
+    };
+    format!(
+        "触发了豆包上游的人机验证{scene}，不是账号额度问题（该账号当前所有模型都会被拦下）：\
+         请在该账号的豆包网页端发一条消息、完成滑块验证后重试；\
+         也可以等待约 30 分钟或更换出口网络再试。"
+    )
 }
 
 pub fn error(status: u16, value: &Value) -> GatewayError {
@@ -182,6 +287,16 @@ pub fn error(status: u16, value: &Value) -> GatewayError {
         .find_map(|key| detail[*key].as_str().filter(|text| !text.trim().is_empty()))
         .or_else(|| value.as_str())
         .unwrap_or("上游返回了无法解析的错误");
+    // 风控挑战先于状态码映射：`710022004` 只是它的外壳码，将来上游换码时
+    // 「是不是人机验证」仍由 `extra.decision` 说了算。
+    if let Some(scene) = risk_verify(value) {
+        crate::logging::verbose(
+            "[DoubaoWork]",
+            &format!("上游要求人机验证（场景 {scene}），原始文案：{message}"),
+        );
+        return GatewayError::with_status(429, label_once(&verify_message(&scene)))
+            .with_optional_code(code.and_then(|code| i64::try_from(code).ok()));
+    }
     let lower = message.to_ascii_lowercase();
     let status = if matches!(code, Some(710012001))
         || status == 401
@@ -196,7 +311,7 @@ pub fn error(status: u16, value: &Value) -> GatewayError {
     } else {
         502
     };
-    GatewayError::with_status(status as i32, format!("豆包工作：{message}"))
+    GatewayError::with_status(status as i32, label_once(message))
         .with_optional_code(code.and_then(|code| i64::try_from(code).ok()))
 }
 
@@ -283,6 +398,17 @@ pub async fn account(
                 401,
                 "豆包工作客户端已切换账号，请重新导入当前登录态",
             ));
+        }
+        // 旧版「只存身份」的记录：这次既然已经从客户端读到了登录态，顺手存一份
+        // 快照（见 `accounts::upgrade_snapshot`），下次客户端不在也能用。
+        // 失败不影响本次请求 —— 升级只是顺手，不是前置条件。
+        if let Some(upgraded) = super::accounts::upgrade_snapshot(&found.secret, &credentials) {
+            if let Err(error) = ctx.store_update(&found.id, &found.secret, &upgraded).await {
+                crate::logging::verbose(
+                    "[DoubaoWork]",
+                    &format!("旧账号升级为登录态快照失败（本次仍可用）：{error}"),
+                );
+            }
         }
     }
     Ok((found.id, credentials, client))

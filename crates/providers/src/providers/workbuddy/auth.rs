@@ -27,6 +27,8 @@ pub struct RefreshedAuth {
     pub refresh_token: Option<String>,
     pub expires_at: Option<f64>,
     pub refresh_expires_at: Option<f64>,
+    pub domain: Option<Value>,
+    pub token_type: Option<Value>,
 }
 
 /// 转发请求上的鉴权头（网关 `AuthService::build_auth_headers` 的逐字副本）。
@@ -64,32 +66,6 @@ pub fn build_auth_headers(session: &Value) -> Vec<(String, String)> {
         if !department.is_empty() {
             headers.push(("X-Department-Info".to_string(), department.to_string()));
         }
-    }
-    headers
-}
-
-/// 企业扩展头（网关 `enterprise_headers` 的逐字副本）：总是带 `X-Domain`
-/// （取 `auth.domain`，缺失时回退端点 authority）。
-fn enterprise_headers(auth: &Value, context: &Context) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = Vec::new();
-    if let Some(enterprise_id) = auth
-        .get("account")
-        .and_then(|account| account.get("enterpriseId"))
-        .and_then(Value::as_str)
-    {
-        if !enterprise_id.is_empty() {
-            headers.push(("X-Enterprise-Id".to_string(), enterprise_id.to_string()));
-            headers.push(("X-Tenant-Id".to_string(), enterprise_id.to_string()));
-        }
-    }
-    let domain = auth
-        .get("domain")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| context.authority());
-    if !domain.is_empty() {
-        headers.push(("X-Domain".to_string(), domain));
     }
     headers
 }
@@ -173,6 +149,8 @@ fn refresh_result_from(data: &Value) -> RefreshedAuth {
             .get("refreshExpiresAt")
             .and_then(Value::as_f64)
             .filter(|value| *value > 0.0),
+        domain: data.get("domain").cloned(),
+        token_type: data.get("tokenType").cloned(),
     }
 }
 
@@ -256,11 +234,13 @@ pub async fn refresh_session(
             "缺少 refreshToken，无法续期，请重新登录",
         ));
     }
-    let mut headers = enterprise_headers(auth, context);
+    let region = super::Region::from_edition_id(Some(&context.edition));
+    let session = json!({ "auth": auth, "account": auth.get("account").unwrap_or(&Value::Null) });
+    let mut headers = super::contract::framework_headers(&session, region, false);
     headers.push(("X-Refresh-Token".to_string(), refresh_token.to_string()));
-    headers.push(("X-Auth-Refresh-Source".to_string(), "plugin".to_string()));
     let url = context.auth_url("/auth/token/refresh");
-    let response = send_raw("POST", &url, Some(&json!({})), &headers, proxy, None)
+    let response = send_raw("POST", &url, Some(&json!({})), &headers, proxy,
+        Some(if region == super::Region::Cn { 8_000 } else { 30_000 }))
         .await
         .map_err(|error| {
             if error.is_timeout() {

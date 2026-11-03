@@ -10,9 +10,9 @@ use serde_json::Value;
 use crate::errors::GatewayError;
 use crate::logging;
 
-use super::plans::{identifier, ClaimablePlan};
+use super::plans::{identifier, ClaimablePlan, OwnedPlan};
 use super::super::{captcha, region::Region};
-use super::{claim_upstream, marketing, ClaimFailure, ClaimOutcome};
+use super::{app_version, claim_upstream, marketing, ownership, ClaimFailure, ClaimOutcome};
 
 const LEDGER_KIND: &str = "zcodeClaimPlans";
 const MAX_SAVED_PLANS: usize = 256;
@@ -25,6 +25,12 @@ struct Ledger {
     identity: String,
     #[serde(default)]
     plans: BTreeMap<String, SavedPlan>,
+    #[serde(default)]
+    checkin_targets: BTreeMap<String, i64>,
+    #[serde(default)]
+    checkin_sources_at: Option<i64>,
+    #[serde(default)]
+    checkin_sources_complete: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -34,77 +40,185 @@ struct SavedPlan {
     #[serde(default)]
     claimed_at: Option<i64>,
     #[serde(default)]
+    claim_starts_at: Option<i64>,
+    #[serde(default)]
+    claim_ends_at: Option<i64>,
+    #[serde(default)]
+    owned: Option<OwnedPlan>,
+    #[serde(default)]
+    rejection: Option<Rejection>,
+    #[serde(default)]
     confirmed_campaigns: Vec<String>,
+}
+
+impl SavedPlan {
+    fn new(plan: &ClaimablePlan) -> Self {
+        Self {
+            plan: plan.clone(), seen_at: crate::http::now_ms(), claimed_at: None,
+            claim_starts_at: None, claim_ends_at: None, owned: None, rejection: None,
+            confirmed_campaigns: Vec::new(),
+        }
+    }
+
+    fn claimed_for(&self, plan: &ClaimablePlan) -> bool {
+        self.claimed_for_at(plan, crate::http::now_ms())
+    }
+
+    fn claimed_for_at(&self, plan: &ClaimablePlan, now: i64) -> bool {
+        if self.claimed_at.is_none() {
+            return self.owned.as_ref().is_some_and(|owned| owned.matches_activity(plan));
+        }
+        let Some(at) = self.claimed_at else { return false; };
+        let end = self.claim_ends_at.or(self.plan.ends_at);
+        if end.is_some_and(|end| end <= now / 1000) { return false; }
+        match (plan.starts_at, end) {
+            (Some(start), Some(end)) => end > start,
+            _ => !plan.starts_at.is_some_and(|start| start > self.claim_starts_at.unwrap_or(at / 1000)),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Rejection {
+    version: String,
+    message: String,
+    at: i64,
+}
+
+#[derive(Default)]
+pub(super) struct PreviewState {
+    pub plans: Vec<ClaimablePlan>,
+    pub claimed: BTreeMap<String, i64>,
+    pub owned: BTreeMap<String, OwnedPlan>,
+    pub ineligible: BTreeMap<String, String>,
+    pub claim_periods: BTreeMap<String, (Option<i64>, Option<i64>)>,
+    pub checkin_plans: Vec<ClaimablePlan>,
 }
 
 #[derive(Clone)]
 pub struct ClaimAttempt {
     pub outcome: ClaimOutcome,
     pub marketing_error: Option<String>,
+    pub daily_checkin: Value,
+    pub claimed_at: Option<i64>,
 }
 
-pub(super) async fn claimed_ids(ctx: &PluginCtx, account: &str, jwt: &str, device_mid: Option<&str>) -> BTreeMap<String, i64> {
-    match load(ctx, account).await {
-        Ok(mut ledger) => {
-            bind_identity(&mut ledger, jwt, device_mid);
-            ledger.plans.into_iter().filter_map(|(id, saved)| saved.claimed_at.map(|at| (id, at))).collect()
+pub(super) async fn preview_state(
+    ctx: &PluginCtx,
+    region: Region,
+    account: &str,
+    jwt: &str,
+    device_mid: Option<&str>,
+    user_id: &str,
+) -> Result<PreviewState, GatewayError> {
+    let mut ledger = load(ctx, account).await?;
+    bind_identity(&mut ledger, region, account, jwt, device_mid, user_id);
+    let now = crate::http::now_ms();
+    prune(&mut ledger, now);
+    let mut state = PreviewState::default();
+    for (id, saved) in ledger.plans {
+        if ledger.checkin_targets.get(&id).is_some_and(|at| same_day(*at, now))
+            || saved.claimed_at.is_some_and(|at| same_day(at, now)) && saved.claimed_for(&saved.plan)
+        {
+            state.checkin_plans.push(saved.plan.clone());
         }
-        Err(_) => BTreeMap::new(),
+        if saved.claimed_for(&saved.plan) {
+            if let Some(at) = saved.claimed_at { state.claimed.insert(id.clone(), at); }
+            state.claim_periods.insert(id.clone(), (saved.claim_starts_at, saved.claim_ends_at));
+            if let Some(owned) = saved.owned.filter(|owned| owned.matches_activity(&saved.plan)) {
+                state.owned.insert(id.clone(), owned);
+            }
+            let recent = saved.claimed_at.is_some_and(|at| now.saturating_sub(at) <= 86_400_000);
+            if saved.claim_ends_at.or(saved.plan.ends_at).is_some_and(|end| end > now / 1000)
+                || state.owned.contains_key(&id) || recent
+            {
+                state.plans.push(saved.plan.clone());
+            }
+        }
+        if let Some(rejection) = saved.rejection.filter(|rejection| {
+            rejection.version == app_version() && now.saturating_sub(rejection.at) <= PREVIEW_TTL_MS
+        }) {
+            state.ineligible.insert(id, rejection.message);
+        }
     }
+    Ok(state)
 }
 
 pub(super) async fn remember_preview(
     ctx: &PluginCtx,
+    region: Region,
     account: &str,
     jwt: &str,
     device_mid: Option<&str>,
+    user_id: &str,
     plans: &[ClaimablePlan],
-) -> Result<(), GatewayError> {
-    let key = format!("zcode-claims:{account}");
+    owned: &BTreeMap<String, OwnedPlan>,
+    checkin_plan_ids: &std::collections::BTreeSet<String>,
+    sources_complete: bool,
+) -> Result<Value, GatewayError> {
+    let key = format!("zcode-claims:{}:{account}", region.provider_id());
     crate::flight::run(&key, || async {
         let mut ledger = load(ctx, account).await?;
-        bind_identity(&mut ledger, jwt, device_mid);
+        bind_identity(&mut ledger, region, account, jwt, device_mid, user_id);
         let now = crate::http::now_ms();
         prune(&mut ledger, now);
+        let current_sources = same_day(ledger.checkin_sources_at.unwrap_or(0), now);
+        if !current_sources { ledger.checkin_targets.clear(); }
+        ledger.checkin_sources_complete = sources_complete
+            || current_sources && ledger.checkin_sources_complete;
+        ledger.checkin_sources_at = Some(now);
+        for plan_id in checkin_plan_ids {
+            ledger.checkin_targets.insert(plan_id.clone(), now);
+        }
         for plan in plans {
-            match ledger.plans.get_mut(&plan.plan_id) {
-                Some(saved) => {
-                    let mut refreshed = plan.clone();
-                    for campaign in &saved.plan.marketing_campaign_ids {
-                        if !refreshed.marketing_campaign_ids.contains(campaign) {
-                            refreshed.marketing_campaign_ids.push(campaign.clone());
-                        }
-                    }
-                    saved.plan = refreshed;
-                    saved.seen_at = now;
-                }
-                None => {
-                    ledger.plans.insert(plan.plan_id.clone(), SavedPlan {
-                        plan: plan.clone(), seen_at: now, claimed_at: None,
-                        confirmed_campaigns: Vec::new(),
-                    });
-                }
+            let saved = ledger.plans.entry(plan.plan_id.clone()).or_insert_with(|| SavedPlan::new(plan));
+            let mut refreshed = plan.clone();
+            super::plans::merge_plan(&mut refreshed, saved.plan.clone());
+            if !saved.claimed_for(&refreshed) {
+                saved.claimed_at = None;
+                saved.claim_starts_at = None;
+                saved.claim_ends_at = None;
+                saved.owned = None;
+            }
+            saved.plan = refreshed;
+            saved.seen_at = now;
+            if let Some(owned) = owned.get(&plan.plan_id).filter(|owned| owned.matches_activity(plan)) {
+                saved.owned = Some(owned.clone());
+                saved.rejection = None;
+            }
+        }
+        for (plan_id, saved) in &ledger.plans {
+            if saved.claimed_at.is_some_and(|at| same_day(at, now)) && saved.claimed_for_at(&saved.plan, now)
+                || saved.owned.as_ref().is_some_and(|owned| {
+                    owned.starts_at.is_some_and(|at| same_day(at.saturating_mul(1000), now))
+                        && owned.matches_activity(&saved.plan)
+                })
+            {
+                ledger.checkin_targets.entry(plan_id.clone()).or_insert(now);
             }
         }
         prune(&mut ledger, now);
-        save(ctx, account, &ledger).await.map_err(GatewayError::into_message)
+        save(ctx, account, &ledger).await.map_err(GatewayError::into_message)?;
+        Ok(daily_checkin_view(&ledger, crate::http::now_ms()))
     }).await.map_err(GatewayError::from)
 }
 
 pub(super) async fn known_plan(
     ctx: &PluginCtx,
+    region: Region,
     account: &str,
     plan_id: &str,
     jwt: &str,
     device_mid: Option<&str>,
+    user_id: &str,
 ) -> Option<ClaimablePlan> {
     let mut ledger = load(ctx, account).await.ok()?;
-    bind_identity(&mut ledger, jwt, device_mid);
-    let saved = ledger.plans.remove(plan_id)?;
-    if saved.claimed_at.is_some()
+    bind_identity(&mut ledger, region, account, jwt, device_mid, user_id);
+    let saved = ledger.plans.get(plan_id)?;
+    if saved.claimed_for(&saved.plan)
         || crate::http::now_ms().saturating_sub(saved.seen_at) <= PREVIEW_TTL_MS
     {
-        Some(saved.plan)
+        Some(saved.plan.clone())
     } else {
         None
     }
@@ -116,25 +230,41 @@ pub async fn claim_plan(
     account: &str,
     jwt: &str,
     device_mid: Option<&str>,
+    user_id: &str,
     proxy: Option<&WireProxy>,
     plan: &ClaimablePlan,
     captcha: Option<(&str, Option<&str>)>,
 ) -> Result<ClaimAttempt, GatewayError> {
-    let key = format!("zcode-claims:{account}");
+    let key = format!("zcode-claims:{}:{account}", region.provider_id());
     crate::flight::run(&key, || async {
         let mut ledger = load(ctx, account).await?;
-        bind_identity(&mut ledger, jwt, device_mid);
-        prune(&mut ledger, crate::http::now_ms());
-        let saved = ledger.plans.entry(plan.plan_id.clone()).or_insert_with(|| SavedPlan {
-            plan: plan.clone(), seen_at: crate::http::now_ms(), claimed_at: None,
-            confirmed_campaigns: Vec::new(),
-        });
+        bind_identity(&mut ledger, region, account, jwt, device_mid, user_id);
+        let now = crate::http::now_ms();
+        prune(&mut ledger, now);
+        for (plan_id, saved) in &ledger.plans {
+            if saved.claimed_at.is_some_and(|at| same_day(at, now)) && saved.claimed_for_at(&saved.plan, now)
+                || saved.owned.as_ref().is_some_and(|owned| {
+                    owned.starts_at.is_some_and(|at| same_day(at.saturating_mul(1000), now))
+                        && owned.matches_activity(&saved.plan)
+                })
+            {
+                ledger.checkin_targets.entry(plan_id.clone()).or_insert(now);
+            }
+        }
+        let saved = ledger.plans.entry(plan.plan_id.clone()).or_insert_with(|| SavedPlan::new(plan));
+        let already_claimed = saved.claimed_for(plan);
+        if !already_claimed {
+            saved.claimed_at = None;
+            saved.claim_starts_at = None;
+            saved.claim_ends_at = None;
+            saved.owned = None;
+        }
         super::plans::merge_plan(&mut saved.plan, plan.clone());
-        let outcome = if saved.claimed_at.is_some() {
+        let outcome = if already_claimed {
             ClaimOutcome::Failed {
                 plan_id: plan.plan_id.clone(), failure: ClaimFailure::AlreadyClaimed,
                 code: 1003, message: "该套餐已领取，不重复提交".to_string(),
-                failure_ends_at: saved.plan.ends_at,
+                failure_ends_at: saved.claim_ends_at.or(saved.plan.ends_at),
             }
         } else {
             let pooled = if captcha.is_none() && captcha::required() { captcha::take() } else { None };
@@ -143,7 +273,9 @@ pub async fn claim_plan(
                     (param.as_str(), (!region.is_empty()).then_some(region.as_str()))
                 }).unwrap_or(("", None))
             });
-            claim_upstream(region, jwt, &plan.plan_id, param, region_tag, device_mid, proxy).await?
+            let result = claim_upstream(region, jwt, &plan.plan_id, param, region_tag, device_mid, proxy).await;
+            ownership::invalidate(region, account, jwt, device_mid, proxy);
+            result?
         };
         if matches!(&outcome, ClaimOutcome::Failed { failure: ClaimFailure::Captcha, .. }) {
             captcha::note_challenge();
@@ -153,10 +285,31 @@ pub async fn claim_plan(
             | ClaimOutcome::Failed { failure: ClaimFailure::AlreadyClaimed, code: 1003, .. }
         );
         let mut marketing_error = None;
+        if let ClaimOutcome::Failed { failure: ClaimFailure::Ineligible, message, .. } = &outcome {
+            saved.rejection = Some(Rejection {
+                version: app_version(), message: message.clone(), at: crate::http::now_ms(),
+            });
+            if let Err(error) = save(ctx, account, &ledger).await {
+                logging::log("[Claim]", &format!("ZCode 领取资格结果保存失败：{error}"));
+            }
+        }
         if settled {
             let saved = ledger.plans.get_mut(&plan.plan_id)
                 .ok_or_else(|| GatewayError::with_status(502, "领取台账缺少目标套餐"))?;
-            saved.claimed_at.get_or_insert_with(crate::http::now_ms);
+            if !already_claimed { saved.claimed_at = Some(crate::http::now_ms()); }
+            if saved.claimed_at.is_some_and(|at| same_day(at, crate::http::now_ms())) {
+                ledger.checkin_targets.insert(plan.plan_id.clone(), crate::http::now_ms());
+            }
+            saved.rejection = None;
+            match &outcome {
+                ClaimOutcome::Claimed { starts_at, ends_at, .. } => {
+                    saved.claim_starts_at = *starts_at;
+                    saved.claim_ends_at = *ends_at;
+                }
+                ClaimOutcome::Failed { failure_ends_at, .. } => {
+                    saved.claim_ends_at = saved.claim_ends_at.or(*failure_ends_at);
+                }
+            }
             if let Err(error) = save(ctx, account, &ledger).await {
                 logging::log("[Claim]", &format!("ZCode 套餐领取结果落盘失败（不影响已领取结果）：{error}"));
                 marketing_error = Some(error.message);
@@ -183,16 +336,68 @@ pub async fn claim_plan(
                 }
             }
         }
-        Ok(ClaimAttempt { outcome, marketing_error })
+        let now = crate::http::now_ms();
+        Ok(ClaimAttempt {
+            outcome,
+            marketing_error,
+            daily_checkin: daily_checkin_view(&ledger, now),
+            claimed_at: ledger.plans.get(&plan.plan_id).and_then(|saved| saved.claimed_at
+                .or_else(|| saved.owned.as_ref().and_then(|owned| owned.starts_at)
+                    .map(|at| at.saturating_mul(1000)))),
+        })
     }).await.map_err(GatewayError::from)
 }
 
-fn bind_identity(ledger: &mut Ledger, jwt: &str, device_mid: Option<&str>) {
-    let identity = crate::flight::fingerprint(&format!("{}:{}", jwt.trim(), device_mid.unwrap_or("")));
-    if ledger.identity != identity {
+fn bind_identity(
+    ledger: &mut Ledger,
+    region: Region,
+    account: &str,
+    jwt: &str,
+    device_mid: Option<&str>,
+    user_id: &str,
+) {
+    let subject = if user_id.trim().is_empty() {
+        format!("token:{}", crate::flight::fingerprint(jwt.trim()))
+    } else {
+        format!("user:{}", user_id.trim())
+    };
+    let identity = format!("v2:{}", crate::flight::fingerprint(&format!(
+        "{}:{account}:{subject}", region.provider_id(),
+    )));
+    if ledger.identity == identity { return; }
+    let legacy = crate::flight::fingerprint(&format!("{}:{}", jwt.trim(), device_mid.unwrap_or("")));
+    // 旧台账只有凭证指纹；迁移必须能证明仍是原身份，不能把别人的领取记录接过来。
+    if ledger.identity != legacy {
         ledger.plans.clear();
-        ledger.identity = identity;
+        ledger.checkin_targets.clear();
+        ledger.checkin_sources_at = None;
+        ledger.checkin_sources_complete = false;
     }
+    ledger.identity = identity;
+}
+
+fn same_day(at: i64, now: i64) -> bool {
+    at > 0 && crate::beijing::date_key_of_ms(at) == crate::beijing::date_key_of_ms(now)
+}
+
+fn daily_checkin_view(ledger: &Ledger, now: i64) -> Value {
+    let current = same_day(ledger.checkin_sources_at.unwrap_or(0), now);
+    let targets: Vec<&String> = ledger.checkin_targets.iter()
+        .filter(|(_, at)| same_day(**at, now))
+        .map(|(id, _)| id)
+        .collect();
+    let completed_count = targets.iter().filter(|id| {
+        ledger.plans.get(**id).is_some_and(|saved| saved.claimed_for_at(&saved.plan, now))
+    }).count();
+    let completed = current && ledger.checkin_sources_complete && !targets.is_empty()
+        && completed_count == targets.len();
+    serde_json::json!({
+        "at": now,
+        "completed": completed,
+        "completedCount": completed_count,
+        "totalCount": targets.len(),
+        "sourcesComplete": current && ledger.checkin_sources_complete,
+    })
 }
 
 async fn load(ctx: &PluginCtx, account: &str) -> Result<Ledger, GatewayError> {
@@ -204,6 +409,7 @@ async fn load(ctx: &PluginCtx, account: &str) -> Result<Ledger, GatewayError> {
     if ledger.plans.iter().any(|(id, saved)| {
         identifier(&Value::String(id.clone())).is_none() || saved.plan.plan_id != *id
             || saved.plan.marketing_campaign_ids.iter().any(|id| identifier(&Value::String(id.clone())).is_none())
+            || saved.owned.as_ref().is_some_and(|owned| owned.plan_id != *id)
     }) {
         return Err(GatewayError::with_status(502, "套餐台账关联异常，未发送领取或回执"));
     }
@@ -214,7 +420,9 @@ async fn save(ctx: &PluginCtx, account: &str, ledger: &Ledger) -> Result<(), Gat
     let value = serde_json::to_value(ledger)
         .map_err(|_| GatewayError::with_status(502, "套餐台账无法序列化"))?;
     ctx.ledger_put(account, LEDGER_KIND, &value).await
-        .map_err(|error| GatewayError::with_status(502, format!("保存套餐台账失败：{error}")))
+        .map_err(|error| GatewayError::with_status(502, format!("保存套餐台账失败：{error}")))?;
+    ctx.ledger_put(account, "dailyCheckin", &daily_checkin_view(ledger, crate::http::now_ms())).await
+        .map_err(|error| GatewayError::with_status(502, format!("保存每日领取状态失败：{error}")))
 }
 
 fn prune(ledger: &mut Ledger, now: i64) {
@@ -225,4 +433,5 @@ fn prune(ledger: &mut Ledger, now: i64) {
             .map(|(id, _)| id.clone());
         match oldest { Some(id) => { ledger.plans.remove(&id); }, None => break }
     }
+    ledger.checkin_targets.retain(|id, at| same_day(*at, now) && ledger.plans.contains_key(id));
 }

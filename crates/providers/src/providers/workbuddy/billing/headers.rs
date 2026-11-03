@@ -1,17 +1,4 @@
-//! 计费接口的头集合（网关 `billing::request::{build_headers, whitelist_headers}`
-//! 的插件侧副本）。
-//!
-//! ── 与转发头的关系（**不能互相替换**）──────────────────────────
-//! 与 `workbuddy::auth::build_auth_headers` 的差别，逐条保留：
-//!   - 计费版固定带 `Content-Type: application/json` 与 `Accept: application/json`
-//!   - 计费版**不**带 `X-Department-Info`（转发需要，计费不需要）
-//!   - 计费版 `X-User-Id` 缺失时给空串（转发版直接不给这个头）
-//!   - 计费版无 Authorization 时也会给 `Bearer `（转发版跳过）
-//!
-//! 这些差别是上游两个 buildHeaders 各自的实现决定的，不是笔误。
-//!
-//! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
+//! 计费、签到与活跃请求共用官方后台请求框架头；不混入对话专属追踪头。
 
 use serde_json::Value;
 
@@ -22,47 +9,12 @@ use crate::workbuddy_shared::endpoints::{resolve_edition, user_agent_for_edition
 /// `pub(crate)`：除计费自身（`billing::call`）外，`keepalive` 的国际版日活
 /// 探测/领取也打同一批计费端点 —— 头集合必须同源，抄一份必然漂移。
 pub(crate) fn build_headers(session: &Value, extra: &[(String, String)]) -> Vec<(String, String)> {
-    let auth = session.get("auth").cloned().unwrap_or(Value::Null);
-    let account = session.get("account").cloned().unwrap_or(Value::Null);
-    let access_token = auth
-        .get("accessToken")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-
-    let mut headers: Vec<(String, String)> = vec![
-        ("Accept".to_string(), "application/json".to_string()),
-        ("Content-Type".to_string(), "application/json".to_string()),
-        (
-            "Authorization".to_string(),
-            format!("Bearer {access_token}"),
-        ),
-        (
-            "X-User-Id".to_string(),
-            account
-                .get("uid")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        ),
-    ];
-    // extra 在 Node 里是 `...extra` 插在 X-User-Id 之后的展开
+    let region = super::super::Region::from_edition_id(session.get("edition").and_then(Value::as_str));
+    let mut headers = super::super::contract::framework_headers(session, region, true);
     for (key, value) in extra {
-        headers.push((key.clone(), value.clone()));
-    }
-    if let Some(enterprise_id) = account
-        .get("enterpriseId")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        headers.push(("X-Enterprise-Id".to_string(), enterprise_id.to_string()));
-        headers.push(("X-Tenant-Id".to_string(), enterprise_id.to_string()));
-    }
-    if let Some(domain) = auth
-        .get("domain")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        headers.push(("X-Domain".to_string(), domain.to_string()));
+        if let Some((_, current)) = headers.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case(key)) {
+            *current = value.clone();
+        } else { headers.push((key.clone(), value.clone())); }
     }
     headers
 }

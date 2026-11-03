@@ -24,7 +24,7 @@
 //! `riskRunner` 同款：协议一致，只有 env 编号不同）。
 //!
 //! ── 缓存 ────────────────────────────────────────────────────
-//! 客户端每 60±5 分钟轮换一次身份，这里保守缓存 50 分钟（按 region + uid）。
+//! 客户端每 60±5 分钟轮换一次身份，这里保守缓存 50 分钟（按 site + uid）。
 //! 进程内缓存足够：身份只在本机使用，重启重新生成一次没有副作用。
 //!
 //! ── 管理面 ──────────────────────────────────────────────────
@@ -47,7 +47,7 @@ use sha2::Digest;
 use crate::errors::GatewayError;
 use crate::logging;
 
-use super::endpoints::Region;
+use super::endpoints::Site;
 use super::machine;
 
 /// 身份缓存时长（客户端 60±5 分钟轮换，保守取 50 分钟）
@@ -140,10 +140,10 @@ fn runtime_info_in(resources: &Path) -> Option<PathBuf> {
 
 /// 客户端（app 来源）的组件：先找本 variant 的安装目录，找不到再看另一
 /// variant —— 协议一致只有 env 编号不同（CreditDaddy `apps.find || apps[0]`）。
-fn app_component(region: Region) -> Option<Component> {
-    let env = if region == Region::Global { 3 } else { 0 };
+fn app_component(site: Site) -> Option<Component> {
+    let env = if site == Site::QoderIntl { 3 } else { 0 };
     // (installName, macOS app 名)：本 variant 在前
-    let variants: &[(&str, &str)] = if region == Region::Global {
+    let variants: &[(&str, &str)] = if site == Site::QoderIntl {
         &[("Qoder", "Qoder"), ("Qoder CN", "Qoder CN")]
     } else {
         &[("Qoder CN", "Qoder CN"), ("Qoder", "Qoder")]
@@ -179,9 +179,9 @@ fn app_component(region: Region) -> Option<Component> {
 /// 注意布局与客户端不同：qodercli 把 runtime-info 直接解在 `umid-<平台>-<哈希>/`
 /// 目录下（旁边还有 sgsdk.dll），**不再套一层 `umid/`** —— 客户端那层目录来自
 /// `resources/umid/`，两边不能共用同一个查找函数。
-fn cli_component(region: Region) -> Option<Component> {
-    let env = if region == Region::Global { 4 } else { 0 };
-    let homes: &[&str] = if region == Region::Global {
+fn cli_component(site: Site) -> Option<Component> {
+    let env = if site == Site::QoderIntl { 4 } else { 0 };
+    let homes: &[&str] = if site == Site::QoderIntl {
         &[".qoder", ".qoder-cn"]
     } else {
         &[".qoder-cn", ".qoder"]
@@ -218,13 +218,18 @@ fn data_component() -> Option<Component> {
 }
 
 /// 组件发现（按 app → cli → data 的顺序，同 variant 优先）。
-pub(crate) fn find_component(region: Region) -> Option<Component> {
-    app_component(region).or_else(|| cli_component(region)).or_else(|| data_component())
+pub(crate) fn find_component(site: Site) -> Option<Component> {
+    // 风控组件（UMID）是 Qoder 客户端的东西，千问办公没有也不需要用
+    // （它的签到走的是另一套接口，见 `endpoints::Site::supports_checkin`）。
+    if !site.is_qoder() {
+        return None;
+    }
+    app_component(site).or_else(|| cli_component(site)).or_else(|| data_component())
 }
 
 /// 本机是否能生成风控身份（界面提示用）
-pub fn available(region: Region) -> bool {
-    find_component(region).is_some()
+pub fn available(site: Site) -> bool {
+    find_component(site).is_some()
 }
 
 // ─── 身份的辅助字段（请求头用）──────────────────────────────
@@ -292,8 +297,8 @@ fn hostname() -> String {
 
 /// `Cosy-Version`：客户端版本（从已发现客户端的 build-manifest.json 读；
 /// 只有 cli / data 组件时读不到，回落常量 —— 上游只拿它做画像参考）。
-fn client_version(region: Region) -> String {
-    let versions = if region == Region::Global {
+fn client_version(site: Site) -> String {
+    let versions = if site == Site::QoderIntl {
         ["Qoder", "Qoder CN"]
     } else {
         ["Qoder CN", "Qoder"]
@@ -396,11 +401,11 @@ static CACHE: Mutex<Option<HashMap<String, CacheEntry>>> = Mutex::new(None);
 
 /// 取某账号的风控身份（带 50 分钟缓存）。组件不可用或生成失败返回 None，
 /// 失败原因只进 verbose 日志 —— 签到链路会给出「缺组件」的用户文案。
-pub async fn identity(region: Region, uid: &str) -> Option<RiskIdentity> {
+pub async fn identity(site: Site, uid: &str) -> Option<RiskIdentity> {
     if uid.is_empty() {
         return None;
     }
-    let key = format!("{}:{uid}", region.id());
+    let key = format!("{}:{uid}", site.id());
     if let Ok(guard) = CACHE.lock() {
         if let Some(entry) = guard.as_ref().and_then(|map| map.get(&key)) {
             if logging::now_ms() - entry.at < RISK_TTL_MS {
@@ -408,7 +413,7 @@ pub async fn identity(region: Region, uid: &str) -> Option<RiskIdentity> {
             }
         }
     }
-    let component = find_component(region)?;
+    let component = find_component(site)?;
     match run_component(&component, uid).await {
         Ok(value) => {
             if let Ok(mut guard) = CACHE.lock() {
@@ -430,10 +435,10 @@ pub async fn identity(region: Region, uid: &str) -> Option<RiskIdentity> {
 /// 头里缺风控三件套时上游不下发积分活动（这就是它的表现，不抛错）。
 pub async fn augment_headers(
     mut headers: Vec<(String, String)>,
-    region: Region,
+    site: Site,
     uid: &str,
 ) -> (Vec<(String, String)>, Option<String>) {
-    headers.push(("Cosy-Version".to_string(), client_version(region)));
+    headers.push(("Cosy-Version".to_string(), client_version(site)));
     headers.push(("Cosy-MachineOS".to_string(), machine_os()));
     // 与 COSY 签名头同一个机器标识（`machine::machine_id`：优先复用
     // 客户端/qodercli 落盘的 id，否则在网关数据目录持久化一个）
@@ -444,7 +449,7 @@ pub async fn augment_headers(
     if let Some(host) = machine_hostname() {
         headers.push(("Cosy-MachineHostname".to_string(), host));
     }
-    match identity(region, uid).await {
+    match identity(site, uid).await {
         Some(risk) => {
             headers.push(("Cosy-MachineToken".to_string(), risk.machine_token));
             headers.push(("Cosy-MachineCode".to_string(), risk.machine_code));
@@ -452,7 +457,7 @@ pub async fn augment_headers(
             (headers, None)
         }
         None => {
-            let why = if find_component(region).is_none() {
+            let why = if find_component(site).is_none() {
                 "本机没有 Qoder 客户端 / qodercli 的 UMID 组件".to_string()
             } else {
                 "UMID 组件生成身份失败".to_string()
@@ -465,8 +470,8 @@ pub async fn augment_headers(
 // ─── 状态与安装（Linux/Docker）──────────────────────────────
 
 /// 组件状态摘要（状态接口用）：来源 / 是否可用 / 平台是否支持安装。
-pub fn status(region: Region) -> serde_json::Value {
-    let component = find_component(region);
+pub fn status(site: Site) -> serde_json::Value {
+    let component = find_component(site);
     serde_json::json!({
         "available": component.is_some(),
         "source": component.as_ref().map(|component| component.source),

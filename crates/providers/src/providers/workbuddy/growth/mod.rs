@@ -90,6 +90,8 @@ pub struct GrowthAccount {
     /// 的 `X-Domain` 头就来自它（请求形态是实测沉淀的一部分）。
     pub domain: String,
     pub proxy: Option<agent2api_provider_protocol::WireProxy>,
+    pub session: Value,
+    pub ctx: Option<agent2api_provider_sdk::PluginCtx>,
 }
 
 impl GrowthAccount {
@@ -132,7 +134,7 @@ impl GrowthAccount {
         let proxy = session
             .get("proxy")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
-        Some(Self { uid, nick, token, domain, proxy })
+        Some(Self { uid, nick, token, domain, proxy, session: session.clone(), ctx: None })
     }
 
     /// 稳定派生一个 36 位 hex 设备标识（machineId / sessionId 用，幂等）。
@@ -207,6 +209,14 @@ pub async fn growth_request(
     body: Option<&Value>,
     headers: &[(String, String)],
 ) -> Result<GrowthCall, String> {
+    if url::Url::parse(url).ok().is_some_and(|url| url.origin().ascii_serialization() == WEB_BASE) {
+        let ctx = account.ctx.as_ref().ok_or_else(|| "网页任务缺少账号上下文，未回退使用 Bearer".to_string())?;
+        let path = url.strip_prefix(WEB_BASE).ok_or_else(|| "网页地址不在官方域内".to_string())?;
+        let id = account.session.get("id").and_then(Value::as_str).unwrap_or("");
+        let response = super::web_session::request(ctx, super::Region::Cn, id, method, path, body, headers).await
+            .map_err(|error| error.message)?;
+        return Ok(GrowthCall { status: response.status, payload: response.payload });
+    }
     let mut final_headers: Vec<(String, String)> = vec![
         ("Authorization".to_string(), format!("Bearer {}", account.token)),
         ("Accept".to_string(), "application/json".to_string()),

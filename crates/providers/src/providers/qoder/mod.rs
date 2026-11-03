@@ -1,4 +1,4 @@
-//! Qoder 提供商（两个地区共用一套实现，按 `Region` 参数化）。
+//! Qoder / 千问办公提供商（四个站点共用一套实现，按 `Site` 参数化）。
 //!
 //! ── 上游长什么样（移植来源 `Qoder-Proxy`）─────────────────────
 //!   - 推理网关：`POST {gateway}algo/api/v2/service/pro/sse/agent_chat_generation`
@@ -11,7 +11,7 @@
 //!     真正的 OpenAI chunk 是 `body` 里的**内层 JSON 字符串**。
 //!     业务错误也走这一层（HTTP 永远是 200，错误在 `statusCodeValue` 里）。
 //!   - 地区：国际版 `api3.qoder.sh` / 中国版 `gateway.qoder.com.cn`，
-//!     两边的模型目录与凭证**不通用**（见 `endpoints::Region`）。
+//!     两边的模型目录与凭证**不通用**（见 `endpoints::Site`）。
 //!
 //! ── 为什么走会话式转发（`stateful`）──────────────────────────
 //! 无状态路径假设「请求体由通用层序列化后原样发出、响应是 OpenAI 协议的 SSE」。
@@ -39,7 +39,7 @@
 //! ── 子模块 ─────────────────────────────────────────────────
 //!   endpoints.rs   地区与端点（含推理网关基址）
 //!   machine.rs     PKCE 随机串与本机标识（getrandom）
-//!   oauth.rs       国际版 PKCE 设备授权
+//!   oauth.rs       四个站点的 PKCE 设备授权
 //!   credentials.rs 凭证格式（兼容 Qoder-Proxy 的 access/refresh）
 //!   auth.rs        PAT 换取令牌 / 用户资料
 //!   refresh.rs     续期（单飞 + 比较再写）
@@ -51,7 +51,7 @@
 //!   errors.rs      上游错误分类（状态码 + 业务码表 + 排队态判定）
 //!   stream.rs      上游 SSE 信封解包 + 思考标签拆解（跨分片）
 //!   piping.rs      流式首帧预读 + 流式透传（issue #8 的换号修复在这）
-//!   accounts.rs    账号面（PAT / 设备授权两种添加路径 + 归一化）
+//!   accounts.rs    账号面（PAT / 网页登录两种添加路径 + 归一化）
 //!   checkin.rs     每日签到（中国版的活动领取；国际版没有签到计划）
 //!
 //! ── panic=abort ────────────────────────────────────────────
@@ -87,23 +87,31 @@ use crate::logging;
 use crate::telemetry::RequestTelemetry;
 
 use self::chat::Translator;
-use self::endpoints::Region;
+use self::endpoints::Site;
 use self::stream::SseEvent;
 
-/// 中国版实例（`qoder`）
-pub static QODER_CN: QoderProvider = QoderProvider { region: Region::Cn };
-/// 国际版实例（`qoder-intl`）
-pub static QODER_INTL: QoderProvider = QoderProvider { region: Region::Global };
+/// Qoder 中国版实例（`qoder`）
+pub static QODER_CN: QoderProvider = QoderProvider { site: Site::QoderCn };
+/// Qoder 国际版实例（`qoder-intl`）
+pub static QODER_INTL: QoderProvider = QoderProvider { site: Site::QoderIntl };
+/// 千问办公国内版实例（`qwenwork`）
+pub static QWENWORK_CN: QoderProvider = QoderProvider { site: Site::QwenworkCn };
+/// 千问办公国际版实例（`qwenwork-intl`）
+pub static QWENWORK_INTL: QoderProvider = QoderProvider { site: Site::QwenworkIntl };
 
-/// Qoder 提供商：**按地区参数化**（与 ZCode / Accio / AutoClaw 同款）。
+/// Qoder / 千问办公提供商：**按站点参数化**（与 ZCode / Accio / ModelScope 同款）。
 ///
-/// 两个地区是两家 provider（`qoder` 中国版 / `qoder-intl` 国际版），地区 →
-/// 身份的互查在 `endpoints::Region`。内部链路（凭证、转发、签到）仍以凭证里的
-/// 地区为准 —— 拆家迁移保证了记录的 provider 与地区一致，这里的 `region`
-/// 用于「队首可用账号」的选取范围与模型清单的归属。
+/// 四个站点是四家 provider（`qoder` / `qoder-intl` / `qwenwork` /
+/// `qwenwork-intl`），站点 → 身份的互查在 `endpoints::Site`。内部链路（凭证、
+/// 转发、额度）一律以**构造时传入的站点**为准 —— 记录里的 `mode` 只区分
+/// cn/global，不足以区分「Qoder 中国版」与「千问办公国内版」，
+/// 所以 `refresh::snapshot` 会把站点盖成这里的 `site`。
+///
+/// 两家产品共用一套实现的原因见 `endpoints.rs` 的模块头：同一套协议栈，
+/// 差异只有一批客户端身份常量与账号接口路径。
 #[derive(Clone, Copy)]
 pub struct QoderProvider {
-    region: Region,
+    site: Site,
 }
 
 /// 映射上绑的思考等级注入到请求体的哪个键。
@@ -120,13 +128,64 @@ fn response_id() -> String {
     format!("chatcmpl-{short}")
 }
 
+/// 添加账号弹窗里可用的登录方式（按站点）。
+///
+/// Qoder 两个站点两种都支持（网页设备授权 + PAT）；千问办公只有网页设备授权
+/// —— 它没有 `/api/v1/jobToken/exchange`，界面上给一个点了必然报错的「粘贴
+/// PAT」入口比不给更糟（见 `endpoints::Site::supports_pat`）。
+fn login_methods(site: Site) -> Vec<proto::LoginMethod> {
+    let mut methods = Vec::new();
+    if site.supports_pat() {
+        methods.push(proto::LoginMethod::Token {
+            label: "个人访问令牌（PAT）".to_string(),
+            placeholder: format!("{} 个人访问令牌（PAT）", site.product()),
+            extra_fields: Vec::new(),
+        });
+    }
+    methods.push(proto::LoginMethod::Browser {
+        button: "网页登录".to_string(),
+        hint: Some(match site {
+            // 千问办公：官方设备授权页，登录后本插件轮询收下账号
+            _ if site.is_qwenwork() => format!(
+                "在浏览器里登录 {}，授权完成后会自动收下账号",
+                site.display_name()
+            ),
+            _ => format!("打开 {} 授权页，完成后自动收下账号", site.product()),
+        }),
+    });
+    methods
+}
+
+/// 签到中心的说明（没有签到的站点给空信息，界面就不挂这一组）。
+fn checkin_info(site: Site) -> proto::CheckinInfo {
+    if !site.supports_checkin() {
+        return proto::CheckinInfo::default();
+    }
+    proto::CheckinInfo {
+        // 两个站点链路不同：中国版是活动领取（每天 10:00 刷新），国际版
+        // 要带设备风控身份领「每日 100 Credits」（UMID 组件）。
+        description: Some(match site {
+            Site::QoderIntl => {
+                "带设备风控身份领取「每日 100 Credits」 · 需要 UMID 组件".to_string()
+            }
+            _ => "活动（campaign）领取 · 每天 10:00 刷新".to_string(),
+        }),
+        modes: vec![proto::CheckinMode::Checkin],
+        ui_hooks: match site {
+            Site::QoderIntl => vec![proto::CheckinUiHook::UmidComponent],
+            _ => Vec::new(),
+        },
+        ..Default::default()
+    }
+}
+
 /// 把「这个账号对这个模型已限额」记进账号库。
 ///
 /// ── 为什么本适配器要自己做这件事（编排层不管吗）──────────────
 /// 无状态路径里这个动作由编排层完成：它拿到适配器给的 `QuotaLimited` 分类，
-/// 调 `rotate::mark_account_limited` 落冷却。但 Qoder 走**会话式转发**，
+/// 调 `rotate::mark_account_limited` 落冷却。但本家走**会话式转发**，
 /// 那条路径的适配器不返回分类（「一次发送」整个在适配器内部），编排层只看得到
-/// 一个 `Err`。而 Qoder 的限额信号**恰恰只出现在 SSE 信封里**（HTTP 永远是
+/// 一个 `Err`。而本家的限额信号**恰恰只出现在 SSE 信封里**（HTTP 永远是
 /// 200），也就是说：不在这里落冷却，这个额度已耗尽的账号会在**每一个后续请求**
 /// 上被重新选中、重新打一次上游、再失败一次 —— 界面上看不到任何冷却标记。
 ///
@@ -136,6 +195,7 @@ fn response_id() -> String {
 /// 异步。因此本函数变成 async，调用点跟着 await。
 async fn record_limited(
     ctx: &PluginCtx,
+    site: Site,
     account_id: &str,
     model: &str,
     _status: u16,
@@ -154,39 +214,39 @@ async fn record_limited(
         .await
     {
         logging::verbose(
-            "[Qoder]",
-            &format!("标记账号限额失败（不影响本次转发）：{error}"),
+            "[Quota]",
+            &format!("{} 标记账号限额失败（不影响本次转发）：{error}", site.product()),
         );
         return;
     }
     logging::log(
-        "[Qoder]",
-        &format!("⚠️ 账号 {account_id} 对模型 {model} 已限额，进入冷却：{message}"),
+        "[Quota]",
+        &format!(
+            "⚠️ {} 账号 {account_id} 对模型 {model} 已限额，进入冷却：{message}",
+            site.product()
+        ),
     );
 }
 
 impl Provider for QoderProvider {
     fn meta(&self) -> ProviderMeta {
-        ProviderMeta::new(
-            self.region.provider_id(),
-            format!("Qoder {}", self.region.label()),
-        )
+        ProviderMeta::new(self.site.provider_id(), self.site.display_name())
         .with_capabilities(proto::Capabilities {
             chat: true,
             // 请求体要先编码再签名、响应要拆信封 —— 见模块头
             stateful: true,
-            // 设备流 / 作业令牌两种续期路径（`refresh.rs`）
+            // 设备流续期（Qoder 另有作业令牌 / PAT 一条，见 `refresh.rs`）
             refresh: true,
             // `GET {gateway}algo/api/v2/model/list`
             model_refresh: true,
             // 额度查询（`balance.rs`）
             usage: true,
-            // 中国版有活动领取（`checkin.rs`）；国际版没有签到计划，但能力位是
-            // 按 provider 申报的 —— 国际版这里也报 true，由 `checkin` 返回
-            // 「无活动」而不是「不支持」（用户在界面上看得到真实原因）
-            checkin: true,
+            // 签到只有 Qoder 两个站点有（千问办公没有 campaign 接口，
+            // 见 `endpoints::Site::supports_checkin`）。能力位按 provider 申报：
+            // 千问办公报 false —— 界面上就不会出现一个点了必然报错的入口。
+            checkin: self.site.supports_checkin(),
             claims: false,
-            // 国际版有 PKCE 设备授权（`oauth.rs`）；中国版走 PAT / 设备流
+            // 四站都有 PKCE 设备授权（`oauth.rs`）
             web_login: true,
             sse_model_rewrite: false,
             sse_strip_newline_chunks: false,
@@ -198,23 +258,12 @@ impl Provider for QoderProvider {
             // 本家有没有环境变量 / 默认登录态旁路（协议新增位）
             env_credentials: false,
         })
-        .with_login(vec![
-            proto::LoginMethod::Token {
-                label: "个人访问令牌（PAT）".to_string(),
-                placeholder: "Qoder 个人访问令牌（PAT）".to_string(),
-                extra_fields: Vec::new(),
-            },
-            proto::LoginMethod::Browser {
-                button: "网页登录".to_string(),
-                hint: Some("打开 Qoder 授权页，完成后自动收下账号".to_string()),
-            },
-        ])
-        .with_models(models::list_for(self.region))
-        // 账号行：两个地区能力完全一致（拆家后是两家 provider，各自都要申报，
-        // 漏一个会让国际版掉进兜底）。
-        //   `credit_detail` —— 三个桶各一行（套餐额度 / 个人资源包 / 组织资源包），
-        //     桶级口径、没有时刻。
-        //   `edition` —— 两家各是单一地区，但公开形态仍带 `edition` 供徽章显示。
+        .with_login(login_methods(self.site))
+        .with_models(models::list_for(self.site))
+        // 账号行：四站能力一致（各家都要申报，漏一个会让那家掉进兜底）。
+        //   `credit_detail` —— Qoder 三个桶各一行（套餐额度 / 个人资源包 /
+        //     组织资源包）；千问办公是「积分 + 三档池」各一行。
+        //   `edition` —— 公开形态带 `edition` 供徽章显示。
         //   `email_as_name` —— 本家账号以邮箱报名字。
         .with_account_features(proto::AccountFeatures {
             usage: true,
@@ -225,22 +274,7 @@ impl Provider for QoderProvider {
             email_as_name: true,
             ..Default::default()
         })
-        .with_checkin(proto::CheckinInfo {
-            // 两个地区链路不同：中国版是活动领取（每天 10:00 刷新），国际版
-            // 要带设备风控身份领「每日 100 Credits」（UMID 组件）。
-            description: Some(match self.region {
-                Region::Cn => "活动（campaign）领取 · 每天 10:00 刷新".to_string(),
-                Region::Global => {
-                    "带设备风控身份领取「每日 100 Credits」 · 需要 UMID 组件".to_string()
-                }
-            }),
-            modes: vec![proto::CheckinMode::Checkin],
-            ui_hooks: match self.region {
-                Region::Cn => Vec::new(),
-                Region::Global => vec![proto::CheckinUiHook::UmidComponent],
-            },
-            ..Default::default()
-        })
+        .with_checkin(checkin_info(self.site))
     }
 
     fn models<'a>(
@@ -251,10 +285,10 @@ impl Provider for QoderProvider {
         Box::pin(async move {
             Ok(proto::ModelList {
                 // 拆家后每家只列**本地区**的清单（不再并集）
-                models: models::list_for(self.region),
+                models: models::list_for(self.site),
                 meta: proto::CatalogMeta {
-                    remote: models::remote_refreshed(self.region),
-                    refreshed_at: models::last_refreshed_at(self.region),
+                    remote: models::remote_refreshed(self.site),
+                    refreshed_at: models::last_refreshed_at(self.site),
                 },
             })
         })
@@ -267,7 +301,7 @@ impl Provider for QoderProvider {
         req: proto::ConversationRequest,
         sink: ConversationSink<'a>,
     ) -> SendFuture<'a, ()> {
-        Box::pin(run_conversation(ctx, self.region, req, sink))
+        Box::pin(run_conversation(ctx, self.site, req, sink))
     }
 
     /// 非 2xx 的上游响应分类。
@@ -306,7 +340,7 @@ impl Provider for QoderProvider {
 
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
-            refresh::ensure_fresh(ctx, self.region, account, false)
+            refresh::ensure_fresh(ctx, self.site, account, false)
                 .await
                 .map(|credentials| credentials.access_token)
                 .map_err(GatewayError::into_message)
@@ -320,7 +354,7 @@ impl Provider for QoderProvider {
     /// 会拿回同一个被拒的 token。
     fn refresh_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
-            refresh::ensure_fresh(ctx, self.region, account, true)
+            refresh::ensure_fresh(ctx, self.site, account, true)
                 .await
                 .map(|credentials| credentials.access_token)
                 .map_err(GatewayError::into_message)
@@ -337,7 +371,7 @@ impl Provider for QoderProvider {
             if account.is_empty() {
                 return Ok(false);
             }
-            let record = match crate::store::record(ctx, self.region.provider_id(), account).await {
+            let record = match crate::store::record(ctx, self.site.provider_id(), account).await {
                 Ok(record) if !record.is_null() => record,
                 _ => return Ok(false),
             };
@@ -353,7 +387,7 @@ impl Provider for QoderProvider {
 
     fn usage<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, Value> {
         Box::pin(async move {
-            balance::query(ctx, self.region, account)
+            balance::query(ctx, self.site, account)
                 .await
                 .map_err(GatewayError::into_message)
         })
@@ -376,14 +410,14 @@ impl Provider for QoderProvider {
     ) -> SendFuture<'a, proto::RefreshOutcome> {
         Box::pin(async move {
             // 空 id = 本地区队首可用账号；非空 = 用户在弹窗里点名的那条
-            let record = crate::store::record(ctx, self.region.provider_id(), account).await?;
+            let record = crate::store::record(ctx, self.site.provider_id(), account).await?;
             if record.is_null() {
                 // 自动路径每次拉目录/启动都会走到这里，所以只打 verbose
                 logging::verbose(
                     "[Models]",
                     &format!(
-                        "Qoder {}模型目录刷新跳过：尚未添加账号",
-                        self.region.label()
+                        "{} 模型目录刷新跳过：尚未添加账号",
+                        self.site.display_name()
                     ),
                 );
                 if account.is_empty() {
@@ -395,7 +429,7 @@ impl Provider for QoderProvider {
             }
             let Ok(credentials) = credentials::Credentials::from_payload(&record) else {
                 return Ok(proto::RefreshOutcome::failed(
-                    "Qoder 账号凭证无效，请重新登录或更新 PAT",
+                    format!("{} 账号凭证无效，请重新登录", self.site.display_name()),
                 ));
             };
             let proxy = match auth::account_proxy(&record) {
@@ -460,7 +494,6 @@ impl Provider for QoderProvider {
     /// 判据本身（`protocol::declared_reasoning` 的取值链）仍留在 `protocol.rs`：
     /// `resolve_thinking` 用它做「客户端已指定」的判定，那条路是转发热路径，
     /// 必须保留。
-
     // ── 签到 ──────────────────────────────────────────────────
 
     fn checkin<'a>(
@@ -469,7 +502,7 @@ impl Provider for QoderProvider {
         account: &'a str,
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(async move {
-            let value = checkin::claim_daily_checkin(ctx, self.region, account)
+            let value = checkin::claim_daily_checkin(ctx, self.site, account)
                 .await
                 .map_err(GatewayError::into_control_message)?;
             Ok(checkin_report(&value))
@@ -483,11 +516,12 @@ impl Provider for QoderProvider {
         _manual: bool,
     ) -> SendFuture<'a, agent2api_provider_sdk::CheckinResult> {
         Box::pin(async move {
-            let value = checkin::claim_daily_checkin(ctx, self.region, account).await
+            let value = checkin::claim_daily_checkin(ctx, self.site, account).await
                 .map_err(GatewayError::into_control_message)?;
             Ok(agent2api_provider_sdk::CheckinResult {
                 report: checkin_report(&value),
                 retry_at: value.get("retryAt").and_then(Value::as_i64),
+                details: None,
             })
         })
     }
@@ -499,18 +533,18 @@ impl Provider for QoderProvider {
         _ctx: &'a PluginCtx,
         input: proto::NormalizeInput,
     ) -> SendFuture<'a, proto::NormalizedAccount> {
-        Box::pin(accounts::normalize(self.region, input))
+        Box::pin(accounts::normalize(self.site, input))
     }
 
     fn account_view(&self, secret: &Value) -> Result<Value, String> {
-        Ok(accounts::account_view(self.region, secret))
+        Ok(accounts::account_view(self.site, secret))
     }
 
     fn account_identity(&self, secret: &Value) -> Result<String, String> {
-        Ok(accounts::identity_of(secret))
+        Ok(accounts::identity_of(self.site, secret))
     }
 
-    // ── 登录（国际版 PKCE 设备授权 / 中国版 PAT）────────────────
+    // ── 登录（网页设备授权；Qoder 另有 PAT）────────────────────
 
     fn login_start<'a>(
         &'a self,
@@ -518,7 +552,7 @@ impl Provider for QoderProvider {
         method: &'a str,
         payload: &'a Value,
     ) -> SendFuture<'a, proto::LoginStart> {
-        Box::pin(oauth::login_start(self.region, method, payload))
+        Box::pin(oauth::login_start(self.site, method, payload))
     }
 
     fn login_poll<'a>(
@@ -526,7 +560,32 @@ impl Provider for QoderProvider {
         _ctx: &'a PluginCtx,
         flow: &'a str,
     ) -> SendFuture<'a, proto::LoginPoll> {
-        Box::pin(oauth::login_poll(self.region, flow))
+        Box::pin(oauth::login_poll(self.site, flow))
+    }
+
+    /// 设备授权型登录没有回调：内嵌窗口拦下回调也没有东西可兑换，按错误回。
+    fn login_callback<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        _callback: proto::LoginCallback,
+    ) -> SendFuture<'a, proto::LoginPoll> {
+        Box::pin(async move {
+            Err(format!(
+                "{}的网页登录是设备授权型，不接受回调",
+                self.site.display_name()
+            ))
+        })
+    }
+
+    fn login_cancel<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        flow: &'a str,
+    ) -> SendFuture<'a, ()> {
+        Box::pin(async move {
+            oauth::login_cancel(self.site, flow).await;
+            Ok(())
+        })
     }
 
     // ── 设备风控组件（UMID）──────────────────────────────────
@@ -551,12 +610,13 @@ impl Provider for QoderProvider {
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
             match action {
-                "risk.status" => Ok(risk::status(self.region)),
+                "risk.status" => Ok(risk::status(self.site)),
                 "risk.install" => risk::install_component()
                     .await
                     .map_err(GatewayError::into_message),
                 other => Err(format!(
-                    "Qoder 不认识管理动作「{other}」（可用：risk.status / risk.install）"
+                    "{} 不认识管理动作「{other}」（可用：risk.status / risk.install）",
+                    self.site.product()
                 )),
             }
         })
@@ -577,7 +637,7 @@ async fn persist_catalog(ctx: &PluginCtx, account: &str) {
     {
         logging::verbose(
             "[Models]",
-            &format!("Qoder 目录台账写入失败（不影响本次刷新）：{error}"),
+            &format!("目录台账写入失败（不影响本次刷新）：{error}"),
         );
     }
 }
@@ -594,23 +654,23 @@ async fn persist_catalog(ctx: &PluginCtx, account: &str) {
 /// （行为不倒退，只是多了一次能成的机会）。
 async fn ensure_catalog(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     account: &str,
     credentials: &credentials::Credentials,
     proxy: Option<&proto::WireProxy>,
 ) {
-    if models::remote_refreshed(region) {
+    if models::remote_refreshed(site) {
         return;
     }
-    let provider = region.provider_id();
+    let provider = site.provider_id();
     if let Some(payload) = crate::catalog_ledger::load(ctx, account, models::LEDGER_KIND).await {
         if models::restore_from_saved(&payload) {
             crate::catalog_backoff::clear(provider, account);
             logging::log(
                 "[Models]",
-                &format!("Qoder {}模型目录从台账恢复（转发可直接使用）", region.label()),
+                &format!("{} 模型目录从台账恢复（转发可直接使用）", site.display_name()),
             );
-            if models::remote_refreshed(region) {
+            if models::remote_refreshed(site) {
                 return;
             }
         }
@@ -623,8 +683,8 @@ async fn ensure_catalog(
         logging::verbose(
             "[Models]",
             &format!(
-                "Qoder {}模型目录补拉冷却中（{} 秒后自动重试）：{}",
-                region.label(),
+                "{} 模型目录补拉冷却中（{} 秒后自动重试）：{}",
+                site.display_name(),
                 crate::catalog_backoff::seconds_left(cooling.ms_left),
                 cooling.reason
             ),
@@ -641,7 +701,7 @@ async fn ensure_catalog(
     crate::catalog_backoff::hold(provider, account, &reason, logging::now_ms());
     logging::verbose(
         "[Models]",
-        &format!("Qoder {}模型目录就地补拉未成功：{reason}", region.label()),
+        &format!("{} 模型目录就地补拉未成功：{reason}", site.display_name()),
     );
 }
 
@@ -655,18 +715,18 @@ async fn ensure_catalog(
 /// 那时补一帧 `{"error":…}` + `[DONE]`，与通用层的断流收尾同一形态。
 async fn run_conversation(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     req: proto::ConversationRequest,
     mut sink: ConversationSink<'_>,
 ) -> Result<(), String> {
-    run_conversation_inner(ctx, region, req, &mut sink)
+    run_conversation_inner(ctx, site, req, &mut sink)
         .await
         .map_err(|error| error.message)
 }
 
 async fn run_conversation_inner(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     req: proto::ConversationRequest,
     sink: &mut ConversationSink<'_>,
 ) -> Result<(), GatewayError> {
@@ -682,19 +742,22 @@ async fn run_conversation_inner(
     // 集中在那一个文件里说明。
     let telemetry = std::sync::Arc::new(RequestTelemetry::new());
 
-    // 凭证（含临期主动刷新）。显式账号必填 —— Qoder 没有环境变量旁路。
+    // 凭证（含临期主动刷新）。显式账号必填 —— 本家没有环境变量旁路。
     if account_id.is_empty() {
         return Err(GatewayError::with_status(
             503,
-            "没有可用的 Qoder 账号：请在账号页添加并启用账号",
+            format!(
+                "没有可用的 {} 账号：请在账号页添加并启用账号",
+                site.display_name()
+            ),
         ));
     }
-    let mut context = chat::account_context(ctx, region, &account_id, false).await?;
+    let mut context = chat::account_context(ctx, site, &account_id, false).await?;
     // 代理：请求里给的优先（网关已解析好），没有就用账号记录里的
     let effective_proxy = req.proxy.clone().or(context.proxy.clone());
     // 目录准备（见 `ensure_catalog`）：重启后内存为空时先读台账，再就地补拉一次。
     // 放在 `build_plan` 之前 —— 那一层的模型解析是同步的，读台账不能塞进它里面。
-    ensure_catalog(ctx, region, &account_id, &context.credentials, effective_proxy.as_ref()).await;
+    ensure_catalog(ctx, site, &account_id, &context.credentials, effective_proxy.as_ref()).await;
     // 排队退避的预算：用户给「等待响应超时」的那份预算（理由见 queue_backoff）
     let queue_budget_ms = crate::timeouts::current().headers_ms();
     let mut queue_waits: usize = 0;
@@ -714,9 +777,9 @@ async fn run_conversation_inner(
         let plan = chat::build_plan(&context.credentials, &body, &model_name)?;
 
         logging::verbose(
-            "[Qoder]",
+            "[Chat]",
             &format!(
-                "POST {} model={} upstream={} stream={} region={} account={}",
+                "POST {} model={} upstream={} stream={} site={} account={}",
                 plan.url,
                 if model_name.is_empty() {
                     "(默认)"
@@ -725,7 +788,7 @@ async fn run_conversation_inner(
                 },
                 plan.upstream_key,
                 stream,
-                context.credentials.region.id(),
+                context.credentials.site.id(),
                 account_id,
             ),
         );
@@ -740,7 +803,7 @@ async fn run_conversation_inner(
                 chat::AttemptError::Auth(error) => {
                     context = refresh_after_auth(
                         ctx,
-                        region,
+                        site,
                         &account_id,
                         &mut auth_retries,
                         error,
@@ -754,6 +817,7 @@ async fn run_conversation_inner(
                     if error.status_code == 429 {
                         record_limited(
                             ctx,
+                            site,
                             &account_id,
                             &model_name,
                             status,
@@ -783,6 +847,7 @@ async fn run_conversation_inner(
         // 局部变量都还在（被 move 进后台任务），所以先克隆好
         let limit_ctx = LimitContext {
             ctx,
+            site,
             account_id: account_id.clone(),
             model: model_name.clone(),
         };
@@ -835,7 +900,7 @@ async fn run_conversation_inner(
                 Err(chat::AttemptError::Auth(error)) => {
                     context = refresh_after_auth(
                         ctx,
-                        region,
+                        site,
                         &account_id,
                         &mut auth_retries,
                         error,
@@ -852,7 +917,10 @@ async fn run_conversation_inner(
         match drive_aggregate(response, translator, telemetry.clone(), &limit_ctx).await {
             Ok(body) => {
                 let payload = serde_json::to_string(&body).map_err(|error| {
-                    GatewayError::with_status(500, format!("Qoder 聚合结果序列化失败：{error}"))
+                    GatewayError::with_status(
+                        500,
+                        format!("{} 聚合结果序列化失败：{error}", site.display_name()),
+                    )
                 })?;
                 sink.head(proto::StreamHead {
                     status: 200,
@@ -886,7 +954,7 @@ async fn run_conversation_inner(
             Err(chat::AttemptError::Auth(error)) => {
                 context = refresh_after_auth(
                     ctx,
-                    region,
+                    site,
                     &account_id,
                     &mut auth_retries,
                     error,
@@ -935,7 +1003,7 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
 /// 它比「上游返回 401」更能告诉用户下一步该做什么。
 async fn refresh_after_auth(
     ctx: &PluginCtx,
-    region: Region,
+    site: Site,
     account_id: &str,
     attempts: &mut usize,
     error: GatewayError,
@@ -945,11 +1013,14 @@ async fn refresh_after_auth(
         return Err(error);
     }
     *attempts += 1;
-    logging::log("[Qoder]", "🔑 上游报鉴权失败，强制续期凭证后同账号重试一次");
+    logging::log(
+        "[Auth]",
+        &format!("🔑 {} 上游报鉴权失败，强制续期凭证后同账号重试一次", site.display_name()),
+    );
     // 续期本身可能在途（刷新接口一次往返），先记一条内部重试 —— 用户看到
     // 「凭证过期 → 续期 → 重发」这条链，才解释得通这次请求为什么慢了一拍
     telemetry.note_attempt_retry("上游鉴权失败，强制续期凭证后重试", Some(401), 0);
-    chat::account_context(ctx, region, account_id, true).await
+    chat::account_context(ctx, site, account_id, true).await
 }
 
 // ── 排队等待的次数与单次时长来自设置页「通用 → 排队等待」──────────
@@ -1017,6 +1088,8 @@ async fn sleep_or_cancel(_telemetry: &std::sync::Arc<RequestTelemetry>, delay_ms
 /// handler 返回前）与 `piping::drive_stream` 的中途错误都在错误现场落冷却；
 /// 后者在 handler 返回之后才跑，那些标识必须随任务一起带走。
 struct LimitContext<'a> {
+    /// 本次请求的站点（错误文案与日志用）
+    site: Site,
     /// 借用当前调用的 ctx：插件里 `conversation` 是**推模型**（`drive_stream`
     /// 被直接 await，不是后台任务），所以不需要 `'static`。网关那份要 `String`
     /// 是因为它把 `drive_stream` 挂进 `spawn_task` —— 插件没有那个形态。
@@ -1052,7 +1125,8 @@ async fn drive_aggregate(
             Ok(chunk) => chunk,
             Err(error) => {
                 transport_failure = Some(chat::AttemptError::Fatal(GatewayError::with_status(
-                    502, format!("Qoder 上游流式传输中断: {error}"),
+                    502,
+                    format!("{} 上游流式传输中断: {error}", limit.site.display_name()),
                 )));
                 break;
             }
@@ -1067,6 +1141,7 @@ async fn drive_aggregate(
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
                         &limit.ctx,
+                        limit.site,
                         &limit.account_id,
                         &limit.model,
                         status,

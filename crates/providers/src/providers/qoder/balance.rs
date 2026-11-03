@@ -1,6 +1,6 @@
-//! Qoder 个人额度、个人资源包与组织资源包，统一为账号页的余额形态。
+//! 额度查询：归一成账号页的余额形态（`available` / `unit` / `wallets` / `credits`）。
 //!
-//! ── 三个桶分别是什么（2026-09-27 在真实账号上实测）──────────────
+//! ── Qoder 的三个桶（2026-09-27 在真实账号上实测）──────────────────
 //!   - `userQuota`：订阅套餐的额度（官方控制台「订阅版本的资源」，如总额 300、
 //!     剩余 225）。`available` 的主口径，字段 `total/used/remaining/unit`；
 //!   - `addOnQuota`：官方控制台叫「**个人资源包**」——通过活动/购买获得，
@@ -9,36 +9,24 @@
 //!     账号如此），因此要判「有没有」，不能当成恒在的桶去读零；
 //!   - `orgResourcePackage`：组织（团队）资源包。**字段形状与上面两个都不同**：
 //!     总量叫 `cap`（不是 `total`）、另外多一个 `available` 布尔标它是否真的可用。
-//!     实测形状（2026-10-12，国际版 Teams 账号）：
-//!     `{"used":0,"remaining":0,"percentage":0,"unit":"credits","cap":0,"available":false}`
-//!     ——空桶也会**整个键返回**，所以「键在不在」不能当判据；要看 `available`
-//!     与 `cap`，否则会把一个还没发放的组织包画成「组织总额 0」。
 //!
-//! 漏掉 `addOnQuota` 正是 issue #26 的直接原因：签到领到的 600 credits 全在那个桶里，
-//! 而这里此前只读 `userQuota` 与 `orgResourcePackage`，界面上一个数字都不显示。
-//! 三个独立实现都是同一字段名（CLIProxyAPI 的 qoder2api 插件标「个人拓展包」、
-//! CPA 的 qoder 插件、10router 的 CHANGELOG 里那条同样的修复）。
-//!
-//! ── `available` 为什么把资源包算进去 ────────────────────────
-//! 账号页那一列回答的是「这个账号还能花多少」，而资源包里的 credits 与套餐额度
-//! 一样能花（官方控制台把两者并列显示）。所以
-//! `available = userQuota.remaining + addOnQuota.remaining + orgResourcePackage.remaining`
-//! （组织包那一项仅在 `available:true` 时计入），钱包明细里再拆开给用户看——
-//! 相加之后「签到领了 100」会立刻反映在列表上，不用展开面板才发现。
-//!
-//! ── 套餐名与到期 ───────────────────────────────────────────
-//! 套餐名来自 `GET /api/v2/user/plan` 的 `plan_tier_name`（`Free` / `Pro Trial`），
-//! 取不到就不显示（额度接口才是主链路，套餐名只是补一行）。到期的**哨兵值**见
-//! [`EXPIRY_SENTINEL_MS`]。
+//! ── 千问办公读的是另一份文档 ────────────────────────────────
+//! 它的账号上下文（`/api/v1/adapter/user/account-context`）里给
+//! `plan`（套餐名 + 下次刷新日）与 `quota`（总量 / 已用 / 剩余），
+//! 公有云的个人账号另外有 `/api/v1/adapter/user/wallets` 三档积分池。
+//! **个人账号的 `quota.total` 与 `used` 是 null**，只有 `remaining` 是真实的
+//! —— 所以那时只报余额、不编造「已用占比」（与它自己的客户端一致）。
 
 use serde_json::{json, Map, Value};
 
-use agent2api_provider_sdk::PluginCtx;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
+use agent2api_provider_sdk::PluginCtx;
+
 use crate::errors::GatewayError;
 
 use super::credentials::Credentials;
-use super::{auth, endpoints, refresh};
+use super::endpoints::{self, Site};
+use super::{auth, refresh};
 
 /// `expiresAt` 的「永不过期」哨兵值：上游给 `253402214400000`（9999-12-31）。
 ///
@@ -102,9 +90,6 @@ fn add_on(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
 }
 
 /// `orgResourcePackage` 桶本身（键在、是对象、且上游说它**可用**）。
-///
-/// 判据细则见 [`org_package`] 的文档；这里与 [`add_on_bucket`] 同一取向 ——
-/// 判据只写一份，钱包行与 [`credit_rows`] 的组织资源包行都从这里取桶。
 fn org_bucket(raw: &Value) -> Option<&Value> {
     let bucket = raw.get("orgResourcePackage").filter(|value| value.is_object())?;
     let cap = number(bucket.get("cap")).or_else(|| number(bucket.get("total")));
@@ -119,16 +104,10 @@ fn org_bucket(raw: &Value) -> Option<&Value> {
 /// 组织资源包（`orgResourcePackage`）→ 钱包行 + 剩余额度。
 ///
 /// 判据与上面两桶**都不同**（见模块头）：
-///   * 总量字段叫 `cap`（旧形状里叫 `total`，作兜底读）—— 此前只按 `total` 读，
-///     而新响应里没有这个键，读到的恒是 `None`，组织额度永远不会出现在面板上；
+///   * 总量字段叫 `cap`（旧形状里叫 `total`，作兜底读）；
 ///   * 空桶也**整个键返回**，所以「键在不在」不能当判据；上游用 `available`
-///     表明这份额度当前是否真的可用，`false` 时整桶跳过，免得把还没发放的
-///     组织包画成「组织总额 0」；
-///   * `remaining` 只在可用时返回 —— 不可用的包即使带着非零 `remaining`
-///     也不能算进「还能花多少」。
-///
-/// `available` 缺失（旧形状）时退回老判据：`cap` / `used` / `remaining`
-/// 有一个大于零就显示。判据本体在 [`org_bucket`]。
+///     表明这份额度当前是否真的可用，`false` 时整桶跳过；
+///   * `remaining` 只在可用时算进「还能花多少」。
 fn org_package(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
     let Some(bucket) = org_bucket(raw) else {
         return (Vec::new(), None);
@@ -150,22 +129,8 @@ fn org_package(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
 /// 逐桶明细行（账号页「积分明细」弹层的输入；行形状与 workbuddy / trae 两家
 /// 同一套 —— 界面只写一个读取器）。
 ///
-/// 一行一个桶：套餐额度 → 个人资源包 → 组织资源包（与 `wallets` 的 push 顺序
-/// 一致）。三个数直接透传桶上的 `total` / `used` / `remaining`，**缺失不写键**
+/// 三个数直接透传桶上的 `total` / `used` / `remaining`，**缺失不写键**
 /// （界面 `Number(null) === 0`，写 null 会把「没读到」画成「只剩 0」）。
-///
-/// ── 出行的判据全部与钱包行同源 ──────────────────────────────
-///   * 套餐行：三个数一个都读不到时整行不出 —— 行里没有数字可读，界面只能画
-///     「—」（与 ZCode 那边「纯比例窗口行跳过」同一条纪律）；一个桶都没读到
-///     时 `credits` 键整个不写，界面按「键在不在」自然退回原样。
-///   * 个人资源包 / 组织资源包两行：判据取 [`add_on_bucket`] / [`org_bucket`]
-///     —— 「有没有这份额度」只有一份判据，见那两个函数。
-///
-/// ── 时刻与单位 ──────────────────────────────────────────────
-///   * 不写 `expireAt` / `grantAt`：桶级没有这些字段；`subscription.expireAt`
-///     是**订阅**到期，与「这一份额度什么时候作废」是两回事，不拿它顶替；
-///   * `unit` 只在该桶自己的单位非空且**与文档级不同**时写（文档级取自
-///     `userQuota.unit`，缺省「额度」；三桶通常同单位，多数情况都不写）。
 fn credit_rows(raw: &Value, doc_unit: &str) -> Vec<Value> {
     let mut rows: Vec<Value> = Vec::new();
     if let Some(bucket) = raw.get("userQuota").filter(|value| value.is_object()) {
@@ -195,7 +160,6 @@ fn credit_rows(raw: &Value, doc_unit: &str) -> Vec<Value> {
     if let Some(bucket) = org_bucket(raw) {
         if let Some(row) = credit_row(
             "组织资源包",
-            // 总量字段叫 `cap`（旧形状叫 `total`，与钱包行同一兜底，见 [`org_package`]）
             number(bucket.get("cap")).or_else(|| number(bucket.get("total"))),
             number(bucket.get("used")),
             number(bucket.get("remaining")),
@@ -223,8 +187,6 @@ fn credit_row(
     }
     let mut row = Map::new();
     row.insert("name".to_string(), Value::String(name.to_string()));
-    // 上游给什么写什么（读到 0 也照写：那是真读数，不是「没读到」）；
-    // 缺失一律不写这个键
     for (key, value) in [("total", total), ("used", used), ("remain", remain)] {
         if let Some(value) = value {
             row.insert(key.to_string(), json!(value));
@@ -250,14 +212,13 @@ fn expiry_of(raw: &Value) -> Option<Value> {
     Some(value.clone())
 }
 
-/// 套餐名（`plan_tier_name`）。**best-effort**：失败只让这一行不显示，
-/// 不影响额度本身（额度接口已经成功，套餐名只是补充信息）。
+/// 套餐名（`plan_tier_name`）。**best-effort**：失败只让这一行不显示。
 async fn plan_name(credentials: &Credentials, proxy: Option<&ResolvedProxy>) -> Option<String> {
     let response = auth::request(
         "GET",
-        &format!("{}{}", credentials.region.open_api(), endpoints::PLAN_PATH),
+        &format!("{}{}", credentials.site.open_api(), endpoints::PLAN_PATH),
         None,
-        &endpoints::open_api_headers(Some(&credentials.access_token)),
+        &auth::account_headers(credentials.site, Some(&credentials.access_token)),
         proxy,
     ).await.ok()?;
     let name = response.payload?.get("plan_tier_name")?.as_str()?.trim().to_string();
@@ -268,12 +229,10 @@ async fn plan_name(credentials: &Credentials, proxy: Option<&ResolvedProxy>) -> 
     }
 }
 
-/// 额度文档的纯函数半边：三个桶合成钱包明细、`available` 与顶层逐桶明细
-/// （`credits`，见 [`credit_rows`]）。
+/// 额度文档的纯函数半边（Qoder）：三个桶合成钱包明细、`available` 与逐桶明细。
 ///
 /// 抽出来是为了让「组织资源包计不计入 `available`」这类判据能单测钉住——
-/// 这一带的历史事故全是「明明读到了却显示成没有」，而症状在界面上，
-/// 光看 `query` 的返回值很难回归。
+/// 这一带的历史事故全是「明明读到了却显示成没有」，而症状在界面上。
 fn usage_document(raw: &Value) -> Value {
     let quota = raw.get("userQuota");
     let remaining = quota.and_then(|quota| number(quota.get("remaining")));
@@ -302,9 +261,6 @@ fn usage_document(raw: &Value) -> Value {
         "unit": unit,
         "wallets": wallets,
     });
-    // 逐桶明细挂文档顶层（见 [`credit_rows`]）；空数组**整键不写** —— 界面按
-    // 「键在不在 + 长度」决定挂不挂「积分明细」入口，写一个空数组会挂出一个
-    // 点开是空的入口。
     if !credits.is_empty() {
         if let Some(object) = document.as_object_mut() {
             object.insert("credits".to_string(), Value::Array(credits));
@@ -313,28 +269,154 @@ fn usage_document(raw: &Value) -> Value {
     document
 }
 
+// ─── 千问办公 ───────────────────────────────────────────────────
+
+/// 账号上下文的 `data` 那一层（客户端自己的 `unwrapAdapterResponse`：
+/// 有 `data` 对象就用它，否则用信封本身）。
+fn unwrap(value: &Value) -> &Value {
+    value
+        .get("data")
+        .filter(|data| data.is_object())
+        .unwrap_or(value)
+}
+
+/// 三档积分池的 key 与展示名（顺序照客户端：每日 / 每月 / 长期）。
+const POOLS: &[(&str, &str, &str)] = &[
+    ("daily_credits", "每日积分", "daily_credits"),
+    ("monthly_credits", "每月积分", "monthly_credits"),
+    ("longterm_credits", "长期积分", "longterm_credits"),
+];
+
+/// 钱包（`/api/v1/adapter/user/wallets`）→ 逐格余额。
+///
+/// 每一格的 `total_balance` 是这一档**还剩多少**（不是总额）；读不到的池不
+/// 出行（不编造 0）。
+fn wallet_pools(wallets: &Value) -> Vec<(String, f64)> {
+    let data = unwrap(wallets);
+    let mut out = Vec::new();
+    for (key, label, _) in POOLS {
+        let pool = data.get(*key);
+        let balance = pool
+            .and_then(|pool| number(pool.get("total_balance")))
+            .or_else(|| pool.and_then(|pool| number(pool.get("totalBalance"))));
+        if let Some(balance) = balance.filter(|value| *value > 0.0) {
+            out.push((label.to_string(), balance));
+        }
+    }
+    out
+}
+
+/// 账号上下文 + 钱包 → 账号页的余额文档（千问办公）。
+///
+/// ── 为什么 `total` / `used` 可能是空 ────────────────────────
+/// 个人账号的 `quota` 只给 `remaining`（`total` 与 `used` 都是 null）——
+/// 那时只报余额，不反推出一个「已用占比」（那正是「编造一个 0 总额」的来源）。
+/// 企业账号或有总额的账号照常给「已用 / 总额」那一行。
+fn qwenwork_document(context: &Value, wallets: Option<&Value>) -> Value {
+    let data = unwrap(context);
+    let plan = data.get("plan").filter(|value| value.is_object());
+    let quota = data.get("quota").filter(|value| value.is_object());
+
+    let mut document = Map::new();
+    let mut unit = "credits";
+    let mut credits: Vec<Value> = Vec::new();
+    let mut available: Option<f64> = None;
+
+    if let Some(quota) = quota {
+        let total = number(quota.get("total"));
+        let remaining = number(quota.get("remaining"));
+        let used = number(quota.get("used")).or_else(|| match (total, remaining) {
+            (Some(total), Some(remaining)) => Some(total - remaining),
+            _ => None,
+        });
+        if let Some(row) = credit_row("积分", total, used, remaining, None, unit) {
+            credits.push(row);
+        }
+        available = remaining;
+    }
+    // 公有云的个人账号有这三档池：它们的分项是「余额里都是什么」，
+    // 所以只作明细行，不再叠加进 `available`（那份余额本来就是三档之和）。
+    if let Some(wallets) = wallets {
+        for (label, balance) in wallet_pools(wallets) {
+            if let Some(row) = credit_row(&label, None, None, Some(balance), None, unit) {
+                credits.push(row);
+            }
+        }
+    }
+    if unit.is_empty() {
+        unit = "credits";
+    }
+    document.insert("available".to_string(), available.map_or(Value::Null, |value| json!(value)));
+    document.insert("unit".to_string(), Value::String(unit.to_string()));
+    document.insert("wallets".to_string(), Value::Array(Vec::new()));
+    if !credits.is_empty() {
+        document.insert("credits".to_string(), Value::Array(credits));
+    }
+    let mut subscription = Map::new();
+    if let Some(name) = plan.and_then(|plan| plan.get("name")).and_then(Value::as_str) {
+        if !name.trim().is_empty() {
+            subscription.insert("planName".to_string(), Value::String(name.trim().to_string()));
+        }
+    }
+    let renew = plan
+        .and_then(|plan| plan.get("next_refresh_date").or_else(|| plan.get("next_due_date")))
+        .and_then(Value::as_str)
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|time| time.timestamp_millis());
+    if let Some(renew) = renew {
+        subscription.insert("expireAt".to_string(), json!(renew));
+    }
+    document.insert("subscription".to_string(), Value::Object(subscription));
+    Value::Object(document)
+}
+
+/// 读一份账号接口（带令牌），可指定路径。
+async fn read(site: Site, path: &str, token: &str, proxy: Option<&ResolvedProxy>) -> Result<Value, GatewayError> {
+    let response = auth::request(
+        "GET",
+        &format!("{}{}", site.open_api(), path),
+        None,
+        &auth::account_headers(site, Some(token)),
+        proxy,
+    ).await?;
+    if !response.ok {
+        return Err(GatewayError::with_status(
+            i32::from(response.status),
+            format!("额度查询失败（HTTP {}）", response.status),
+        ));
+    }
+    response
+        .payload
+        .ok_or_else(|| GatewayError::with_status(502, "额度查询未返回有效 JSON"))
+}
+
 pub async fn query(
     ctx: &PluginCtx,
-    region: super::endpoints::Region,
+    site: Site,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let mut credentials = refresh::ensure_fresh(ctx, region, account_id, false).await?;
-    let (record, _) = refresh::snapshot(ctx, region, account_id).await?;
+    let mut credentials = refresh::ensure_fresh(ctx, site, account_id, false).await?;
+    let (record, _) = refresh::snapshot(ctx, site, account_id).await?;
     let proxy = auth::account_proxy(&record)?;
+    if site.is_qwenwork() {
+        return qwenwork_usage(ctx, site, account_id, &mut credentials, proxy.as_ref()).await;
+    }
+    // ── Qoder ──────────────────────────────────────────────────
+    let usage_path = endpoints::USAGE_PATH;
     let mut response = auth::request(
         "GET",
-        &format!("{}{}", credentials.region.open_api(), endpoints::USAGE_PATH),
+        &format!("{}{}", credentials.site.open_api(), usage_path),
         None,
-        &endpoints::open_api_headers(Some(&credentials.access_token)),
+        &auth::account_headers(credentials.site, Some(&credentials.access_token)),
         proxy.as_ref(),
     ).await?;
     if response.status == 401 && credentials.can_refresh() {
-        credentials = refresh::ensure_fresh(ctx, region, account_id, true).await?;
+        credentials = refresh::ensure_fresh(ctx, site, account_id, true).await?;
         response = auth::request(
             "GET",
-            &format!("{}{}", credentials.region.open_api(), endpoints::USAGE_PATH),
+            &format!("{}{}", credentials.site.open_api(), usage_path),
             None,
-            &endpoints::open_api_headers(Some(&credentials.access_token)),
+            &auth::account_headers(credentials.site, Some(&credentials.access_token)),
             proxy.as_ref(),
         ).await?;
     }
@@ -353,3 +435,42 @@ pub async fn query(
     Ok(document)
 }
 
+/// 千问办公的余额：账号上下文 + （个人账号才有）三档钱包。
+///
+/// 401 与 Qoder 同一条处置：**强制**续期凭证一次再读一遍（不看的临期窗口，
+/// 因为「时间上还很新但被服务端作废」的令牌正是这一档要救的）。
+async fn qwenwork_usage(
+    ctx: &PluginCtx,
+    site: Site,
+    account_id: &str,
+    credentials: &mut Credentials,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Value, GatewayError> {
+    let usage_path = site
+        .usage_path()
+        .ok_or_else(|| GatewayError::with_status(500, "这家没有配置额度读取路径"))?;
+    let mut context = read(site, usage_path, &credentials.access_token, proxy).await;
+    if matches!(&context, Err(error) if error.status_code == 401 || error.status_code == 403)
+        && credentials.can_refresh()
+    {
+        *credentials = refresh::ensure_fresh(ctx, site, account_id, true).await?;
+        context = read(site, usage_path, &credentials.access_token, proxy).await;
+    }
+    let context = context?;
+
+    // 钱包：只有国内版的**个人**账号有（`is_biz` 为假）。读失败不阻断 ——
+    // 余额本身已经在手，分项读不到就只少明细行。
+    let mut wallets: Option<Value> = None;
+    if let Some(wallet_path) = site.wallets_path() {
+        let user = unwrap(&context)
+            .get("user")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let is_biz = user.get("is_biz").or_else(|| user.get("isBiz"));
+        if is_biz.and_then(Value::as_bool) != Some(true) {
+            wallets = read(site, wallet_path, &credentials.access_token, proxy).await.ok();
+        }
+    }
+    Ok(qwenwork_document(&context, wallets.as_ref()))
+}

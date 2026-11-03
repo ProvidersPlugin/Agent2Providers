@@ -47,8 +47,7 @@
 
 mod admin;
 pub mod activation;
-pub mod anthropic_outbound;
-pub mod anthropic_shared;
+pub use crate::anthropic::anthropic_outbound;
 pub mod balance;
 pub mod captcha;
 pub mod checkin;
@@ -60,7 +59,6 @@ pub mod endpoint_mapping;
 mod login;
 mod models;
 pub mod monitor;
-pub mod native_tool;
 pub mod oauth;
 pub mod plan;
 pub mod reasoning;
@@ -537,8 +535,8 @@ impl Provider for ZcodeProvider {
         })
     }
 
-    /// 带 `manual` 的签到：本家没有写请求限流闸，两档执行体一致，只把
-    /// `retryAt` 透出去（网关的重试链读它）。
+    /// 带 `manual` 的签到：本家没有写请求限流闸，两档执行体一致。
+    /// 重试时刻与逐套餐领取明细随汇总一起返回。
     fn checkin_with_options<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -552,6 +550,7 @@ impl Provider for ZcodeProvider {
             Ok(agent2api_provider_sdk::CheckinResult {
                 report: checkin_report(&value),
                 retry_at: value.get("retryAt").and_then(Value::as_i64),
+                details: Some(value),
             })
         })
     }
@@ -616,10 +615,12 @@ impl Provider for ZcodeProvider {
                 }));
             };
             let attempt = claim::claim_plan(
-                ctx, self.region, account, &jwt, mid, proxy.as_ref(), &plan, None,
+                ctx, self.region, account, &jwt, mid, &user_id, proxy.as_ref(), &plan, None,
             ).await.map_err(GatewayError::into_message)?;
             let mut result = claim_json(&attempt.outcome);
             result["marketingError"] = serde_json::json!(attempt.marketing_error);
+            result["dailyCheckin"] = attempt.daily_checkin;
+            result["claimedAt"] = serde_json::json!(attempt.claimed_at);
             Ok(result)
         })
     }
@@ -915,7 +916,7 @@ async fn preview_action(
     user_id: &str,
     proxy: Option<&agent2api_provider_protocol::WireProxy>,
 ) -> Result<Value, String> {
-    claim::preview(ctx, region, account, jwt, device_mid, user_id, proxy, true)
+    claim::preview(ctx, region, account, jwt, device_mid, user_id, proxy, claim::PreviewPurpose::Display, true)
         .await
         .map(|snapshot| snapshot.to_json())
         .map_err(GatewayError::into_message)
@@ -967,7 +968,7 @@ async fn claim_action(
         }));
     };
     let attempt = claim::claim_plan(
-        ctx, region, account, jwt, device_mid, proxy, &plan,
+        ctx, region, account, jwt, device_mid, user_id, proxy, &plan,
         Some((&captcha_verify_param, captcha_region.as_deref())),
     ).await.map_err(GatewayError::into_message)?;
     Ok(match attempt.outcome {
@@ -982,6 +983,8 @@ async fn claim_action(
                 "startsAt": starts_at,
                 "endsAt": ends_at,
                 "marketingError": attempt.marketing_error,
+                "dailyCheckin": attempt.daily_checkin,
+                "claimedAt": attempt.claimed_at,
                 "activated": activated,
                 "activationError": activation_error,
             })
@@ -1004,6 +1007,8 @@ async fn claim_action(
                 "message": message,
                 "failureEndsAt": failure_ends_at,
                 "marketingError": attempt.marketing_error,
+                "dailyCheckin": attempt.daily_checkin,
+                "claimedAt": attempt.claimed_at,
                 "activated": activated,
                 "activationError": activation_error,
             })

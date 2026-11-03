@@ -24,28 +24,32 @@ pub const SUCCESS_CODE: &str = "000000";
 
 /// 读取响应体里的业务码（字符串；缺失时为空串）
 pub fn business_code(payload: &Value) -> String {
-    payload
-        .get("code")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    match payload.get("code") {
+        Some(Value::String(code)) => code.trim().to_string(),
+        Some(Value::Number(code)) => code.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// 业务码是不是「登录态无效」
 pub fn is_auth_error_code(code: &str) -> bool {
-    AUTH_ERROR_CODES.contains(&code)
+    AUTH_ERROR_CODES.contains(&code) || code == "20002"
 }
 
-/// 上游业务文案（`desc` → `message` 兜底）
+/// 上游业务文案（积分信封与两种模型协议的错误体）。
 pub fn upstream_message(payload: &Value) -> String {
-    payload
-        .get("desc")
-        .and_then(Value::as_str)
-        .or_else(|| payload.get("message").and_then(Value::as_str))
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
+    [
+        payload.get("desc"),
+        payload.get("message"),
+        payload.pointer("/error/message"),
+        payload.get("error_msg"),
+    ]
+    .into_iter()
+    .find_map(|value| {
+        value.and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
+    })
+    .unwrap_or("")
+    .to_string()
 }
 
 /// 向 CAccount 发一次**带签名**的 POST（登录链路，没有账号上下文，不走代理）。
@@ -102,12 +106,17 @@ pub async fn token_request(
     };
     let (status, payload) = result?;
     if !(200..300).contains(&status) {
-        if status == 401 || status == 403 {
+        if status == 401 || is_auth_error_code(&business_code(&payload)) {
             return Err(format!(
                 "{what}：Loomy 登录态已失效，请重新登录（HTTP {status}）"
             ));
         }
-        return Err(format!("{what}返回 HTTP {status}"));
+        let message = upstream_message(&payload);
+        return Err(if message.is_empty() {
+            format!("{what}返回 HTTP {status}")
+        } else {
+            format!("{what}返回 HTTP {status}：{message}")
+        });
     }
     Ok(payload)
 }

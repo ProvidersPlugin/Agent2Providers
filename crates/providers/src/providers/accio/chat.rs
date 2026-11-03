@@ -116,6 +116,7 @@ pub fn build_plan(
     let mut headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Accept".to_string(), "text/event-stream".to_string()),
+        ("User-Agent".to_string(), endpoints::ADAPTER_USER_AGENT.to_string()),
         ("x-language".to_string(), endpoints::ACCEPT_LANGUAGE.to_string()),
         (
             "x-app-version".to_string(),
@@ -331,11 +332,6 @@ fn usage_frames(translator: &Translator) -> String {
     }))).unwrap_or_default()
 }
 
-fn empty_response_error() -> GatewayError {
-    GatewayError::with_status(502, "Accio 上游返回空响应（没有有效正文、思考或工具调用）")
-        .with_code("accio_empty_response")
-}
-
 /// 收尾帧（finish_reason + usage）
 fn tail_frames(translator: &mut Translator) -> String {
     let mut out = String::new();
@@ -404,7 +400,7 @@ pub(super) async fn prefetch_stream_head(
         }
         if finished { break; }
     }
-    Err(empty_response_error())
+    Err(source.no_output_error())
 }
 
 /// 流式：逐帧翻译并下发（在 spawn 的后台任务里跑）。
@@ -451,7 +447,7 @@ pub async fn drive_stream(
         if frame.turn_complete { break; }
     }
     if !translator.has_output() {
-        let error = empty_response_error();
+        let error = source.no_output_error();
         let _ = sink.send(failure_frames(&translator, &error).as_bytes()).await;
         return Err(error);
     }
@@ -480,7 +476,7 @@ pub async fn drive_aggregate(
         if frame.turn_complete { break; }
     }
     if !translator.has_output() {
-        return Err(empty_response_error());
+        return Err(source.no_output_error());
     }
     Ok(completion_body(&translator))
 }

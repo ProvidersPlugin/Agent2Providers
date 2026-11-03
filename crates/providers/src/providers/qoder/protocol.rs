@@ -29,14 +29,16 @@
 
 use serde_json::{json, Value};
 
+use super::endpoints::{ModelConfigStyle, Site};
 use super::models::MAX_OUTPUT_TOKENS;
 
-/// 上游要求的会话类型与 agent 标识（源实现 `SESSION_TYPE` / `AGENT_ID`）
-const SESSION_TYPE: &str = "qodercli";
+/// 上游要求的 agent 标识（源实现 `AGENT_ID`）
 const AGENT_ID: &str = "agent_common";
 /// 上游的对话任务类型（源实现 `CHAT_TASK`）
 const CHAT_TASK: &str = "FREE_INPUT";
-
+/// 会话类型 / `business.*` 由站点决定（[`Site::session_type`] 等）——
+/// **它们必须与 COSY 头里的客户端身份一致**，见 `endpoints.rs` 的说明。
+///
 /// 思考内容可能包裹在这些标签里（源实现 `THINK_TAGS`）
 pub const THINK_TAGS: &[(&str, &str)] = &[
     ("<thinking>", "</thinking>"),
@@ -318,26 +320,36 @@ pub fn resolve_thinking(body: &Value, model: &Value) -> ThinkingChoice {
         other => other.to_string().trim().to_lowercase(),
     };
 
-    // 常见别名归一：OpenAI 侧的 minimal/high 与上游档位对齐
-    let wanted = match asked.as_str() {
-        "minimal" | "min" => "low",
-        "high" | "max" => "xhigh",
-        other => other,
-    };
-
     let declared: Vec<String> = model
         .get("efforts")
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
-    // 模型声明了档位就以它为准；没声明就只在标准三档里做保守映射
+
+    // ── 先认「上游自己声明过的档位」，再做别名归一 ────────────────
+    // 顺序反过来会把千问办公那族（声明 low / medium / high 的）里
+    // `high` 直接折成 `xhigh`，那个值不在声明表里，于是被当成「模型不支持」
+    // 退回默认档 —— 用户要 high，发出去的是 medium，而日志里什么异常都没有。
+    // 上游声明了什么就优先用什么，别名只用于声明表里没有的写法。
+    let wanted = if declared.iter().any(|known| known == &asked) {
+        asked.clone()
+    } else {
+        match asked.as_str() {
+            "minimal" | "min" => "low",
+            "high" | "max" => "xhigh",
+            other => other,
+        }
+        .to_string()
+    };
+
     let pool: Vec<String> = if declared.is_empty() {
+        // 模型没声明档位：只在标准三档里做保守映射
         vec!["low".to_string(), "medium".to_string(), "xhigh".to_string()]
     } else {
         declared.clone()
     };
-    let effort = if pool.iter().any(|known| known == wanted) {
-        wanted.to_string()
+    let effort = if pool.iter().any(|known| known == &wanted) {
+        wanted
     } else {
         // 请求的档位模型不支持：退回该模型的默认档，而不是发一个无效值
         declared
@@ -354,6 +366,10 @@ pub fn resolve_thinking(body: &Value, model: &Value) -> ThinkingChoice {
 ///
 /// `session_seed` 用于「同一段对话复用同一 session」：下游给了 `user` 或
 /// `session_id` 时用它派生，否则每次新建。
+///
+/// `site` 决定 `session_type` / `business` 那一组客户端身份字段，以及
+/// `model_config` 的形状（千问办公的客户端那一份更宽，见
+/// [`ModelConfigStyle`]）。**这些必须与 COSY 头一致**，见 `endpoints.rs`。
 #[allow(clippy::too_many_arguments)]
 pub fn build_upstream_body(
     upstream_key: &str,
@@ -364,6 +380,7 @@ pub fn build_upstream_body(
     thinking: &ThinkingChoice,
     user_id: &str,
     session_seed: Option<&str>,
+    site: Site,
 ) -> Value {
     let limit = max_tokens
         .filter(|value| *value > 0)
@@ -397,6 +414,20 @@ pub fn build_upstream_body(
         }
         None => {}
     }
+    // 千问办公：把上下文窗口一并声明出来（客户端与参考实现都这么做）。
+    // 它的目录只有一个 `max_input_tokens`、没有 `context_config` 那几档，
+    // `context.rs` 的升档逻辑因此永远不会触发；不声明的话上游按自己的默认
+    // 窗口走，长对话会在一半处被拒。值取目录给的，目录没给就用站点声明值。
+    if site.is_qwenwork() {
+        let declared = model_config
+            .get("max_input_tokens")
+            .and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| site.max_input_tokens());
+        if declared > 0 {
+            parameters.insert("context_length".to_string(), Value::from(declared));
+        }
+    }
 
     let request_id = super::cosy::random_uuid().unwrap_or_default();
     let session_id = session_id_for(user_id, upstream_key, session_seed);
@@ -412,7 +443,7 @@ pub fn build_upstream_body(
         "is_retry": false,
         "source": 1,
         "version": "3",
-        "session_type": SESSION_TYPE,
+        "session_type": site.session_type(),
         "agent_id": AGENT_ID,
         "task_id": "common",
         "code_language": "",
@@ -441,17 +472,35 @@ pub fn build_upstream_body(
             "features": [],
             "text": last_user_text,
         },
-        "model_config": slim_model_config(model_config, upstream_key),
+        "model_config": shape_model_config(model_config, upstream_key, site),
         "business": {
-            "product": "cli",
-            "version": "1.0.0",
+            "product": site.business_product(),
+            "version": site.business_version(),
             "type": "agent",
-            "stage": "start",
+            // 「这一轮是不是已经回答过」：千问办公的客户端在对话请求里发
+            // processing（dumate2api 与归档实现都如此），Qoder 侧保持 start。
+            "stage": if site.is_qwenwork() { "processing" } else { "start" },
             "id": super::cosy::random_uuid().unwrap_or_default(),
             "name": last_user_text.chars().take(30).collect::<String>(),
             "begin_at": crate::logging::now_ms(),
         },
     })
+}
+
+/// 按站点成形发往上游的 `model_config`。
+///
+/// ── 两个形状各自的依据 ──────────────────────────────────────
+/// Qoder 用 [`slim_model_config`]（源实现 `slimModelConfig` 的精简形状）；
+/// 千问办公用客户端那一份更宽的字段集（dumate2api 逐字段抄自客户端，那里的
+/// 注释写明「与客户端一致才不被拒」）。
+///
+/// 两个形状都**必须剥掉 `thinking_config`**：目录条目原样回传会覆盖
+/// `parameters.enable_thinking`，导致「关闭思考」失效（见模块头）。
+pub fn shape_model_config(config: &Value, upstream_key: &str, site: Site) -> Value {
+    match site.model_config_style() {
+        ModelConfigStyle::Qoder => slim_model_config(config, upstream_key),
+        ModelConfigStyle::Qwenwork => qwenwork_model_config(config, upstream_key, site),
+    }
 }
 
 /// 精简发往上游的 `model_config`（源实现 `slimModelConfig`）。
@@ -469,6 +518,49 @@ pub fn slim_model_config(config: &Value, upstream_key: &str) -> Value {
         }
     }
     Value::Object(slim)
+}
+
+/// 千问办公的 `model_config`（客户端那一份）。
+///
+/// `display_name` 取上游 key（dumate2api 同款）——那只是给上游日志看的标注，
+/// 不参与路由；`max_input_tokens` 如实填实测值（超过它会整轮失败，不是截断）。
+fn qwenwork_model_config(config: &Value, upstream_key: &str, site: Site) -> Value {
+    let mut out = serde_json::Map::new();
+    out.insert("key".to_string(), Value::String(upstream_key.to_string()));
+    out.insert("display_name".to_string(), Value::String(upstream_key.to_string()));
+    out.insert("model".to_string(), Value::String(String::new()));
+    out.insert(
+        "format".to_string(),
+        config.get("format").cloned().unwrap_or_else(|| Value::String("openai".to_string())),
+    );
+    out.insert(
+        "is_vl".to_string(),
+        Value::Bool(config.get("is_vl").map(truthy).unwrap_or(false)),
+    );
+    out.insert(
+        "is_reasoning".to_string(),
+        Value::Bool(config.get("is_reasoning").map(truthy).unwrap_or(false)),
+    );
+    out.insert("api_key".to_string(), Value::String(String::new()));
+    out.insert("url".to_string(), Value::String(String::new()));
+    out.insert(
+        "source".to_string(),
+        config
+            .get("source")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| Value::String(text.to_string()))
+            .unwrap_or_else(|| Value::String("system".to_string())),
+    );
+    let max_input = config
+        .get("max_input_tokens")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| site.max_input_tokens());
+    if max_input > 0 {
+        out.insert("max_input_tokens".to_string(), Value::from(max_input));
+    }
+    Value::Object(out)
 }
 
 /// 会话 id：同一账号 + 同一模型 + 同一种子派生同一个（源实现 `sessionIdFor`）。
@@ -531,6 +623,9 @@ fn record_id_for(
 }
 
 /// 从上游返回的模型名反查回对外 id：上游可能回真实 key，也可能回展示名。
+///
+/// 站点未知，所以四个站点的目录都查一遍（`resolve` 的第二个参数只是「先查哪
+/// 一个」的偏好，找不到会接着查其余站点与静态兜底）。
 pub fn map_model_back(name: &str) -> Option<String> {
     if name.is_empty() {
         return None;
@@ -541,7 +636,7 @@ pub fn map_model_back(name: &str) -> Option<String> {
     }) {
         return model.get("name").and_then(Value::as_str).map(str::to_string);
     }
-    super::models::resolve(name, super::endpoints::Region::Global)
+    super::models::resolve_any_site(name)
         .and_then(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
 }
 

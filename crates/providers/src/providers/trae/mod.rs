@@ -11,16 +11,16 @@
 //! `Cloud-IDE-JWT <token>` 加一批身份头（`headers.rs`），唯一的密码学是
 //! 登录时的 PKCE(S256)。省掉的正是 codearts 那边最贵的一块。
 //!
-//! ── 只支持 SOLO 这一条通道，是有意的 ──────────────────────
-//! `llm_utils_chat` 只认 `function=solo_work_lite`。Trae 的另外两条通道
-//! （IDE 的 `/api/agent/v3/create_agent_task`、`llm_raw_chat` 的 `solo_agent`）
-//! 一条要 AES-256-GCM 加密请求体、一条被上游限成「只能由 agent 任务内部调用」，
-//! 都不适合做透明代理。目录里属于那两条通道的配置会在解析阶段直接过滤
-//! （`errors::config_is_solo_agent_only`），因为它们在本通道必定流内 4001。
+//! ── 聊天通道按模型目录选择 ───────────────────────────────────
+//! Agent、IDE 与旧 SOLO 的 config 共用 `llm_utils_chat`，但每条读数的
+//! `function` / `model_name` 不同。批量目录归并后记录候选路由；首包前遇到
+//! 4001 / 4023 / 1005 时，才尝试目录里同一模型的下一条通道。
+//! 对外基础模型用上游 `config_name`；上游存在 `__max` 档位时另广告一个
+//! `<id>-max`，只有显式选它才走 Max 路由。历史 `<id>-solo` / `<id>-solo-max`
+//! 仅作为旧请求的兼容名解析，不代表固定走 SOLO。
 //!
-//! Intl（`core-normal.trae.ai` 的 `chat_sessions` → `events` 两步握手、
-//! 累积 thought、`Origin` 绑定、无 tools）是**另一套协议**，单列里程碑，
-//! 不与本模块共用信封 —— 因此 `accounts.rs` 在入口就把 Intl 凭据拒掉。
+//! 国际版账号仍未接入本 provider；参考实现同样为两地分别维护身份与目录，
+//! 不能把国际版令牌发往 CN 主机。
 //!
 //! ── 迁移到插件时改了什么 ────────────────────────────────────
 //! | 网关 | 插件 |
@@ -57,9 +57,10 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本家全部文件零 unwrap / expect / panic。
 
-pub mod adapter;
 pub(crate) mod accounts;
+pub mod adapter;
 pub(crate) mod callback_server;
+pub(crate) mod catalog;
 pub(crate) mod checkin;
 pub(crate) mod credentials;
 pub(crate) mod device;
@@ -82,6 +83,8 @@ pub(crate) mod usage;
 pub const AGENT_BASE_URL: &str = "https://trae-api-cn.mchost.guru";
 pub const CHAT_PATH: &str = "/api/agent/v3/llm_utils_chat";
 pub const MODELS_PATH: &str = "/api/ide/v1/get_detail_param";
+/// 一次获取各聊天 function 的目录，模型读数与请求路由一起归并。
+pub const BATCH_MODELS_PATH: &str = "/api/ide/v1/batch_get_detail_param";
 
 /// 提供商 id（注册表与 `pack.json` 用同一条）。
 pub const PROVIDER_ID: &str = "trae";
@@ -93,7 +96,9 @@ pub const PROVIDER_ID: &str = "trae";
 /// `checkin.rs` 已经把「真领到」翻成了 `success:true`（回查确认才给）。
 /// 这里只做翻译，不再判一次 —— 两处各判一套的话，「今日已签」会时而算成功、
 /// 时而算失败。
-pub(crate) fn checkin_report(value: &serde_json::Value) -> agent2api_provider_protocol::CheckinReport {
+pub(crate) fn checkin_report(
+    value: &serde_json::Value,
+) -> agent2api_provider_protocol::CheckinReport {
     use agent2api_provider_protocol::{CheckinOutcome, CheckinReport};
     let success = value
         .get("success")
@@ -124,13 +129,20 @@ pub(crate) fn checkin_report(value: &serde_json::Value) -> agent2api_provider_pr
     };
     CheckinReport {
         outcome,
-        // 数额是上游**报出的当日奖励**，不是到账余额（见 `checkin.rs` 模块头）
+        // 到账数额：`awarded` 已经按 credits / extra_credits 二选一算过，
+        // 不再用两者之和（见 `checkin.rs` 模块头的 200/100 说明）。
         credit: if success {
-            value
-                .get("reward")
-                .or_else(|| value.get("credit"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
+            ["awarded", "reward", "credit"]
+                .iter()
+                .find_map(|key| match value.get(*key)? {
+                    serde_json::Value::Number(number) => {
+                        number.as_i64().filter(|amount| *amount > 0).map(|amount| amount.to_string())
+                    }
+                    serde_json::Value::String(text) if !text.trim().is_empty() => {
+                        Some(text.trim().to_string())
+                    }
+                    _ => None,
+                })
         } else {
             None
         },

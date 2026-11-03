@@ -5,7 +5,6 @@
 
 use std::sync::OnceLock;
 
-use agent2api_provider_protocol::WireProxy;
 use agent2api_provider_sdk::PluginCtx;
 use serde_json::Value;
 
@@ -24,6 +23,10 @@ const AUTH_KEYS: &[&str] = &[
     "uid",
     "enterpriseId",
     "type",
+    "departmentFullName",
+    "oneidAccountId",
+    "idp",
+    "tokenType",
     "accessToken",
     "refreshToken",
     "domain",
@@ -85,11 +88,10 @@ async fn refresh_and_save(
         record.get("platform").and_then(Value::as_str),
         Some(region.edition_id()),
     );
-    let proxy: Option<WireProxy> = record
-        .get("proxy")
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    let proxy = super::contract::proxy_of(&record)?;
     let session = session_of_record(&record, region);
-    let auth_value = session.get("auth").cloned().unwrap_or(Value::Null);
+    let mut auth_value = session.get("auth").cloned().unwrap_or(Value::Null);
+    auth_value["account"] = session.get("account").cloned().unwrap_or(Value::Null);
     let next = match auth::refresh_session(&auth_value, &context, proxy.as_ref()).await {
         Ok(next) => next,
         Err(error) => {
@@ -102,7 +104,8 @@ async fn refresh_and_save(
             return Err(error);
         }
     };
-    save_refresh(ctx, region, account, &record, &next).await
+    let identity = super::refresh_identity::verify(&record, &next, &session, region, proxy.as_ref()).await?;
+    save_refresh(ctx, region, account, &record, &next, &identity).await
 }
 
 async fn save_refresh(
@@ -111,6 +114,7 @@ async fn save_refresh(
     account: &str,
     previous: &Value,
     next: &RefreshedAuth,
+    identity: &Value,
 ) -> Result<String, GatewayError> {
     let mut current = previous.clone();
     for _ in 0..SAVE_ATTEMPTS {
@@ -118,7 +122,7 @@ async fn save_refresh(
             return current_token(previous, &current);
         }
         let expect = store::secret_view(&current);
-        let secret = with_refresh(&expect, next);
+        let secret = with_refresh(&expect, next, identity);
         if store::save(ctx, account, &expect, &secret).await? {
             crate::logging::log(
                 "[Accounts]",
@@ -150,7 +154,7 @@ fn current_token(previous: &Value, record: &Value) -> Result<String, GatewayErro
         .ok_or_else(|| GatewayError::with_status(409, SAVE_FAILED_MESSAGE))
 }
 
-fn with_refresh(secret: &Value, next: &RefreshedAuth) -> Value {
+fn with_refresh(secret: &Value, next: &RefreshedAuth, identity: &Value) -> Value {
     let mut fields = vec![
         ("accessToken", Value::String(next.access_token.clone())),
         (
@@ -170,6 +174,9 @@ fn with_refresh(secret: &Value, next: &RefreshedAuth) -> Value {
     }
     if let Some(value) = next.refresh_expires_at.filter(|value| *value > 0.0) {
         fields.push(("refreshExpiresAt", serde_json::json!(value)));
+    }
+    for key in ["type", "oneidAccountId", "departmentFullName", "idp", "domain", "tokenType", "nickname", "enterpriseName"] {
+        if let Some(value) = identity.get(key) { fields.push((key, value.clone())); }
     }
     store::with_fields(secret, &fields)
 }

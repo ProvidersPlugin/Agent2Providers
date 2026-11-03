@@ -415,13 +415,27 @@ impl Serve {
             }
             proto::methods::gateway::CHAT => {
                 match serde_json::from_value::<proto::ChatRequest>(params.clone()) {
-                    Ok(req) => match provider.build_chat(&ctx, req).await {
-                        Ok(plan) => Ok(serde_json::json!({
-                            "url": plan.url,
-                            "headers": plan.headers,
-                            "body": plan.body,
-                            "upstream": plan.upstream,
-                        })),
+                    Ok(req) => match crate::extensions::with_direct_proxy_override(
+                        params.get("proxy_override").and_then(Value::as_bool) == Some(true),
+                        provider.build_chat(&ctx, req),
+                    ).await {
+                        Ok(plan) => {
+                            let reasoning = provider.outbound_reasoning(&plan.body);
+                            let policy = provider.chat_policy(&plan.body);
+                            let mut value = serde_json::json!({
+                                "url": plan.url,
+                                "headers": plan.headers,
+                                "body": plan.body,
+                                "upstream": plan.upstream,
+                            });
+                            if let Some(reasoning) = reasoning {
+                                value["reasoning"] = serde_json::json!(reasoning);
+                            }
+                            if !policy.is_null() {
+                                value["policy"] = policy;
+                            }
+                            Ok(value)
+                        }
                         Err(e) => Err(e),
                     },
                     Err(e) => Err(format!("chat 参数无法解析: {e}")),
@@ -454,6 +468,11 @@ impl Serve {
                 let body = params.get("body").cloned().unwrap_or(Value::Null);
                 serde_json::to_value(provider.classify(status, &body))
                     .map_err(|e| format!("分类结果无法序列化: {e}"))
+            }
+            crate::extensions::ERROR_POLICY_METHOD => {
+                let status = params.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
+                let body = params.get("body").cloned().unwrap_or(Value::Null);
+                Ok(provider.error_policy(status, &body))
             }
             proto::methods::gateway::IS_ERROR_RESPONSE => {
                 let status = params.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
@@ -489,8 +508,9 @@ impl Serve {
                 let level = params.get("level").and_then(Value::as_str).unwrap_or("");
                 let model = params.get("model").and_then(Value::as_str).unwrap_or("");
                 let body = params.get("body").cloned().unwrap_or(Value::Null);
-                serde_json::to_value(provider.reasoning_patch(level, model, &body))
-                    .map_err(|e| format!("档位结果无法序列化: {e}"))
+                provider.reasoning_patch_async(&ctx, level, model, &body).await
+                    .and_then(|patch| serde_json::to_value(patch)
+                        .map_err(|e| format!("档位结果无法序列化: {e}")))
             }
             proto::methods::gateway::COOLDOWN_MODELS => {
                 let wire = params.get("wire_model").and_then(Value::as_str).unwrap_or("");

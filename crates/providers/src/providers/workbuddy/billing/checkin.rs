@@ -45,9 +45,7 @@ const DAILY_CHECKIN_PATH: &str = "/v2/billing/meter/daily-checkin";
 /// `session` 是 `session_of_record` 折出来的会话形状（`auth` / `account` /
 /// `endpoint` / `proxy`）—— 与网关 `BillingService` 拿到的会话同一形态。
 pub(crate) async fn claim(session: &Value) -> Result<Value, GatewayError> {
-    let proxy = session
-        .get("proxy")
-        .and_then(|value| serde_json::from_value::<agent2api_provider_protocol::WireProxy>(value.clone()).ok());
+    let proxy = super::super::contract::proxy_of(session)?;
     let result = call::call(
         "POST",
         DAILY_CHECKIN_PATH,

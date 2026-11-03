@@ -442,8 +442,9 @@ pub fn list() -> Vec<Value> {
 ///     声明的 1M 是按 token 记的，而入口按 **1 MiB 字节**拒收；照 1M 声明，下游
 ///     把窗口配到 400K 就必然撞 413（issue #6 的复现）；
 ///   · 补上 `maxRequestBytes`，把「这一家还有一道字节墙」如实告诉下游。它是本家
-///     独有的额外键，其余家不发，聚合层不认识也不会丢（`list_item` 只挑它认识
-///     的键，这个键会原样留在清单条目里）。
+///     独有的额外键，其余家不发。宿主的 `models/shape.rs::list_item` 是**逐键
+///     白名单重建**（不是透传），所以那边必须同步把它映成 `max_request_bytes`
+///     —— 否则这个键只活在插件内部，下游一个字节都看不到。
 fn finalize_entry(mut entry: Value) -> Value {
     let Some(object) = entry.as_object_mut() else { return entry };
     let declared = object.get("maxInputTokens").and_then(Value::as_i64);

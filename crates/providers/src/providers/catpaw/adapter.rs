@@ -198,7 +198,11 @@ impl Provider for CatPawProvider {
             request.telemetry = Some(std::sync::Arc::new(RequestTelemetry::new()));
             run_conversation(request, &mut sink)
                 .await
-                .map_err(GatewayError::into_message)
+                // ── 体积拒绝要带状态码过线（issue #6）─────────────────
+                // 宿主的「同家不换号」判据读状态码；只传文案时它认不出来，
+                // 队列里每个账号照旧白撞一遍。其余错误仍只传文案（本家分类
+                // 恒为 Fatal，见模块头）。
+                .map_err(super::body_limit::conversation_wire_message)
         })
     }
 

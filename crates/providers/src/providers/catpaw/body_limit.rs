@@ -28,6 +28,8 @@
 //!     注入的系统提示词都会占字节），漏网时不能把 openresty 的 HTML 原样
 //!     丢给客户端。
 
+use crate::errors::GatewayError;
+
 use super::models::CatPawError;
 
 /// 入口的请求体上限：**1 MiB**（1,048,576 字节）。
@@ -36,6 +38,12 @@ use super::models::CatPawError;
 /// issue #6 里 345K 字（1.03 MB）能过、350K 字（1.05 MB）被拒，两条读数夹住的
 /// 正是这个值。
 pub const ENTRY_BODY_LIMIT_BYTES: i64 = 1_048_576;
+
+/// 体积拒绝过线用的状态码。
+///
+/// 单独摘出来是因为它不只用于文案：宿主靠这个码认出「同家换号无效」
+/// （见 [`conversation_wire_message`]）。
+pub const ENTRY_BODY_LIMIT_STATUS: u16 = 413;
 
 /// 广告给下游的上下文窗口：**200K**。
 ///
@@ -83,7 +91,7 @@ pub fn is_entry_rejection(status: u16, text: &str) -> bool {
 /// 才是正确动作；502 会被读成上游故障、诱发重试同一份体。
 pub fn oversized_error(bytes: i64) -> CatPawError {
     CatPawError::http(
-        413,
+        ENTRY_BODY_LIMIT_STATUS,
         format!(
             "CatPaw 入口按请求体字节数限流：本次约 {bytes} 字节，超过约 1 MiB\
              （{} 字节）上限，已在本地拦下、没有发往上游。请减小上下文\
@@ -97,11 +105,15 @@ pub fn oversized_error(bytes: i64) -> CatPawError {
 ///
 /// 末尾那句「换账号无效」是有用的：会话式路径以前会把这个错误当普通 Fatal
 /// 顺延到下一个账号，每个账号都白打一遍同样的体积。
+///
+/// 出口状态码**统一成 413**，即便入口回的是 400：判定依据是「这份字节太大」，
+/// 而 413 是客户端唯一会据以「缩小上下文」的码（400 会被读成请求格式错误，
+/// 用户改了历史也未必好）。上游原码写进文案，排查时仍对得上日志。
 pub fn upstream_rejection_error(status: u16) -> CatPawError {
     CatPawError::http(
-        status,
+        ENTRY_BODY_LIMIT_STATUS,
         format!(
-            "CatPaw 上游入口拒收这份请求体（HTTP {status}，上限约 1 MiB / \
+            "CatPaw 上游入口拒收这份请求体（上游回的是 HTTP {status}，上限约 1 MiB / \
              {} 字节）：请减小上下文（少带历史 / 拆分文件）或把窗口调到 200K 档。\
              这是体积问题、不是账号问题，换账号重试无效",
             ENTRY_BODY_LIMIT_BYTES
@@ -115,6 +127,26 @@ pub fn check_body_limit(bytes: i64) -> Result<(), CatPawError> {
         return Err(oversized_error(bytes));
     }
     Ok(())
+}
+
+/// 会话路径的错误怎么过线（只在这家改写，别家仍走 `into_message`）。
+///
+/// ── 为什么不能一律 `into_message` ──────────────────────────────
+/// `into_message` 只留文案，状态码在过线时丢掉，宿主看到的是 502。宿主的
+/// 「体积拒绝不换号」判据读的正是状态码（`PAYLOAD_BOUND_STATUSES`）——
+/// 只留文案时它**永远命中不了**，issue #6 的诉求 3 就只剩一句人话文案，
+/// 队列里每个账号照旧白撞一遍。
+///
+/// ── 为什么也不一律 `into_control_message` ──────────────────────
+/// 那会把 401 / 429 这些码一并带给宿主，顺带改变本家的既有语义（本家的分类
+/// 恒为 Fatal，这是原实现的核对结论，见 `adapter.rs` 模块头）。issue #6 只需要
+/// 体积这一档，其余仍按文案透传。
+pub fn conversation_wire_message(error: GatewayError) -> String {
+    if error.status_code == i32::from(ENTRY_BODY_LIMIT_STATUS) {
+        error.into_control_message()
+    } else {
+        error.into_message()
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +203,34 @@ mod tests {
             "要明确否掉换账号这条无效路径：{}",
             error.message
         );
+        // 入口回 400 但文案是体积拒绝时，出口仍是 413（客户端的处置动作不同）
+        let downgraded = upstream_rejection_error(400);
+        assert_eq!(413, downgraded.status);
+        assert!(
+            downgraded.message.contains("HTTP 400"),
+            "上游原码要留在文案里：{}",
+            downgraded.message
+        );
+    }
+
+    /// 413 必须**带状态码**过线：宿主靠它认出「同家换号无效」。
+    ///
+    /// 改回 `into_message` 时这条会红 —— 那正是 issue #6 修不到位的样子：
+    /// 文案很好、宿主却在按 502 处理，队列里的账号照旧白撞。
+    #[test]
+    fn a_body_limit_error_carries_its_status_over_the_wire() {
+        let wire = conversation_wire_message(oversized_error(2_000_000).to_gateway());
+        assert!(
+            wire.contains("\"status\":413"),
+            "413 要真的进信封，宿主才可能停在同家不再换号：{wire}"
+        );
+        assert!(
+            wire.contains("已在本地拦下"),
+            "文案不能因为换了个信封就丢：{wire}"
+        );
+        // 反面对照：别的错误仍只过文案，不把 401 / 429 这类码顺带改语义。
+        let other = conversation_wire_message(CatPawError::upstream("上游请求失败").to_gateway());
+        assert!(!other.contains("CONTROL_ERROR:"), "非体积错误不该改过线形态：{other}");
+        assert_eq!("上游请求失败", other);
     }
 }

@@ -14,7 +14,11 @@
 //!      这里的做法是**追加**一个下限（默认 1024），不是 `max()` —— `max()` 会把
 //!      「只想要 1 个 token」的意图改掉（见 `REASONING_ALLOWANCE`）。
 //!      `max_tokens < 16` 原样透传：那种请求本来就要最小输出。
-//!   2. **`thinking` 参数**：`glm-5.3` 系列不收 `thinking:{"type":"disabled"}`，
+//!   2. **输出上限钳制**：华为云 ModelArts 对 `max_tokens` 有硬性区间校验 `[1, 131072]`。
+//!      Codex 等客户端发 Responses 请求或带 `max_completion_tokens: 307200` 时，
+//!      若不钳制会直接报错 `ModelArts.81001`。这里将 `max_tokens` / `max_completion_tokens`
+//!      超出部分钳制到 `MAX_OUTPUT_TOKENS` (131072)。
+//!   3. **`thinking` 参数**：`glm-5.3` 系列不收 `thinking:{"type":"disabled"}`，
 //!      上游回 400。这里**不预先删**（不知道哪些模型不收），也**不做剥参重试** ——
 //!      本仓的编排层只有「按错误分类原地重发 / 换号」，没有「剥掉某个参数再试」
 //!      这条链（那是参考实现 officeace2api 的 `unsupportedParam` 分支，本仓未移植）。
@@ -33,6 +37,8 @@ use super::credentials::OfficeAceCredential;
 pub const REASONING_ALLOWANCE: i64 = 1024;
 /// 小于这个值的 `max_tokens` 原样透传（客户端要的就是最小输出）。
 pub const TINY_MAX_TOKENS: i64 = 16;
+/// 上游 ModelArts 对输出上限（`max_tokens` / `max_completion_tokens`）的硬顶 [1, 131072]。
+pub const MAX_OUTPUT_TOKENS: i64 = 131_072;
 
 /// 模型网关基址的规范形态：`https://<host>/v2`。
 ///
@@ -80,6 +86,22 @@ pub fn apply_reasoning_allowance(body: &mut Value) -> Option<(i64, i64)> {
     let raised = requested + REASONING_ALLOWANCE;
     body["max_tokens"] = json!(raised);
     Some((requested, raised))
+}
+
+/// 出站请求体 `max_tokens` / `max_completion_tokens` 的上限钳制（就地修改）。
+///
+/// 华为云 ModelArts 限制数值范围 [1, 131072]，超出直接报 400 `ModelArts.81001`。
+pub fn clamp_output_tokens(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    for key in ["max_tokens", "max_completion_tokens"] {
+        if let Some(val) = object.get(key).and_then(Value::as_i64) {
+            if val > MAX_OUTPUT_TOKENS {
+                object.insert(key.to_string(), json!(MAX_OUTPUT_TOKENS));
+            }
+        }
+    }
 }
 
 /// 流式补 `stream_options.include_usage`（**不覆盖**客户端已有的取值）。
@@ -158,6 +180,7 @@ pub fn build_chat_plan(
         object.insert("stream".to_string(), Value::Bool(true));
     }
     apply_reasoning_allowance(&mut body);
+    clamp_output_tokens(&mut body);
     ensure_include_usage(&mut body);
 
     let mut headers = vec![
@@ -170,4 +193,45 @@ pub fn build_chat_plan(
     ];
     headers.extend(correlation_headers());
     Ok(ChatPlan { url, headers, body })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_clamp_output_tokens() {
+        let mut body = json!({
+            "max_completion_tokens": 307200,
+            "messages": []
+        });
+        clamp_output_tokens(&mut body);
+        assert_eq!(body["max_completion_tokens"], 131072);
+
+        let mut body_tokens = json!({
+            "max_tokens": 200000
+        });
+        clamp_output_tokens(&mut body_tokens);
+        assert_eq!(body_tokens["max_tokens"], 131072);
+
+        let mut body_normal = json!({
+            "max_tokens": 4096
+        });
+        clamp_output_tokens(&mut body_normal);
+        assert_eq!(body_normal["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn test_apply_reasoning_allowance_then_clamp() {
+        let mut body = json!({
+            "max_tokens": 131000
+        });
+        apply_reasoning_allowance(&mut body);
+        // 131000 + 1024 = 132024 > 131072
+        assert_eq!(body["max_tokens"], 132024);
+        clamp_output_tokens(&mut body);
+        assert_eq!(body["max_tokens"], 131072);
+    }
 }

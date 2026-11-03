@@ -517,13 +517,16 @@ impl Provider for CodeArtsProvider {
             .unwrap_or("");
         let message = format!("上游返回 {status}{}", raw_part(raw));
         match status {
+            // 403：额度耗尽 —— 标记账号冷却并换下一账号。恢复时刻只在**认得出
+            // 日池**时给（下一个北京零点），其余仍走存储层的 10 分钟兜底。
             403 => proto::ErrorClass::QuotaLimited {
-                reset_at: None,
+                reset_at: daily_pool_reset_at(logging::now_ms(), &message),
                 message,
                 upstream_code: None,
                 status,
             },
             429 => proto::ErrorClass::QuotaLimited {
+                // 429 是分钟级限流，与日池无关：不给它零点，交给 10 分钟兜底
                 reset_at: None,
                 message,
                 upstream_code: None,
@@ -867,6 +870,29 @@ fn raw_part(raw: &str) -> String {
     } else {
         format!(": {}", raw.trim())
     }
+}
+
+/// 认得出「福利日池打满」的文案 ⇒ 冷却到**北京时间下一个零点**；认不出 ⇒ `None`
+/// （由宿主的存储层落 10 分钟兜底）。
+///
+/// ── 为什么要有这个判据 ──────────────────────────────────────
+/// `InferHub.4291.200 / insufficient quota` 是本家**按日** token 池打满那一帧
+/// （实测日池用到 10,028,800 / 10,000,000 之后，每条请求只回这一帧），上游
+/// 不给重置时间。交给兜底冷却的话，这个当天不会再回来的账号会每 10 分钟被白撞
+/// 一次 —— 一次往返 + 一条 403 痕迹 + 一次顺延噪声，直到次日零点。
+///
+/// ── 只认 403，不认 429 ──────────────────────────────────────
+/// 429 是分钟级限流：给它零点会把一个只是暂时繁忙的账号打死一整天，爆炸半径是
+/// 这一家的全部福利模型。所以 429 一律 `None`（仍走 10 分钟兜底）。
+///
+/// 判据与 `chat::stream_fault` 认 `insufficient quota` 那条同源：那里把流内
+/// 这一帧归成 403，这里只需要认文案。
+fn daily_pool_reset_at(now_ms: i64, message: &str) -> Option<i64> {
+    let lowered = message.to_lowercase();
+    if !lowered.contains("insufficient quota") {
+        return None;
+    }
+    Some(welfare::next_day_boundary_ms(now_ms))
 }
 
 /// `welfare::Outcome` → `CheckinReport`。

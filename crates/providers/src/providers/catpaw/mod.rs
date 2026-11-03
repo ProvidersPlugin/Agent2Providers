@@ -62,6 +62,7 @@ pub mod adapter;
 pub(crate) mod accounts;
 pub(crate) mod balance;
 pub(crate) mod blocks;
+pub(crate) mod body_limit;
 pub(crate) mod callback_server;
 pub(crate) mod catalog;
 pub(crate) mod conversation;

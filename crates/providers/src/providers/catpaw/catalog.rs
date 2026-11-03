@@ -40,7 +40,7 @@ use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::logging;
 
 use super::models::MODELS;
-use super::{conversation::CatPawCredentials, upstream_http};
+use super::{body_limit, conversation::CatPawCredentials, upstream_http};
 
 /// 目录路径（`modelTypesService-CPgwL2qX.js` 的路径常量 `_`）
 const MODEL_TYPES_PATH: &str = "/api/agent/maas/model-types";
@@ -393,7 +393,7 @@ pub async fn refresh(
 pub fn list() -> Vec<Value> {
     let remote = remote_models();
     if remote.is_empty() {
-        return static_list();
+        return static_list().into_iter().map(finalize_entry).collect();
     }
     remote
         .into_iter()
@@ -431,7 +431,31 @@ pub fn list() -> Vec<Value> {
             entry.get("modelType").and_then(Value::as_i64)?;
             Some(entry)
         })
+        .map(finalize_entry)
         .collect()
+}
+
+/// 清单出口的**最后一道收敛**（issue #6）。
+///
+/// 两件事都必须落在「所有条目都成型之后」这一处：
+///   · `maxInputTokens` 收敛到 [`body_limit::ADVERTISED_CONTEXT_WINDOW`] —— 上游
+///     声明的 1M 是按 token 记的，而入口按 **1 MiB 字节**拒收；照 1M 声明，下游
+///     把窗口配到 400K 就必然撞 413（issue #6 的复现）；
+///   · 补上 `maxRequestBytes`，把「这一家还有一道字节墙」如实告诉下游。它是本家
+///     独有的额外键，其余家不发，聚合层不认识也不会丢（`list_item` 只挑它认识
+///     的键，这个键会原样留在清单条目里）。
+fn finalize_entry(mut entry: Value) -> Value {
+    let Some(object) = entry.as_object_mut() else { return entry };
+    let declared = object.get("maxInputTokens").and_then(Value::as_i64);
+    object.insert(
+        "maxInputTokens".to_string(),
+        Value::from(body_limit::advertised_context_window(declared)),
+    );
+    object.insert(
+        "maxRequestBytes".to_string(),
+        Value::from(body_limit::ENTRY_BODY_LIMIT_BYTES),
+    );
+    entry
 }
 
 /// 静态表形态的清单（远程不可用时的回落，也是 `list()` 的兜底）

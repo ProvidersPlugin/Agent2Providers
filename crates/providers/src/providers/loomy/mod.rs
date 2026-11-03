@@ -51,6 +51,10 @@ pub const ID: &str = "loomy";
 pub struct LoomyProvider;
 
 impl Provider for LoomyProvider {
+    fn maintenance_operations(&self) -> &'static [&'static str] {
+        agent2api_provider_sdk::maintenance::OPERATIONS
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta::new(ID, "Loomy")
             .with_capabilities(proto::Capabilities {

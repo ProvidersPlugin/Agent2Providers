@@ -293,6 +293,10 @@ pub trait Provider: Send + Sync + 'static {
     /// 这个 provider 的静态描述。
     fn meta(&self) -> ProviderMeta;
 
+    /// Opt in only after every listed operation honors the per-RPC egress scope.
+    fn maintenance_operations(&self) -> &'static [&'static str] { &[] }
+
+
     /// provider id（与 `meta().id` 相同；单独一个方法是为了让路由表能
     /// 在建表时不必构造整个 `ProviderMeta`）。
     fn provider_id(&self) -> String {

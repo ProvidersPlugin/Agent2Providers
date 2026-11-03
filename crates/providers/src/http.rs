@@ -269,11 +269,13 @@ pub async fn send_raw(
     proxy: Option<&proto::WireProxy>,
     timeout_ms: Option<u64>,
 ) -> Result<ApiResponse, reqwest::Error> {
-    let client = match proxy {
+    let client = if let Some(selection) = agent2api_provider_sdk::maintenance::current() {
+        // Only an explicitly scoped maintenance RPC takes this fail-closed path.
+        crate::maintenance_http::strict_client(selection.as_ref())?
+    } else { match proxy {
         Some(proxy) => control_client(Some(proxy), ""),
-        // `direct` 是显式直连，不跟随系统代理。
         None => control_client(None, "direct"),
-    };
+    }};
     let mut builder = match method {
         "POST" => client.post(url),
         "PUT" => client.put(url),
@@ -334,6 +336,10 @@ pub fn describe(error: &reqwest::Error) -> String {
 /// 从网关搬来的各家（chatglm / autoclaw / …）用它拼错误文案，所以这里补一份
 /// 同口径实现，让那些文案逐字不变。
 pub fn describe_chain(error: &reqwest::Error) -> String {
+    if agent2api_provider_sdk::maintenance::current().is_some() {
+        agent2api_provider_sdk::maintenance::record_transport_failure();
+        return "Maintenance transport failed".into();
+    }
     let mut parts: Vec<String> = Vec::new();
     let head = error.to_string();
     if !head.is_empty() {

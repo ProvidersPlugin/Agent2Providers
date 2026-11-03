@@ -287,6 +287,25 @@ impl Serve {
             return;
         }
 
+        let selection = if let Some(value) = params.get("maintenanceEgress") {
+            let supported = self.provider_of(&params).map(|p|
+                p.maintenance_operations().contains(&method.as_str())).unwrap_or(false);
+            if !crate::maintenance::OPERATIONS.contains(&method.as_str()) || !supported {
+                tokio::spawn(async move { host.reply_err(id, proto::WireError::with_code(
+                    "Maintenance egress is not supported for this operation", proto::WireError::UNSUPPORTED,
+                )).await; });
+                return;
+            }
+            match crate::maintenance::Egress::decode(value.clone()) {
+                Ok(proxy) => Some(proxy),
+                Err(error) => {
+                    tokio::spawn(async move { host.reply_err(id, proto::WireError::with_code(
+                        error, proto::WireError::BAD_PARAMS,
+                    )).await; });
+                    return;
+                }
+            }
+        } else { None };
         let context = crate::log_context::capture(id, &method, &params);
         let timeouts = serde_json::from_value::<crate::timeouts::Timeouts>(
             params.get("timeouts").cloned().unwrap_or(Value::Null),
@@ -294,7 +313,8 @@ impl Serve {
         tokio::spawn(async move {
             crate::timeouts::scope(
                 timeouts,
-                crate::log_context::scope(context, host.handle(id, &method, params)),
+                crate::maintenance::scope(selection,
+                    crate::log_context::scope(context, host.handle(id, &method, params))),
             ).await;
         });
     }
@@ -409,6 +429,9 @@ impl Serve {
         let account = params.get("account").and_then(Value::as_str).unwrap_or("").to_string();
 
         let outcome: Result<Value, String> = match method {
+            crate::maintenance::CAPABILITIES_METHOD => Ok(serde_json::json!({
+                "version": 1, "operations": provider.maintenance_operations(),
+            })),
             crate::provider::SCHEDULES_LIST_METHOD => {
                 serde_json::to_value(provider.schedules())
                     .map_err(|error| format!("排程申报无法序列化: {error}"))
@@ -618,6 +641,9 @@ impl Serve {
         };
 
         match outcome {
+            Err(_) if crate::maintenance::transport_failed() => self.reply_err(id,
+                proto::WireError::with_code("Maintenance transport failed; operation was not replayed", "maintenance_transport")
+            ).await,
             Ok(value) => self.reply(id, value).await,
             Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
         }

@@ -42,6 +42,10 @@ const DEFAULT_AUTH_API_PREFIX: &str = "/api/web/auth/v1";
 pub struct RaccoonProvider;
 
 impl Provider for RaccoonProvider {
+    fn maintenance_operations(&self) -> &'static [&'static str] {
+        agent2api_provider_sdk::maintenance::OPERATIONS
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta::new(ID, "小浣熊")
             .with_capabilities(proto::Capabilities {

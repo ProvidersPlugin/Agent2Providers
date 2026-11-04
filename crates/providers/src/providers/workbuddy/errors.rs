@@ -133,20 +133,26 @@ pub(super) fn classify(status: u16, body: &Value) -> proto::ErrorClass {
     {
         let now = crate::logging::now_ms();
         let parsed = parse_quota_reset_at(raw);
+        // 上游没在文案里给出恢复时刻时，**不要在这里猜一个固定值**：交给网关
+        // （`mark_rate_limited`）按连击次数做指数退避 —— 首撞仍是 10 分钟，
+        // 连续撞则 20 / 30 分钟，避免「10 分钟后回来又撞」的循环（#451）。
+        // 例外是下面三种**确定的**语义：额度尽按次日重置、transient 短暂繁忙
+        // 按 30 秒、10105 按 60 秒 —— 它们不是「不知道多久」，而是「知道大概
+        // 多久」，所以照旧给具体时刻。
         let reset = if parsed > now {
-            parsed
+            Some(parsed)
         } else if status == 402 || exhausted(code) {
-            next_day_reset()
+            Some(next_day_reset())
         } else if transient(code) {
-            now.saturating_add(30_000)
+            Some(now.saturating_add(30_000))
         } else if code == Some(10105) {
-            now.saturating_add(60_000)
+            Some(now.saturating_add(60_000))
         } else {
-            now.saturating_add(600_000)
+            None
         };
         return proto::ErrorClass::QuotaLimited {
             status: if status == 402 { 402 } else { 429 },
-            reset_at: Some(reset),
+            reset_at: reset,
             message,
             upstream_code: code,
         };

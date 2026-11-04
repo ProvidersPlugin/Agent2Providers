@@ -131,6 +131,12 @@ impl Provider for RaccoonProvider {
                 ("Authorization".to_string(), format!("Bearer {token}")),
             ];
             headers::append_org(&mut headers, &org_code)?;
+            // 对话链路与 onboarding / balance / iam 带同一套桌面端身份头：
+            // 少了它们，上游看到的就是一个只会发 Bearer 的裸 API 客户端
+            headers.extend(headers::desktop_client_headers());
+            // 官方客户端每条请求都带新的 X-Request-Id（relay_js_<ms>_<hex>）
+            headers.push(("X-Request-Id".to_string(), headers::request_id()));
+            headers::append_external(&mut headers);
             Ok(ChatPlan::chat(
                 format!("{}/chat/completions", llm_base_url()),
                 headers,

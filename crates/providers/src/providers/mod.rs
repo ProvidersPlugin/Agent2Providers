@@ -60,6 +60,10 @@ pub mod workbuddy;
 pub mod zcode;
 #[cfg(feature = "doubaowork")]
 pub mod doubaowork;
+#[cfg(feature = "kiro")]
+pub mod kiro;
+#[cfg(feature = "astudio")]
+pub mod astudio;
 
 use agent2api_provider_sdk::BoxProvider;
 
@@ -175,6 +179,12 @@ pub fn registry() -> Vec<BoxProvider> {
     list.push(Box::new(antigravity::adapter::ANTIGRAVITY));
     #[cfg(feature = "doubaowork")]
     list.push(Box::new(doubaowork::DoubaoWorkProvider));
+
+    #[cfg(feature = "kiro")]
+    list.push(Box::new(kiro::KiroProvider));
+
+    #[cfg(feature = "astudio")]
+    list.push(Box::new(astudio::AStudioProvider));
 
     list
 }

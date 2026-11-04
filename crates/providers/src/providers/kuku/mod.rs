@@ -28,7 +28,7 @@
 //! | `ProviderAdapter` + `AccountStore` | `Provider` + `PluginCtx` |
 //! | `ForwardOutcome::Stream/Completion` | `ConversationSink`（head + chunk） |
 //! | `RequestTelemetry` 抓包 | **不迁**（插件的出站抓包由网关侧记） |
-//! | `engine.rs` 的 DLL 签名参数体 | 退化成「最简表单」（见 `engine` 模块头） |
+//! | `engine.rs` 的 DLL 签名参数体 | 纯算法 MD5 签名（内置密钥，不加载 DLL） |
 //! | 账号面（`api::accounts` 的 kuku 分支） | `accounts.rs`（`normalize_account`） |
 //!
 //! ── 模型 ──────────────────────────────────────────────────

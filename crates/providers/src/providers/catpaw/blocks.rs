@@ -337,16 +337,22 @@ fn invalid_arguments(index: usize) -> GatewayError {
     ))
 }
 
-/// 递归校验一个 JSON 值（原实现 `validateJsonValue`）：嵌套深度 ≤ 12，
+/// 工具参数允许的最深嵌套。原实现是 12；与 `tools.rs` 的 schema 校验一起
+/// 放宽到 32（issue #416）：深层工具参数同样存在，12 层会把结构稍复杂的
+/// MCP 工具整类挡下。这里校验的是**参数数据**而不是 JSON Schema，所以不做
+/// 组合键豁免，只有真实 object / array 嵌套计层。
+const MAX_ARGUMENTS_DEPTH: usize = 32;
+
+/// 递归校验一个 JSON 值（原实现 `validateJsonValue`）：嵌套深度 ≤ 32，
 /// 且不含 `__proto__` / `constructor` / `prototype` 这类危险键。
 ///
 /// Rust 侧本来就没有原型污染问题，但**深嵌套与危险键在工具参数里没有正当
 /// 用途**，而它们会被原样转发给上游模型；保持与原实现相同的拒绝口径，
-/// 可以避免「Node 版拒绝、Rust 版放行」的行为漂移。深度口径照抄
-/// （从 0 起算，> 12 判超限）。
+/// 可以避免「Node 版拒绝、Rust 版放行」的行为漂移。深度口径从 0 起算，
+/// 超过 [`MAX_ARGUMENTS_DEPTH`] 判超限。
 fn validate_json_value(value: &Value, index: usize) -> Result<(), GatewayError> {
     fn walk(value: &Value, depth: usize, index: usize) -> Result<(), GatewayError> {
-        if depth > 12 {
+        if depth > MAX_ARGUMENTS_DEPTH {
             return Err(GatewayError::with_status(400, format!(
                 "assistant.tool_calls[{index}].function.arguments 嵌套过深"
             )));

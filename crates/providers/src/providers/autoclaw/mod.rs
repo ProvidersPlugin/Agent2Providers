@@ -655,7 +655,8 @@ async fn resolve_credentials(
 /// 自己的刷新互相顶掉。
 ///
 /// ── 三个写盘前提 ──────────────────────────────────────────
-///   1. **没刷新就不写**：token 与刷新前逐字相同直接返回；
+///   1. **没刷新就不写**：token 与刷新前逐字相同就跳过写库 —— 但**旧 token 已
+///      过期时不能当成功**（上游对失效的 refresh_token 会宽容地回旧值，见下）；
 ///   2. **只在刷新成功时写**：调用方只在 `Ok` 分支调用本函数；
 ///   3. **刷新了也要比较-再写**：`store::save` 在同一把账号锁内确认记录里仍是
 ///      刷新前那份凭证才写入。期间用户重导入 / 删除 / 换号、或另一轮刷新先
@@ -665,9 +666,28 @@ async fn persist_refresh(
     previous: &AutoClawCredentials,
     refreshed: &AutoClawCredentials,
 ) -> Result<String, GatewayError> {
-    if refreshed.origin != CredentialOrigin::AccountStore
-        || (refreshed.token == previous.token && refreshed.refresh_token == previous.refresh_token) {
+    if refreshed.origin != CredentialOrigin::AccountStore {
         return Ok(refreshed.token.clone());
+    }
+    // 上游原样回了旧 token：可能是服务端没轮换，也可能是 refresh_token 已废、
+    // 它宽容地回了旧值。先看这一轮**到底有没有尝试刷新** —— 没进临期窗口时
+    // `ensure_fresh` 根本不请求上游，`refreshed` 就是 `previous` 的克隆，同值
+    // 是正常的（也保住「过期时间未知的凭证不因缺字段而报错」这条既有行为）。
+    // 真尝试过刷新时：旧 token 尚未过期就还能用；已过期 / 拿不到有效期才算
+    // 失败 —— 再返回成功，凭证维护会每轮记「已自动刷新」却推不动有效期，
+    // 账号静默失效（issue #22）。`expires_at` 与 `now_ms()` 都是毫秒。
+    if refreshed.token == previous.token && refreshed.refresh_token == previous.refresh_token {
+        let attempted = previous.is_expiring();
+        let still_valid = refreshed
+            .expires_at
+            .is_some_and(|expires_at| expires_at > logging::now_ms() as f64);
+        if !attempted || still_valid {
+            return Ok(refreshed.token.clone());
+        }
+        return Err(GatewayError::with_status(
+            409,
+            "AutoClaw 刷新未返回新 token（上游按旧值返回），请重新登录该账号",
+        ));
     }
     let account_id = refreshed.id.as_str();
     let record = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
@@ -681,17 +701,25 @@ async fn persist_refresh(
         return Ok(current_token);
     }
     let mut next = crate::store::secret_view(&record);
-    let fields: Vec<(&str, Value)> = vec![
+    // 两套键同时写：`token` / `tokenExpiresAt` 是本插件与旧投影的口径，
+    // `accessToken` / `expiresAt` 是网关账号存储与界面读的口径
+    // （`account_store::state` 读 `accessToken` / `expiresAt`）。只写前者时
+    // 网关那两栏读不到，回写等于白写（issue #22）。
+    let mut fields: Vec<(&str, Value)> = vec![
         ("token", Value::String(refreshed.token.clone())),
+        (
+            "accessToken",
+            Value::String(refreshed.token.clone()),
+        ),
         (
             "refreshToken",
             Value::String(refreshed.refresh_token.clone()),
         ),
         ("deviceId", Value::String(refreshed.device_id.clone())),
     ];
-    let mut fields = fields;
     if let Some(expires_at) = refreshed.expires_at {
         fields.push(("tokenExpiresAt", crate::json::json_number(expires_at)));
+        fields.push(("expiresAt", crate::json::json_number(expires_at)));
     }
     next = crate::store::with_fields(&next, &fields);
     if crate::store::save(ctx, account_id, &crate::store::secret_view(&record), &next).await? {
@@ -859,7 +887,13 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
         "region": region.provider_id(),
         "canRefresh": !crate::store::pick(secret, &["refreshToken"]).is_empty(),
     });
-    if let Some(expires_at) = secret.get("tokenExpiresAt").and_then(Value::as_f64) {
+    // 与 `credentials_from_record` 同一口径：`expiresAt`（网关）与
+    // `tokenExpiresAt`（旧投影 / 本插件）都认，都在时取较新的那个。
+    let expires_at = ["tokenExpiresAt", "expiresAt"]
+        .iter()
+        .filter_map(|key| secret.get(*key).and_then(Value::as_f64))
+        .reduce(f64::max);
+    if let Some(expires_at) = expires_at {
         if let Some(object) = view.as_object_mut() {
             object.insert(
                 "tokenExpiresAt".to_string(),

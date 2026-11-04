@@ -48,12 +48,17 @@ const ROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(100);
 /// 每日窗口的开启时刻（北京时间秒偏移）：**19:00**。
 ///
 /// 依据：官方公告「每日 19:00 起可领当日赠送额度，23:00 至次日 09:00 可用」
-/// （2026-10 的 ZCode 每日 3 亿 GLM-5.3-Flash 活动）。窗口没开时探测拿到的是
-/// 空列表（`code: 0` + `plans: []`），不是错误 —— 所以必须靠本地时刻拦住，
-/// 否则会像 Qoder 那样一路重试。
+/// （2026-10 的 ZCode 每日 3 亿 GLM-5.3-Flash 活动）。
+///
+/// ★ 它现在只是**兜底**：上游会在 `marketing/touch` 的 `zcode_plan` 与
+/// `billing/preview` 的 `plans` 里给出每期活动的 `starts_at` / `ends_at`，
+/// 窗口判断优先用上游时间（见 [`claim_daily_checkin`]）。容器 `TZ=UTC` 时
+/// 本地时钟到不了 19:00，再把本地常量当唯一判据就会把「活动已经开了」误判成
+/// 「窗口还没开」（issue #32）。常量只在「一个套餐都没探到」时决定文案与
+/// `retryAt`，以及上游没给 `starts_at` 时兜底。
 ///
 /// 与 `core::auto_checkin::times` 的 `PROVIDER_TIMES` 是同一份事实的两处表达：
-/// 那边是**调度**用的（决定几点跑），这里是**执行体**用的（判断窗口开没开）。
+/// 那边是**调度**用的（决定几点跑），这里是**执行体**用的（兜底判断）。
 /// 改一处就要改另一处。
 const DAILY_WINDOW_HOUR: i64 = 19;
 
@@ -66,6 +71,10 @@ fn daily_window_start(now: i64) -> i64 {
 
 /// 执行一次签到。`manual` 只影响日志措辞（本家没有写请求限流闸）。
 ///
+/// 窗口判断优先用上游每期活动自带的 `starts_at`（`marketing/touch` 与
+/// `billing/preview` 都会带），只有「一个套餐都没探到」时才回落到本地
+/// [`DAILY_WINDOW_HOUR`] —— 容器 `TZ=UTC` 不影响这条判断（issue #32）。
+///
 /// 返回 `{success, msg, ...}` 形状与其余各家一致（`billing::checkin` 的
 /// `claim_result` 只认 `success` / `msg`），另外带：
 ///   - `alreadyCompleted: true` —— 今天已领（落 `checkinAt` 用）；
@@ -76,16 +85,7 @@ pub async fn claim_daily_checkin(
     region: Region,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let now = crate::http::now_ms();
     let started = tokio::time::Instant::now();
-    let window = daily_window_start(now);
-    // 窗口没开：不探测、不领取，直接给中性结果并指定窗口开启时刻
-    if now < window {
-        return Ok(inactive(
-            "今日赠送套餐的活动窗口还没开（每天 19:00 起可领），稍后自动重试",
-            Some(window + 60_000),
-        ));
-    }
 
     let record = crate::store::record(ctx, region.provider_id(), account_id)
         .await
@@ -125,13 +125,49 @@ pub async fn claim_daily_checkin(
         Ok(snapshot) => snapshot,
         Err(error) => return Ok(failed_soft(error.message)),
     };
-    if snapshot.plans.is_empty() {
-        if snapshot.preview_error.is_some() || snapshot.marketing_error.is_some() || snapshot.ledger_error.is_some() {
+    // ── 2. 用上游 starts_at 判断「开始没有」，不再前置拦截 ──────
+    // 以前在探测之前就用本地常量 19:00 拦住：容器 TZ=UTC 时本地时钟到不了
+    // 19:00，营销来源也被一起短路（issue #32）。现在先探测，再按上游给的
+    // 每期活动时间过滤；常量只在「一个套餐都没探到」时兜底。
+    //
+    // `ClaimablePlan.starts_at` 是**秒**（与 `ends_at` 同一口径），本地比较
+    // 用毫秒，所以统一 `saturating_mul(1000)`。
+    let now = crate::http::now_ms();
+    let (plans, upcoming): (Vec<_>, Vec<_>) = snapshot
+        .plans
+        .into_iter()
+        .partition(|plan| plan.starts_at.is_none_or(|start| start.saturating_mul(1000) <= now));
+    if plans.is_empty() {
+        if let Some(start) = upcoming.iter().filter_map(|plan| plan.starts_at).min() {
+            // 有套餐、但全部还没到开始时间：用上游时间渲染，别再说「每天 19:00」。
+            let at = start.saturating_mul(1000);
+            let message = match crate::beijing::date_time_of_ms(at) {
+                Some(time) => format!(
+                    "今日赠送套餐的活动将于 {} 开始，稍后自动重试",
+                    time.format("%m-%d %H:%M")
+                ),
+                None => {
+                    "今日赠送套餐的活动窗口还没开（每天 19:00 起可领），稍后自动重试".to_string()
+                }
+            };
+            return Ok(inactive(message, Some(at + 60_000)));
+        }
+        if snapshot.preview_error.is_some()
+            || snapshot.marketing_error.is_some()
+            || snapshot.ledger_error.is_some()
+        {
             return Ok(failed_soft("部分套餐来源或领取台账查询失败，尚不能确认今日领取状态"));
+        }
+        // 一个套餐都没探到：本地常量兜底（上游没给 starts_at / 活动还没上架）。
+        let window = daily_window_start(now);
+        if now < window {
+            return Ok(inactive(
+                "今日赠送套餐的活动窗口还没开（每天 19:00 起可领），稍后自动重试",
+                Some(window + 60_000),
+            ));
         }
         return Ok(inactive("当前没有可领取的赠送套餐", None));
     }
-    let plans = snapshot.plans;
     let expected = plans.len();
     let mut results = Vec::new();
     for plan in &plans {

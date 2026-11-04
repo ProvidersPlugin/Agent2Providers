@@ -84,14 +84,20 @@ pub(super) fn normalize(body: &Value, model: &str) -> Value {
         }
     }
     match family(model) {
+        // 正向档位**原样留在 `reasoning_effort`**：官方客户端只发开关，但上游的
+        // `/chat/completions` 接受命名档位（3.0.8 起就是原样透传，实测 max 能到
+        // 上游并 200）。删掉它等于把客户端的档位选择抹平成「开思考」—— 用户看到
+        // 的 upstream=high 只是 `outbound` 对裸开关的展示口径，并非上游真收到了
+        // high。只有「关闭思考」两档才改写成 `thinking.disabled`：`none` / `off`
+        // 不是所有上游都认，而开关能明确表达关闭。
         "thinking" if !fields.get("thinking").is_some_and(|value| !value.is_null()) => {
-            if let Some(effort) = fields
-                .remove("reasoning_effort")
-                .and_then(|value| value.as_str().map(str::to_string))
-            {
-                fields.insert("thinking".to_string(), json!({
-                    "type": if crate::reasoning::is_thinking_off(&effort) { "disabled" } else { "enabled" },
-                }));
+            let off = fields
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .is_some_and(crate::reasoning::is_thinking_off);
+            if off {
+                fields.remove("reasoning_effort");
+                fields.insert("thinking".to_string(), json!({ "type": "disabled" }));
             }
         }
         "low_high" => {

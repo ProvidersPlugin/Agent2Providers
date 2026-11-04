@@ -9,45 +9,73 @@
 //! 换发材料是 `PTOKEN`（`credentials::ptoken_of`），端点：
 //! `POST https://passport.baidu.com/v3/login/api/auth`
 //!
-//! ── 与网关那份的差别（迁移时改的）───────────────────────────
-//! 网关版先 `LoadLibraryW` 加载官方客户端的 `genflowengine.dll`、调它导出的
-//! `genflow_engine_get_login_auth_param` 构造签名参数体。插件这边：
+//! ── 签名：纯算法，不加载 DLL ────────────────────────────────
+//! 官方客户端用 `genflowengine.dll` 的 `genflow_engine_get_login_auth_param`
+//! 构造参数体，但它本质只是「六个字段拼串 + 内置密钥 + 一次 MD5」：
 //!
-//!   · `windows` crate 只开了 `Win32_Security_Cryptography`（那是 DPAPI 用的），
-//!     加载 DLL 要 `Win32_System_LibraryLoader` + `Win32_System_Registry`；
-//!   · 更根本的是**插件不该去翻用户的注册表、不该把 14MB 的原生引擎映射进
-//!     宿主进程** —— 那两件事都是「进程级副作用」，与插件「一次请求一个
-//!     spawn 的沙箱」相反。
+//!   sig  = md5("appid=1&bduss=<BDUSS>&ptoken=<PTOKEN>&return_type=1&\
+//!              tpl=genflowpro&tpl_list=genflowpro|netdisk&sign_key=<KEY>")
+//!   body = "appid=1&bduss=<BDUSS>&ptoken=<PTOKEN>&return_type=1&\
+//!           tpl=genflowpro&tpl_list=genflowpro|netdisk&sig=<sig>"
 //!
-//! 所以这里**只保留换发的 HTTP 部分**，参数体退化成「最简形态」（只有
-//! `appid` / `bduss` / `ptoken` / `return_type` / `tpl`，没有 `sig`）。
-//! 上游对缺 `sig` 的响应实测是 `errno=-6`（拒绝），**不假装成功** ——
-//! 调用方按 `Err` 处理，回退到「用原 STOKEN 继续」（与网关那份「换发失败
-//! 只记日志、不阻断」的取向一致）。
+//! 密钥与公式由 `IKUNHEIHIE/kuku2api`（0BSD）用真实 DLL 对两组合成输入
+//! 验证过、再以真实抓包复算过，见 `build_auth_param`。所以这里**不需要**
+//! `Win32_System_LibraryLoader` / `Win32_System_Registry`，也不用把 14MB 的
+//! 原生引擎映射进宿主进程 —— 与插件「一次请求一个 spawn 的沙箱」一致，
+//! Windows / Linux 都能换发。
 //!
-//! ── 这条降级的实际影响 ──────────────────────────────────────
-//! 只影响「网页登录 / 手粘 Cookie 的账号」，且只影响**业务接口**（对话、
-//! 目录、签到）；余额、桌面端导入的账号（客户端 Cookies 里带的就是业务
-//! STOKEN）都不受影响。要让这条链在插件里恢复完整能力，需要给插件开
-//! `Win32_System_LibraryLoader` + `Win32_System_Registry` 两个 feature
-//! 并接受「映射原生 DLL」—— 那是一个需要单独决策的事。
+//! 缺 `sig` / 错 `sig` 上游回 `errno=110003`（另一种表现是 `-6`），
+//! **不假装成功** —— 调用方按 `Err` 处理，回退到「用原 STOKEN 继续」
+//! （与网关那份「换发失败只记日志、不阻断」的取向一致）。
+//!
+//! ── 影响面 ──────────────────────────────────────────────────
+//! 只影响「网页登录 / 手粘 Cookie」的账号（其 Cookie 里那份是通行证级
+//! STOKEN）；桌面端导入的账号 Cookies 里带的就是业务级 STOKEN，本不需要
+//! 换发。`ENGINE_SIGN_KEY` 是编译进官方客户端的常量，上游若更换需同步更新。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
+use md5::{Digest as _, Md5};
 use serde_json::Value;
 
 use crate::errors::GatewayError;
 use crate::http::{control_client, describe_chain};
 
-use super::USER_AGENT;
-
 /// 换发端点（passport 的 v3 登录 API）
 const PASSPORT_AUTH_URL: &str = "https://passport.baidu.com/v3/login/api/auth";
 
+/// 官方引擎内置的签名密钥，编译进 `genflowengine.dll`（kuku2api 用真实 DLL
+/// 与真实抓包双重验证）。上游更换时这里要跟着更新。
+const ENGINE_SIGN_KEY: &str = "34868b316de55815273b2616954b0286";
+
+/// 换发这一步对「客户端引擎 UA」敏感 —— 浏览器 UA 会被判成非客户端。
+/// 取值与抓包到的 `/v3/login/api/auth` 请求逐字一致。
+const ENGINE_UA: &str = "genflow;1.6.5;PC;PC-Windows;10.0.26200;GenFlowPro";
+
+/// 构造换发用的签名参数体（见模块头）。
+///
+/// 签名输入与发送体必须是**同一份、未做百分号编码**的字段串：服务端按收到的
+/// `tpl_list` / `sign_key` 等字段逐字复算 MD5，两者不一致就回 `errno=110003`。
+/// BDUSS 是 base64 风格、PTOKEN 是十六进制，都不含需要转义的字符，故与官方
+/// 客户端一样直接拼串（`|` 在值里也不需要转义）。
+fn build_auth_param(bduss: &str, ptoken: &str) -> String {
+    let signed = format!(
+        "appid=1&bduss={bduss}&ptoken={ptoken}&return_type=1&tpl=genflowpro&\
+         tpl_list=genflowpro|netdisk&sign_key={ENGINE_SIGN_KEY}"
+    );
+    let mut hasher = Md5::new();
+    hasher.update(signed.as_bytes());
+    let signature = format!("{:x}", hasher.finalize());
+    format!(
+        "appid=1&bduss={bduss}&ptoken={ptoken}&return_type=1&tpl=genflowpro&\
+         tpl_list=genflowpro|netdisk&sig={signature}"
+    )
+}
+
 /// 用 BDUSS + PTOKEN 换发「genflowpro 作用域」的 STOKEN。
 ///
-/// 成功返回新 STOKEN；失败（缺材料 / 没有引擎 / 被拒）返回带可读原因的错误，
+/// 成功返回新 STOKEN；失败（缺材料 / 被拒 / 网络异常）返回带可读原因的错误，
 /// 由调用方决定回退方式（本项目的口径是「只记日志，用原凭证继续」）。
 pub async fn exchange_genflowpro_stoken(
     bduss: &str,
@@ -59,12 +87,8 @@ pub async fn exchange_genflowpro_stoken(
             "换发 KukuAI 会话令牌需要 BDUSS 与 PTOKEN（登录 Cookie 里缺 PTOKEN）",
         ));
     }
-    // ── 参数体：没有 sig（见模块头）────────────────────────────
-    let body = format!(
-        "appid=1&bduss={}&ptoken={}&return_type=1&tpl=genflowpro&tpl_list=genflowpro",
-        encode(bduss),
-        encode(ptoken)
-    );
+    // ── 参数体：六字段 + 内置密钥算出的 MD5 签名（见模块头）──────
+    let body = build_auth_param(bduss, ptoken);
     // ── 为什么不用 `http::send_raw` ──────────────────────────────
     // 那个函数的 body 是 `Option<&Value>`，会按 JSON 发；passport 只认
     // `application/x-www-form-urlencoded`（发错编码的表现是 400
@@ -74,7 +98,7 @@ pub async fn exchange_genflowpro_stoken(
         .header("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
         .header("Referer", format!("{}/genflowpro", super::BASE_URL))
         .header("Origin", super::BASE_URL)
-        .header("User-Agent", USER_AGENT)
+        .header("User-Agent", ENGINE_UA)
         .body(body)
         .timeout(std::time::Duration::from_secs(20))
         .send()
@@ -119,23 +143,4 @@ pub async fn exchange_genflowpro_stoken(
         ));
     }
     Ok(stoken)
-}
-
-/// 最小百分号编码（只编表单里有特殊含义的字符）
-fn encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.as_bytes() {
-        match byte {
-            b'&' | b'=' | b'+' | b'%' | b'#' | b' ' => {
-                out.push('%');
-                out.push_str(&format!("{byte:02X}"));
-            }
-            0x00..=0x1f | 0x7f => {
-                out.push('%');
-                out.push_str(&format!("{byte:02X}"));
-            }
-            _ => out.push(*byte as char),
-        }
-    }
-    out
 }

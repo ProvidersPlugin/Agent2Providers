@@ -28,6 +28,11 @@
 //!      （桌面端都带；本实现按账号生成稳定的 utdid，可被 `ACCIO_*` 环境变量
 //!      覆盖）—— **已实测（2026-09）**：三者都不是鉴权项，缺了也能跑通；
 //!      真正必带的是 `appKey`（见 `endpoints::DEFAULT_APP_KEY`）。
+//!      **2026-10 修订**：`utdid` 仍不是鉴权项，但**不能再缺** —— 阿里网关把
+//!      它当风控基线，缺了会回 HTTP 200 + HTML 拦截页（bixi-intl 的 punish
+//!      脚本），症状是「空响应 / 模型不回复」。所以现在一律走
+//!      `credentials::Credentials::utdid()`（缺字段也会派生一个稳定值），
+//!      `version` / `x-package-region` 仍只是「带上更像客户端」。
 //!   2. `redirect_uri` 白名单是否放行插件的 loopback 地址（桌面端自己用的
 //!      就是 `http://127.0.0.1:<port>/auth/callback`，形态一致，风险低）；
 //!   3. 上游目录里 `visible: false` 的模型是否真的不可用（按不可用过滤）。

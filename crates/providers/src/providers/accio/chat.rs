@@ -118,25 +118,23 @@ pub fn build_plan(
         ("Accept".to_string(), "text/event-stream".to_string()),
         ("User-Agent".to_string(), endpoints::ADAPTER_USER_AGENT.to_string()),
         ("x-language".to_string(), endpoints::ACCEPT_LANGUAGE.to_string()),
-        (
-            "x-app-version".to_string(),
-            std::env::var("ACCIO_APP_VERSION")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| endpoints::DEFAULT_APP_VERSION.to_string()),
-        ),
+        // 两个版本头共用一份取值（`ACCIO_APP_VERSION` 可覆盖），别各写各的
+        ("x-app-version".to_string(), endpoints::app_version()),
         ("x-package-region".to_string(), credentials.region.package_region().to_string()),
         // **必带**：缺了它上游不报错，而是回一段「当前版本已不再支持，请升级」
         // 的普通文本（HTTP 200 + 正常帧形态），会被当成模型输出吐给下游。
         // 见 `endpoints::DEFAULT_APP_KEY`。
         ("appKey".to_string(), endpoints::app_key()),
     ];
-    // 设备指纹（每条账号自带一个；缺省也能发，但带上更接近真实客户端）
-    if !credentials.device_id.is_empty() {
-        headers.push(("utdid".to_string(), credentials.device_id.clone()));
+    // 设备指纹（utdid）：**必带**。上游把它当风控基线，缺了会回 HTTP 200 +
+    // HTML 拦截页（bixi-intl 的 punish 脚本），症状是「空响应 / 模型不回复」。
+    // 一律走 `utdid()` —— 记录缺 deviceId 时给一个按账号派生的稳定值。
+    headers.push(("utdid".to_string(), credentials.utdid()));
+    // 浏览器会话的伴随标识：有就带上（与官方客户端同形），没有也照发
+    if !credentials.sgcookie.is_empty() {
+        headers.push(("sgcookie".to_string(), credentials.sgcookie.clone()));
     }
-    headers.push(("version".to_string(), endpoints::DEFAULT_APP_VERSION.to_string()));
+    headers.push(("version".to_string(), endpoints::app_version()));
 
     let body_bytes = serde_json::to_vec(&built.body)
         .map_err(|_| GatewayError::with_status(500, "Accio 请求体序列化失败"))?;

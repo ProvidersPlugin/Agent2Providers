@@ -193,13 +193,31 @@ pub fn select_tools(all: &[Value], choice: &ToolChoice) -> Result<Vec<Value>, Ca
     }
 }
 
-/// JSON 值合法性校验（原实现 `validateJsonValue`）：嵌套深度 ≤12、
+/// JSON Schema 允许的最深嵌套。原实现（照抄上游客户端）是 12，实测会把
+/// zod 系 MCP server 整类挡在门外（issue #416），提到 32 覆盖实测最深的 31 层。
+const MAX_SCHEMA_DEPTH: usize = 32;
+
+/// 只表达「或 / 且 / 非」的 schema 组合键。它们不是数据层级，遍历时不计深度。
+const SCHEMA_COMBINATORS: &[&str] = &["anyOf", "oneOf", "allOf", "not"];
+
+/// JSON 值合法性校验（原实现 `validateJsonValue`）：嵌套深度 ≤32、
 /// 对象内不允许 `__proto__` / `constructor` / `prototype` 三个键。
 ///
-/// 为什么网关也要挡这三个键：它们会一路进上游 JSON（上游是 JS 生态，
+/// ── 深度口径为什么改了（issue #416）─────────────────────────
+/// 原实现的 12 是照抄上游客户端的校验，但 zod 系 MCP server 在把 zod schema
+/// 转成 JSON Schema 时会自动套 `anyOf` / `oneOf` / `allOf` 包装层：语义上很浅的
+/// schema 实测能到 16~31 层（morluto/rea v6.7.0 的 207 个工具里有 25 个超过 12），
+/// 结果「挂载大型 MCP server」的客户端一发就 400，且换号也不会顺延。
+/// 现在的口径：
+///   - 上限提到 [`MAX_SCHEMA_DEPTH`]（32），覆盖实测最深的 31 层；
+///   - [`SCHEMA_COMBINATORS`] 及其分支数组**不计层** —— 它们只是 schema 的组合语法，
+///     不是数据层级，这样将来更深的 zod 样板也不会再误伤；
+///   - 真实的 object / array 嵌套仍按 32 层封顶，原型污染防护不变。
+///
+/// 为什么网关也要挡那三个键：它们会一路进上游 JSON（上游是 JS 生态，
 /// 原型污染是真实攻击面），且这类输入没有任何正常用途。
 fn validate_json_value(value: &Value, path: &str, depth: usize) -> Result<(), CatPawError> {
-    if depth > 12 {
+    if depth > MAX_SCHEMA_DEPTH {
         return Err(CatPawError::bad_request(format!("{path} 嵌套过深")));
     }
     match value {
@@ -216,6 +234,18 @@ fn validate_json_value(value: &Value, path: &str, depth: usize) -> Result<(), Ca
                     return Err(CatPawError::bad_request(format!(
                         "{path} 包含不允许的字段 {key}"
                     )));
+                }
+                if SCHEMA_COMBINATORS.contains(&key.as_str()) {
+                    // 组合键的值是「分支数组」；数组容器本身也不构成数据层级，
+                    // 所以直接按原深度校验每个分支，而不是先 +1 再进数组。
+                    if let Value::Array(branches) = item {
+                        for (index, branch) in branches.iter().enumerate() {
+                            validate_json_value(branch, &format!("{path}.{key}[{index}]"), depth)?;
+                        }
+                        continue;
+                    }
+                    validate_json_value(item, &format!("{path}.{key}"), depth)?;
+                    continue;
                 }
                 validate_json_value(item, &format!("{path}.{key}"), depth + 1)?;
             }

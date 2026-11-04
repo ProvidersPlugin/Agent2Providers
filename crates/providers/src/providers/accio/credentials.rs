@@ -5,9 +5,13 @@
 //! ```jsonc
 //! { "accessToken": "…", "refreshToken": "…", "expiresAt": 1789…, "sid": "…", "sgcookie": "…" }
 //! ```
-//! `sid` / `sgcookie` 是浏览器侧会话的伴随标识，桌面端只用于「账号切换」
-//! （`/api/auth/safe/refresh_token` 那条多账号链路）。本网关的续期走普通那条，
-//! 因此**不落**这两个字段 —— 少存两个用不上的敏感值。
+//! `sid` / `sgcookie` 是浏览器侧会话的伴随标识，桌面端主要用在「账号切换」
+//! （`/api/auth/safe/refresh_token` 那条多账号链路）。
+//!
+//! - **`sid` 不落库**：本网关的续期走普通那条，用不上它 —— 少存一个敏感值。
+//! - **`sgcookie` 要留**：推理请求把它当一个「有就带」的伴随头（见
+//!   `chat::build_plan`）。少了它请求照样成立，但带上更接近真实客户端
+//!   （对照 magpie-providers-hub 的 accio 渠道：有 `sgcookie` 就放进请求头）。
 //!
 //! ── 身份用什么标识 ──────────────────────────────────────────
 //! Accio 的 token 是**不透明串**（不是 JWT，解不出 userId），因此账号身份由
@@ -19,7 +23,11 @@
 //! 推理请求要带 `utdid`（设备指纹）。桌面端每台机器一个（装机时生成、落盘）。
 //! 本网关按**账号**生成并落进记录：多账号池化时每个账号带自己的指纹，
 //! 与「一个账号一台设备」的真实形态一致（同一指纹挂十个账号才是可疑形态）。
-//! 它不影响鉴权，缺省也能跑（推理头里 utdid 是可选的），但带上更接近真实客户端。
+//!
+//! **这个头不能缺**：阿里网关把 utdid 当**风控基线**，缺了它会回 HTTP 200 +
+//! `text/html` 的拦截页（`bixi-intl.alicdn.com/punish` 跳转脚本），症状是
+//! 「模型不回复 / 空响应」而不是明确报错。所以发请求那一侧一律走
+//! [`Credentials::utdid`]（缺字段也能给出一个稳定值），不要直接读 `device_id`。
 
 use serde_json::{json, Value};
 
@@ -33,6 +41,10 @@ use super::endpoints::Region;
 /// 提前多久认为 token 该续期（与另外几家同一量级）
 pub const REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
 
+/// `sgcookie` 的长度上限（字符）。正常值一两千字符（浏览器整条 cookie 串的量级），
+/// 超过就说明贴错了东西 —— 与其截断出一条坏 cookie 发出去，不如直接不带。
+const MAX_SGCOOKIE_CHARS: usize = 4096;
+
 #[derive(Clone)]
 pub struct Credentials {
     pub region: Region,
@@ -45,6 +57,8 @@ pub struct Credentials {
     pub name: String,
     /// 推理请求的设备指纹（本网关按账号生成）
     pub device_id: String,
+    /// 浏览器会话的伴随标识（可选；有就随推理请求带上）
+    pub sgcookie: String,
 }
 
 impl Credentials {
@@ -74,6 +88,7 @@ impl Credentials {
             email: text(payload, &["email"]).chars().take(320).collect(),
             name: text(payload, &["nickname", "name"]).chars().take(100).collect(),
             device_id: text(payload, &["deviceId", "device_id"]),
+            sgcookie: sgcookie(payload),
         })
     }
 
@@ -88,6 +103,27 @@ impl Credentials {
         if self.device_id.is_empty() {
             self.device_id = format!("desktop-{}", new_request_id().replace('-', ""));
         }
+    }
+
+    /// 推理请求一定要带上的 utdid。
+    ///
+    /// 正常路径上 `ensure_identity`（添加账号 / 登录 / 续期）已经补过值，这里
+    /// 兜的是「记录是手改的 / 从旧版本迁过来的」那一档：**缺字段也不能让头消失**
+    /// —— 上游把 utdid 当风控基线，缺了就直接回 HTML 拦截页（见模块头）。
+    ///
+    /// 兜底值按账号身份派生，**绝不共用**：`user_id` 优先（它最稳）；拿不到身份
+    /// 时退回 `access_token` 的摘要 —— 这样至少「一个账号一个指纹」，代价是
+    /// token 轮换后这个兜底值会变（那种账号本来就没有稳定的身份字段）。
+    pub fn utdid(&self) -> String {
+        if header_safe(&self.device_id) {
+            return self.device_id.clone();
+        }
+        let seed = if !self.user_id.is_empty() {
+            self.user_id.as_str()
+        } else {
+            self.access_token.as_str()
+        };
+        format!("desktop-{}", fingerprint(seed))
     }
 
     /// 有刷新凭证 + 有到期时间，且快到点了
@@ -117,8 +153,41 @@ impl Credentials {
             "email": text_or_null(&self.email),
             "nickname": text_or_null(&self.name),
             "deviceId": text_or_null(&self.device_id),
+            "sgcookie": text_or_null(&self.sgcookie),
         })
     }
+}
+
+/// 取 `sgcookie`：接受驼峰 / 全小写两种键名；不是可见 ASCII 或超长的按「贴错了」
+/// 丢弃（不截断）。
+pub fn sgcookie(payload: &Value) -> String {
+    let value = text(payload, &["sgcookie", "sgCookie"]);
+    if !header_safe(&value) || value.chars().count() > MAX_SGCOOKIE_CHARS {
+        return String::new();
+    }
+    value
+}
+
+/// 能不能安全放进 HTTP 头：只接受**可见 ASCII**（含空格），空串按不安全处理。
+///
+/// reqwest 遇到非法头值会让整条请求失败（不是这一个头失效），所以脏值必须在
+/// 拼头之前挡掉 —— 手改的账号记录、上游回填的 deviceId 都可能出现非 ASCII。
+fn header_safe(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+}
+
+/// 稳定摘要（十六进制 md5）。只用于「把身份变成一个固定形状的标识」，
+/// 不参与鉴权：与 `protocol::generate_content_url` 同源，不引第二个哈希实现。
+fn fingerprint(text: &str) -> String {
+    use md5::{Digest as _, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(32);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
 }
 
 /// 取一个文本字段（空串按缺失处理）

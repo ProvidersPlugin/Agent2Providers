@@ -106,6 +106,11 @@ async fn refresh_and_save(
     if !refresh.is_empty() {
         fresh.refresh_token = refresh;
     }
+    // 续期响应带回新的 sgcookie 就换掉；没带就沿用旧的（`clone` 已经带上）
+    let sgcookie = credentials::sgcookie(&data);
+    if !sgcookie.is_empty() {
+        fresh.sgcookie = sgcookie;
+    }
     fresh.expires_at = Some(
         credentials::timestamp(
             data.get("expiresAt").or_else(|| data.get("expires_at")),
@@ -153,6 +158,7 @@ fn merge_credentials(expect: &Value, fresh: &Credentials) -> Value {
         ("email", Value::String(fresh.email.clone())),
         ("nickname", Value::String(fresh.name.clone())),
         ("deviceId", Value::String(fresh.device_id.clone())),
+        ("sgcookie", Value::String(fresh.sgcookie.clone())),
         ("mode", Value::String(fresh.region.edition().to_string())),
     ] {
         if value.is_null() || matches!(&value, Value::String(text) if text.is_empty()) {

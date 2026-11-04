@@ -42,12 +42,17 @@ Capabilities supplied by Provider Enhancement. The table lists the currently ena
 | AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Doubao Work | Implemented; unverified (chat / image generation) | ✗ | Implemented; unverified | Implemented; unverified | Implemented; unverified | Implemented; unverified |
+| Kiro | ✓ (chat / tools / thinking / image input) | ✓ | ✓ | ✓ | ✗ | — |
+| AStudio (iFlytek Astron Studio) | ✓ (chat / tools / thinking / image input) | ✗ | ✓ | ✓ | ✓ (daily sign-in credits) | — |
 
 Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; other capabilities depend on the service you configure. API account creation skips a second proxy save only for `proxySaved: true`; older gateways retain a compatibility save and verification warning. Failure does not remove an added account or falsely report that its proxy was saved.
 
 > Note: model-list markers cover online fetching or static catalogs as specified by each row and implementation. Missing refresh or usage hooks do not establish that the upstream lacks an endpoint. Qoder check-in is China-version only; QwenWork has **no** check-in endpoint on either edition (nor a personal access token or claimable campaigns — those three genuinely do not exist upstream, rather than being "not implemented yet").
 >
 > QwenWork sign-in: the **China edition** uses the official OAuth page (authorization code with a loopback callback, the same route the official CLI / IDE takes) and the account joins the list by itself. The **international edition is hidden from the list** (2026-11-03). Its chat and usage paths work, but sign-in is blocked upstream: the upstream accepts only its own registered callback address, so the code never reaches this machine, and its device-code endpoint has been retired — an account simply cannot be added. The code stays in place; removing the id from the gateway's suspended list (`availability.rs`) re-enables it.
+>
+> Kiro: browser sign-in goes through the Kiro portal (Google / GitHub / AWS Builder ID / IAM Identity Center) and the callback lands on a loopback port, so the gateway and the browser must be on the same machine. For remote deployments use "import the kiro-cli / Kiro IDE sign-in" or an API key. The upstream has no daily check-in and no claimable campaigns.
+> AStudio: model calls use OpenAI Responses; balance and daily sign-in credits require the account to carry a web session. Two sign-in routes: phone code or account/password on the in-app local sign-in page (sending a code and password sign-in require the GeeTest slider; the gateway and the browser must share one machine), or paste a `modelBearerToken` (fill `token` and `accountId` too for balance and check-in). Credentials can only be re-logged-in or re-pasted — the upstream has no refresh endpoint.
 
 ## Building
 

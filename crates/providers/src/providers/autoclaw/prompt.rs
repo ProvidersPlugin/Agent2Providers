@@ -121,17 +121,32 @@ Available tools are policy-filtered. Names are case-sensitive; call exactly as l
 /// 大小写不敏感的（国际版实测：把 `DeepSeek` 里的 e 写成 E 仍 406），替换若
 /// 大小写敏感，同一句指纹换个大小写就漏网。
 ///
+/// ── 覆盖面（2026-11 参考 magpie 的 autoclaw 插件补齐）────────────
+/// 参考项目 `Acankao/magpie-plugins/packages/autoclaw` 维护着同一道闸门的改写表，
+/// 覆盖的客户端远多于本表原先的 8 条。这里按它的清单补上「用户真的会撞上」的那些
+/// 身份句（Claude Agent SDK / opencode / Cursor / Cline / Qwen Code / Gemini CLI /
+/// Kimi Code CLI / goose / Hermes / CodeBuddy Code / pi …）—— 每补一类客户端，
+/// 就少一类「406 且不知为何」的报告。magpie 用替换串**保留产品名、只改句式**破坏
+/// 字面串（`You are ZCode` → `You are the ZCode agent`）；本表沿用更彻底的既有
+/// 纪律：替换串整个去掉产品名。
+///
 /// 实测口径（别把没测过的写成测过的）：
-///   - **国内版**：ZCode / Claude Code / 老 Codex CLI 三句实测过「改写后 200」；
-///   - **国际版**：`DeepSeek Harness` 与新版 Codex 首句（`You are Codex, based on
-///     GPT-5…`）实测过「原样出站 406」，**改写后的结果尚未实测**（issue #10 的
-///     报告只验到拦截侧）；Codex 第二句（`You are running as a coding agent in the
-///     Codex CLI…`）按老句同形推断会被拦，同样待实测。
+///   - **国内版实测「改写后 200」**：ZCode / Claude Code / 老 Codex CLI 三句；
+///   - **国际版实测「原样出站 406」**：`DeepSeek Harness` 与新版 Codex 首句
+///     （`You are Codex, based on GPT-5…`）—— 改写后的结果尚未实测（issue #10 只
+///     验到拦截侧）；Codex 第二句（`You are running as a coding agent in the Codex
+///     CLI…`）按老句同形推断会被拦，同样待实测；
+///   - **本次新增条目（照搬 magpie 清单）尚未在本机复验**：方向一致，但源头是
+///     magpie 对各家客户端源码与上游拦截的核对 —— 若某个客户端仍 406，把它的
+///     system 首句贴到项目 issue 即可。
 const FOREIGN_IDENTITIES: &[(&str, &str)] = &[
+    // ── ZCode（长的在前）──
     (
         "You are ZCode, an interactive coding agent",
         "You are an interactive coding agent",
     ),
+    ("You are ZCode", "You are an interactive coding agent"),
+    // ── Codex（三种长句式在前，`You are Codex` / `Codex CLI` 兜底在后）──
     (
         "You are a coding agent running in the Codex CLI tool",
         "You are a coding agent running in a terminal CLI tool",
@@ -144,18 +159,42 @@ const FOREIGN_IDENTITIES: &[(&str, &str)] = &[
         "You are running as a coding agent in the Codex CLI",
         "You are running as a coding agent in a terminal CLI",
     ),
+    ("You are Codex", "You are a coding agent"),
+    ("Codex CLI", "Codex command-line tool"),
+    // ── Claude 系（Claude Code 2.1.30x 起首句换成了 SDK 身份句，长在前）──
+    (
+        "You are a Claude agent, built on Anthropic's Claude Agent SDK",
+        "You are a coding assistant",
+    ),
+    ("Claude Agent SDK", "the agent framework"),
     // Claude Code 的整句是 "You are Claude Code, Anthropic's official CLI tool for
     // Claude."；只改到「You are Claude Code」为止，后面的产品说明原样保留。
     ("You are Claude Code", "You are a coding assistant"),
-    ("You are ZCode", "You are an interactive coding agent"),
-    // 国际版追加（issue #10）：句式照旧，只把产品名换成中性说法。
+    // ── DeepSeek Harness（国际版，issue #10）──
     (
         "You are an AI agent powered by DeepSeek Harness",
         "You are an AI agent powered by a local coding harness",
     ),
-    // 放最后：它最短、最通用（新版 Codex 的首句就是它），必须让上面那些更长的
-    // Codex CLI 句式先有机会命中（长在前是本表的固定纪律）。
-    ("You are Codex", "You are a coding agent"),
+    // ── 其它 CLI / Agent 身份句（2026-11 照搬 magpie 的 autoclaw 改写清单）──
+    ("You are CodeBuddy Code", "You are a coding assistant"),
+    ("You are Hermes Agent", "You are an agent"),
+    ("You are Hermes", "You are an agent"),
+    ("You are Gemini CLI", "You are a coding agent"),
+    ("You are Kimi Code CLI", "You are a coding agent"),
+    ("You are Qwen Code", "You are a coding agent"),
+    ("You are opencode", "You are a coding agent"),
+    ("You are Cursor", "You are a coding agent"),
+    ("You are Cline", "You are a coding agent"),
+    ("You are goose", "You are a coding agent"),
+    // ── 其它措辞：pi 的描述句、ZCode 的「powered by GLM-<版本>」开场白 ──
+    (
+        "operating inside pi, a coding agent harness",
+        "operating inside a coding agent harness",
+    ),
+    (
+        "This conversation is powered by GLM",
+        "This conversation is powered by the GLM",
+    ),
 ];
 
 /// 客户端可见的 **406 拒收提示**：附在 `上游返回 406: 上游错误` 之后（与

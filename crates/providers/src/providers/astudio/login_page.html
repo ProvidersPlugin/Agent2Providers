@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AStudio 登录</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f5f5f7; --card:#fff; --text:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --brand:#5b2be0; --danger:#c0392b; --ok:#2a9d5c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121214; --card:#1c1c1f; --text:#f2f2f4; --muted:#9a9aa2; --line:#3a3a40; } }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text); font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .card { width:min(440px, calc(100vw - 32px)); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; box-shadow:0 10px 40px rgba(0,0,0,.08); }
+  h1 { margin:0 0 4px; font-size:20px; }
+  .sub { margin:0 0 20px; color:var(--muted); font-size:13px; }
+  .tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .tabs button { flex:1; padding:9px 10px; border:1px solid var(--line); background:transparent; color:var(--text); border-radius:10px; cursor:pointer; font-size:14px; }
+  .tabs button.active { border-color:var(--brand); color:var(--brand); font-weight:600; }
+  label { display:block; margin:12px 0 6px; font-size:13px; color:var(--muted); }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--text); font-size:15px; outline:none; }
+  input:focus { border-color:var(--brand); }
+  .row { display:flex; gap:8px; }
+  .row input { flex:1; }
+  button.primary { width:100%; margin-top:18px; padding:11px; border:0; border-radius:10px; background:var(--brand); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
+  button.primary:disabled { opacity:.5; cursor:default; }
+  button.ghost { padding:0 14px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--text); cursor:pointer; white-space:nowrap; }
+  button:disabled { opacity:.55; cursor:default; }
+  .status { margin-top:14px; font-size:13px; min-height:20px; }
+  .status.error { color:var(--danger); }
+  .status.ok { color:var(--ok); }
+  .done { text-align:center; padding:18px 0 6px; }
+  .done .mark { font-size:34px; color:var(--ok); }
+  .hidden { display:none; }
+</style>
+<div class="card">
+  <h1>AStudio 登录</h1>
+  <p class="sub">发送验证码或使用密码登录时会弹出滑块验证。</p>
+  <div id="form-area">
+    <div class="tabs">
+      <button id="tab-sms" class="active" type="button">手机号验证码</button>
+      <button id="tab-pwd" type="button">账号密码</button>
+    </div>
+    <div id="pane-sms">
+      <label for="mobile">手机号</label>
+      <input id="mobile" inputmode="numeric" autocomplete="tel" placeholder="11 位手机号">
+      <label for="code">验证码</label>
+      <div class="row">
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码">
+        <button id="send" class="ghost" type="button">发送验证码</button>
+      </div>
+      <button id="login-sms" class="primary" type="button">登录</button>
+    </div>
+    <div id="pane-pwd" class="hidden">
+      <label for="account">账号</label>
+      <input id="account" autocomplete="username" placeholder="手机号 / 邮箱 / 用户名">
+      <label for="password">密码</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="6–20 位">
+      <button id="login-pwd" class="primary" type="button">登录</button>
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+  <div id="done" class="done hidden">
+    <div class="mark">✓</div>
+    <p>登录完成，可以关闭这个标签页了。</p>
+  </div>
+</div>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const statusEl = document.getElementById('status');
+let tab = 'sms';
+let busy = false;
+let scriptPromise = null;
+
+function status(text, kind) {
+  statusEl.textContent = text || '';
+  statusEl.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+async function api(path, body) {
+  const response = await fetch('/api/' + path + '?t=' + encodeURIComponent(TOKEN), {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch (_) {}
+  if (!response.ok) throw new Error(payload.error || ('请求失败（HTTP ' + response.status + '）'));
+  return payload;
+}
+
+function showTab(next) {
+  if (busy) return;
+  tab = next;
+  document.getElementById('tab-sms').classList.toggle('active', next === 'sms');
+  document.getElementById('tab-pwd').classList.toggle('active', next === 'pwd');
+  document.getElementById('pane-sms').classList.toggle('hidden', next !== 'sms');
+  document.getElementById('pane-pwd').classList.toggle('hidden', next !== 'pwd');
+  status('');
+}
+
+function setBusy(value) {
+  busy = value;
+  for (const id of ['send', 'login-sms', 'login-pwd']) document.getElementById(id).disabled = value;
+}
+
+/* 极验脚本按需动态加载：不阻塞页面，失败可重试（与官方客户端一致）。 */
+function loadGeetest() {
+  if (typeof window.initGeetest === 'function') return Promise.resolve();
+  if (scriptPromise) return scriptPromise;
+  scriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://static.geetest.com/static/tools/gt.js';
+    script.async = true;
+    const timer = setTimeout(() => {
+      script.remove();
+      scriptPromise = null;
+      reject(new Error('滑块组件加载超时，请检查网络后重试'));
+    }, 15000);
+    script.onload = () => {
+      clearTimeout(timer);
+      if (typeof window.initGeetest === 'function') return resolve();
+      scriptPromise = null;
+      reject(new Error('滑块组件不可用，请稍后重试'));
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      script.remove();
+      scriptPromise = null;
+      reject(new Error('滑块组件加载失败，请检查网络后重试'));
+    };
+    document.head.appendChild(script);
+  });
+  return scriptPromise;
+}
+
+/* 每次验证都要新配置（challenge 一次性）；bind 模式需主动 verify() 才会弹出滑块。 */
+async function captchaResult() {
+  status('正在加载滑块…');
+  await loadGeetest();
+  const config = await api('geetest');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let widget = null;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { widget?.destroy?.(); } catch (_) {}
+      if (error) { error.captcha = true; reject(error); } else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error('滑块验证超时，请重试')), 30000);
+    try {
+      window.initGeetest(Object.assign({}, config, {
+        https: true,
+        offline: !config.success,
+        product: 'bind',
+        width: '100%',
+      }), obj => {
+        widget = obj;
+        obj.onReady(() => {
+          try {
+            obj.verify();
+            status('请完成滑块验证');
+          } catch (_) {
+            finish(new Error('滑块启动失败，请重试'));
+          }
+        });
+        obj.onSuccess(() => {
+          const validate = obj.getValidate();
+          if (!validate) return finish(new Error('滑块结果无效，请重试'));
+          finish(null, validate);
+        });
+        obj.onError(() => finish(new Error('滑块验证网络异常，请稍后重试')));
+        obj.onClose(() => finish(new Error('已取消滑块验证，请重试')));
+      });
+    } catch (error) {
+      finish(new Error('滑块启动失败：' + (error && error.message ? error.message : error)));
+    }
+  });
+}
+
+function captchaHint(error) {
+  return error && error.captcha ? error.message + '；也可在 AStudio 官方客户端获取验证码后直接填入。' : error.message;
+}
+
+async function sendCode() {
+  const mobile = document.getElementById('mobile').value.trim();
+  if (!/^1\d{10}$/.test(mobile)) return status('请输入 11 位手机号', 'error');
+  setBusy(true);
+  try {
+    const captcha = await captchaResult();
+    status('正在发送…');
+    await api('send-code', { mobile, captcha });
+    status('验证码已发送', 'ok');
+  } catch (error) {
+    status(captchaHint(error), 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loginSms() {
+  const mobile = document.getElementById('mobile').value.trim();
+  const code = document.getElementById('code').value.trim();
+  if (!/^1\d{10}$/.test(mobile)) return status('请输入 11 位手机号', 'error');
+  if (!/^\d{6}$/.test(code)) return status('请输入 6 位验证码', 'error');
+  setBusy(true);
+  status('正在登录…');
+  try {
+    await api('login-sms', { mobile, verifyCode: code });
+    done();
+  } catch (error) {
+    status(error.message, 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loginPassword() {
+  const account = document.getElementById('account').value.trim();
+  const password = document.getElementById('password').value;
+  if (!account) return status('请输入账号', 'error');
+  if (password.length < 6 || password.length > 20) return status('密码长度必须为 6–20 位', 'error');
+  setBusy(true);
+  try {
+    const captcha = await captchaResult();
+    status('正在登录…');
+    await api('login-password', { accountName: account, accountPwd: password, captcha });
+    done();
+  } catch (error) {
+    status(captchaHint(error), 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+function done() {
+  document.getElementById('form-area').classList.add('hidden');
+  document.getElementById('done').classList.remove('hidden');
+}
+
+document.getElementById('tab-sms').onclick = () => showTab('sms');
+document.getElementById('tab-pwd').onclick = () => showTab('pwd');
+document.getElementById('send').onclick = sendCode;
+document.getElementById('login-sms').onclick = loginSms;
+document.getElementById('login-pwd').onclick = loginPassword;
+</script>
+</html>

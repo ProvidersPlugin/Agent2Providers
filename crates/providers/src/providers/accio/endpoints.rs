@@ -69,10 +69,20 @@ pub const CLIENT_ID: &str = "accio-work";
 pub const DEFAULT_TENANT: &str = "accio-agent";
 /// ADK 推理请求的来源标记（桌面端默认值 `ADK_IAI_TAG || "phoenix-desktop"`）
 pub const DEFAULT_IAI_TAG: &str = "phoenix-desktop";
-/// 推理请求头里的客户端版本（桌面端取 appVersion；缺省给一个近版号）
-pub const DEFAULT_APP_VERSION: &str = "0.32.6";
+/// 推理请求头里的客户端版本（桌面端取 appVersion）。
+///
+/// 2026-10 对齐当时官方客户端的 `0.34.4`（与 magpie-providers-hub 的 accio
+/// 渠道同一取值）；版本太旧将来可能被上游当成不支持 —— 可用
+/// `ACCIO_APP_VERSION` 覆盖，见 [`app_version`]。
+pub const DEFAULT_APP_VERSION: &str = "0.34.4";
 
-/// 推理网关会把通用 `undici` 标识拦成 HTTP 200 的 HTML 挑战页，必须单独覆盖。
+/// 推理请求的 User-Agent。
+///
+/// 上游**不要求**这个头（参考实现 magpie-providers-hub 的 accio 渠道根本不发
+/// UA，照样通），但 2026-09 我们这边用通用的 `undici` 标识时见过 HTTP 200 的
+/// HTML 挑战页；换成独立标识后没再复现。真正决定吃不吃拦截页的是 `utdid`
+/// （见 `credentials` 模块头），这里保留一个独立 UA 只是多一层区分度 ——
+/// 别因为「上游不校验」就删掉它。
 pub const ADAPTER_USER_AGENT: &str = "agent2api-accio/3.3.0";
 
 /// 推理请求头 `appKey`（**必填**，见下）。
@@ -83,8 +93,11 @@ pub const ADAPTER_USER_AGENT: &str = "agent2api-accio/3.3.0";
 /// HTTP 200、`data:` 帧，形态与正常回答完全一样，会被当成模型输出吐给下游。
 /// 带上任意**非空**取值即恢复（实测 `35298846` / `12345678` / 任意字符串
 /// 都通，空串等同于没带）—— 上游只校验「有没有」，不校验取值。
-/// 取的是 accio-manager 的默认值，与桌面端同源。`ACCIO_APP_KEY` 可覆盖。
-pub const DEFAULT_APP_KEY: &str = "35298846";
+///
+/// 默认值取官方客户端的那一枚 `OneChat`（magpie-providers-hub 的 accio
+/// 渠道按真机抓包写的就是它）；此前用的是 accio-manager 的 `35298846`，
+/// 两者实测都能通，选官方那枚只是更像真实客户端。`ACCIO_APP_KEY` 可覆盖。
+pub const DEFAULT_APP_KEY: &str = "OneChat";
 
 /// 业务请求的默认语言（桌面端按界面语言给 `zh` / `en`，网关侧固定 en ——
 /// 额度与目录的文案不参与界面展示，语言只影响上游返回的消息文本）
@@ -207,6 +220,14 @@ pub fn llm_base() -> String {
 /// 业务接口（目录 / 额度 / 资料）实测带不带都一样，多带只会扩大请求面。
 pub fn app_key() -> String {
     env_text("ACCIO_APP_KEY").unwrap_or_else(|| DEFAULT_APP_KEY.to_string())
+}
+
+/// 客户端版本号的取值（`ACCIO_APP_VERSION` 可覆盖）。
+///
+/// `x-app-version` 与 `version` **两个头共用这一份**：一个被环境变量改掉、
+/// 另一个还留在默认值，会让同一请求的版本号自相矛盾 —— 比「版本旧」更像异常。
+pub fn app_version() -> String {
+    env_text("ACCIO_APP_VERSION").unwrap_or_else(|| DEFAULT_APP_VERSION.to_string())
 }
 
 /// 读一个环境变量并去掉空白；空串按「没设」处理

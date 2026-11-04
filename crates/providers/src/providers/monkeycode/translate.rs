@@ -18,7 +18,14 @@
 //! | 未知 | 仅 verbose 日志 |
 //!
 //! 下行信封（`ping` / `task-started` / `task-running` / `task-ended` /
-//! `task-error`）的处理与四个终态出口见 `stream.rs` 的模块头。
+//! `task-error` / 上游真实错误帧 `error` / `permission-req` / `task-event`）
+//! 的处理与四个终态出口见 `stream.rs` 的模块头。
+//!
+//! ── `data` 一律是 base64(JSON)（本家最容易踩的坑）────────────────
+//! 线上每个帧的 `data` 都是 base64(JSON)（上游 `domain.TaskStream.Data` 是
+//! Go 的 `[]byte`）。下行解码走 `wire::decode_data`、上行封帧走
+//! `wire::uplink_frame`，约定与出处见 `wire.rs` 的模块头 —— 别在本文件里另写
+//! 一份（历史上就是写成「裸 JSON 字符串」，导致一帧都解不出）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic，不碰网络、不持锁。
@@ -27,6 +34,8 @@ use bytes::Bytes;
 use serde_json::{json, Map, Value};
 
 use crate::logging;
+
+use super::wire::{decode_data, uplink_frame};
 
 /// `data: [DONE]\n\n`（OpenAI 流收尾帧；`stream.rs` 的异常收尾也用）
 pub(super) const DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
@@ -322,11 +331,13 @@ pub(super) enum Terminal {
 pub(super) struct Handled {
     /// 要下发给客户端的 SSE 帧
     pub(super) frames: Vec<Bytes>,
-    /// 要回给上游的控制消息（ping / reply-question）
+    /// 要回给上游的控制消息（ping / reply-question / permission-resp）
     pub(super) reply: Option<String>,
     /// 终态（None = 继续）
     pub(super) terminal: Option<Terminal>,
 }
+
+// ─── 下行消息处理 ──────────────────────────────────────────────
 
 /// 一条下行文本帧 → 帧 / 回复 / 终态。
 pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled {
@@ -357,14 +368,28 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
                 ..Handled::default()
             }
         }
-        "task-error" => {
+        // 终态错误：上游常量是 `error`（`consts.TaskStreamTypeError`，由
+        // `task.go::writeError` 发出），`task-error` 是信封层曾用过的名字 ——
+        // 两个都认，都走异常收尾（只认其中一个会让真实错误被当未知帧丢掉）。
+        "task-error" | "error" => {
             let detail = error_detail(parsed.get("data"));
             Handled {
                 terminal: Some(Terminal::Failed(detail)),
                 ..Handled::default()
             }
         }
+        // 逐工具权限审批：必须回一条 `permission-resp`，否则任务停在工具调用处
+        // （官网也一直转圈）。见 `handle_permission_request`。
+        "permission-req" => handle_permission_request(parsed.get("data")),
+        // 临时事件（不持久化）：无终态语义，只记一条 verbose 便于抓日志定位。
+        "task-event" => {
+            log_task_event(&parsed);
+            Handled::default()
+        }
         other => {
+            // 其余（file-change / cursor / sync-my-ip / call 等）无终态语义：
+            // 记下类型名即可（`cursor`/`file-change` 只在历史回放里有意义，
+            // `call`/`call-response` 走的是另一条控制流 WebSocket，不在本流）。
             logging::verbose(
                 "[MonkeyCode]",
                 &format!("忽略任务流消息类型：{other}"),
@@ -374,22 +399,97 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
     }
 }
 
+/// `permission-req` → `permission-resp`（自动批准）。
+///
+/// ── 载荷形状（逐字对照上游）───────────────────────────────────
+/// 下行 `data`（base64(JSON)，解码后）：`{id, title, tool, tool_call_id}`
+/// —— 见 `desktop/fixtures/replay/raw.jsonl` 的样例与
+/// `desktop/src/driver/frame.rs::build("permission-req", ...)`。
+/// 上行 `data`（由 `uplink_frame` 再包 base64）：`{id, approved, remember, persist}`
+/// —— 见 `desktop/ui-next/src/lib/ipc/approvals.ts::sendPermAnswerVia` 的
+/// `allow` 档（`approved: true, remember: false, persist: false`）与壳侧
+/// `desktop/src/driver/session.rs` 的 `"permission-resp"` 分支。
+///
+/// 缺 `id` 时**不回**（对不上号的批准没有意义），只记一条 verbose。
+fn handle_permission_request(data: Option<&Value>) -> Handled {
+    let payload = decode_data(data);
+    let id = payload
+        .as_ref()
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        logging::verbose("[MonkeyCode]", "permission-req 缺少 id，未自动批准");
+        return Handled::default();
+    }
+    let tool = payload
+        .as_ref()
+        .and_then(|value| value.get("tool"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let title = payload
+        .as_ref()
+        .and_then(|value| value.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    logging::verbose(
+        "[MonkeyCode]",
+        &format!(
+            "自动批准工具调用：tool={} title={}",
+            if tool.is_empty() { "-" } else { tool },
+            preview(title, 120),
+        ),
+    );
+    Handled {
+        reply: Some(uplink_frame(
+            "permission-resp",
+            &json!({
+                "id": id,
+                "approved": true,
+                "remember": false,
+                "persist": false,
+            }),
+        )),
+        ..Handled::default()
+    }
+}
+
+/// `task-event` 的 verbose：只记 kind / 摘要（该帧不持久化，也不该产帧）。
+fn log_task_event(message: &Value) {
+    let payload = decode_data(message.get("data"));
+    let kind = payload
+        .as_ref()
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .or_else(|| message.get("kind").and_then(Value::as_str))
+        .filter(|kind| !kind.is_empty())
+        .unwrap_or("-")
+        .to_string();
+    let summary = payload.map(|value| value.to_string()).unwrap_or_default();
+    logging::verbose(
+        "[MonkeyCode]",
+        &format!("任务临时事件 task-event kind={kind} {}", preview(&summary, 200)),
+    );
+}
+
 /// `task-running`：ACP 事件（转帧）或 Agent 提问（自动回复）。
 fn handle_running(translator: &mut Translator, message: &Value) -> Handled {
     match message.get("kind").and_then(Value::as_str).unwrap_or("") {
         "acp_event" => {
-            let Some(data) = message.get("data").and_then(Value::as_str) else {
-                logging::verbose("[MonkeyCode]", "acp_event 缺少 data 字符串");
-                return Handled::default();
-            };
-            let Ok(acp) = serde_json::from_str::<Value>(data) else {
-                logging::verbose("[MonkeyCode]", "acp_event 的 data 不是 JSON");
+            let Some(acp) = decode_data(message.get("data")) else {
+                logging::verbose(
+                    "[MonkeyCode]",
+                    "acp_event 的 data 无法解码（期望 base64(JSON)）",
+                );
                 return Handled::default();
             };
             handle_acp(translator, &acp)
         }
         "acp_ask_user_question" => {
-            let reply = auto_reply_question(message.get("data"));
+            let payload = decode_data(message.get("data"));
+            let reply = auto_reply_question(payload.as_ref());
             if reply.is_none() {
                 logging::verbose(
                     "[MonkeyCode]",
@@ -411,8 +511,60 @@ fn handle_running(translator: &mut Translator, message: &Value) -> Handled {
     }
 }
 
+/// ACP 事件的**形状归一**：把上游两套形态都转成本文件认识的扁平形态。
+///
+/// ── 为什么有两套 ────────────────────────────────────────────
+/// 参考仓库 `codkeep/MonkeyCodeReverseEngineer` 从真实抓包里看到的是**扁平**形态
+/// （`{"type":"agent_message_chunk","text":"…"}`，见其
+/// `docs/10-appendices/07-websocket-frames.md` 那条 base64 抓包），本插件一直按它写；
+/// 而当前上游开源仓库网页端 `task-message-handler.ts::applyACPEvent` 读的是带
+/// `update` 外壳的形态（`data.update.sessionUpdate` / `data.update.content.text`）。
+/// 两套字段名完全不兼容，这里都认 —— 上游换版时不至于整条链失灵。
+///
+/// 已是扁平形态（没有 `update` 外壳）时返回 `None`（调用方原样使用，零拷贝）。
+fn normalize_acp(acp: &Value) -> Option<Value> {
+    let update = acp.get("update").filter(|value| value.is_object())?;
+    let session_update = update
+        .get("sessionUpdate")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.is_empty())?;
+    match session_update {
+        "agent_message_chunk" | "agent_thought_chunk" => {
+            let text = update
+                .get("content")
+                .filter(|content| content.get("type").and_then(Value::as_str) == Some("text"))
+                .and_then(|content| content.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            Some(json!({ "type": session_update, "text": text }))
+        }
+        "tool_call" | "tool_call_update" => {
+            let name = update
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| update.get("kind").and_then(Value::as_str))
+                .unwrap_or("unknown");
+            let input = text_field(update.get("rawInput"));
+            Some(json!({
+                "type": session_update,
+                "tool_name": name,
+                "tool_input": input.clone(),
+                "delta": input,
+                "status": update.get("status").cloned().unwrap_or(Value::Null),
+            }))
+        }
+        // usage_update 在外壳形态里是「上下文窗口 size/used」（不是 token 计数），
+        // 与扁平形态的 input/output/total 语义不同 —— 这里只回类型名，不臆造 token。
+        _ => Some(json!({ "type": session_update })),
+    }
+}
+
 /// 一个 ACP 事件 → 帧（映射表见模块头与报告）。
 fn handle_acp(translator: &mut Translator, acp: &Value) -> Handled {
+    // 上游存在两套 ACP 形状（见 `normalize_acp`）；先归一成扁平形态再匹配。
+    let normalized = normalize_acp(acp);
+    let acp = normalized.as_ref().unwrap_or(acp);
     match acp.get("type").and_then(Value::as_str).unwrap_or("") {
         "agent_message_chunk" => {
             let text = chunk_text(acp);
@@ -528,56 +680,37 @@ fn text_field(value: Option<&Value>) -> String {
 
 /// Agent 提问 → `reply-question`（自动回复，参考 `task-runner.ts:214-231`）。
 ///
-/// `data` 在参考里是 **JSON 串**（`JSON.parse(msg.data)`）；文档的下行表另有
-/// 「base64 编码的提问数据」一说（01-task-stream.md），因此解析失败时再试一次
-/// base64 → JSON 解码（两种形态都认，避免任务卡在提问处）。
-/// 解析全失败时返回 None（参考的 catch 分支同样不回）。
-fn auto_reply_question(data: Option<&Value>) -> Option<String> {
-    let payload = match data {
-        Some(Value::String(raw)) => parse_question(raw)?,
-        Some(value @ Value::Object(_)) => value.clone(),
-        _ => return None,
-    };
+/// 载荷由 `decode_data` 解出：取提问对象的 `request_id`（旧形态用 `id`）；
+/// 回帧载荷照官方客户端 `approvals.ts::sendAskAnswersVia`：
+/// `{request_id, answers_json, cancelled}`（`answers_json: ""` 表示空答案）。
+/// 取不到 request_id 时返回 None（不硬造一条对不上号的回复）。
+fn auto_reply_question(payload: Option<&Value>) -> Option<String> {
+    let payload = payload?;
     let request_id = payload
         .get("request_id")
         .and_then(Value::as_str)
-        .or_else(|| payload.get("id").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
-    Some(
-        json!({
-            "type": "reply-question",
-            "data": json!({
-                "request_id": request_id,
-                "answers_json": "",
-                "cancelled": false,
-            })
-            .to_string(),
-        })
-        .to_string(),
-    )
-}
-
-/// 提问载荷解析：先当 JSON，再当 base64(JSON)（见 `auto_reply_question`）。
-fn parse_question(raw: &str) -> Option<Value> {
-    let text = raw.trim();
-    if text.is_empty() {
+        .or_else(|| payload.get("id").and_then(Value::as_str))?;
+    if request_id.trim().is_empty() {
         return None;
     }
-    if let Ok(value) = serde_json::from_str::<Value>(text) {
-        return Some(value);
-    }
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(text).ok()?;
-    let text = String::from_utf8(decoded).ok()?;
-    serde_json::from_str::<Value>(&text).ok()
+    Some(uplink_frame(
+        "reply-question",
+        &json!({
+            "request_id": request_id,
+            "answers_json": "",
+            "cancelled": false,
+        }),
+    ))
 }
 
-/// `task-error` 的 data → 可读原因（字符串直接用；对象取 error/message/msg）。
+/// `task-error` / `error` 的 data → 可读原因（先 `decode_data`，再按字符串 /
+/// 对象取 error/message/msg/detail；都没有时给一句兜底）。
 fn error_detail(data: Option<&Value>) -> String {
-    match data {
+    // 解不出来就退回原值（可能是一条裸的纯文本错误串），别把原因整个丢掉。
+    let decoded = decode_data(data).or_else(|| data.cloned());
+    match decoded {
         Some(Value::String(text)) if !text.trim().is_empty() => text.trim().to_string(),
-        Some(Value::Object(object)) => ["error", "message", "msg"]
+        Some(Value::Object(object)) => ["error", "message", "msg", "detail"]
             .iter()
             .find_map(|key| object.get(*key).and_then(Value::as_str))
             .map(|text| text.trim().to_string())
@@ -611,18 +744,11 @@ fn merge_usage(usage: &mut Usage, source: &Value) {
     }
 }
 
-/// `task-ended` 的 data（JSON 串或对象）里的最终 usage（01-task-stream 下行表：
+/// `task-ended` 的 data（base64(JSON)）里的最终 usage（01-task-stream 下行表：
 /// `task-ended` 的 data 可能是 `{"usage": {...}}`）。
 fn merge_final_usage(translator: &mut Translator, data: Option<&Value>) {
-    let Some(data) = data else {
+    let Some(payload) = decode_data(data) else {
         return;
-    };
-    let payload = match data {
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
-            Ok(value) => value,
-            Err(_) => return,
-        },
-        other => other.clone(),
     };
     let usage = payload.get("usage").unwrap_or(&payload);
     merge_usage(&mut translator.usage, usage);

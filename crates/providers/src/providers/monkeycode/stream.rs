@@ -8,13 +8,17 @@
 //! ```text
 //!   WS   wss://<站点>/api/v1/users/tasks/stream?id=<taskId>&mode=new
 //!   连接成功后客户端**必须先发** auto-approve + user-input，上游才开始跑；
-//!   下行是 {type, kind?, data?, timestamp?} 的 JSON 文本帧：
+//!   下行是 {type, kind?, data?, timestamp?} 的 JSON 文本帧；**`data` 一律是
+//!   base64(JSON)**（上游 `domain.TaskStream.Data` 是 Go 的 `[]byte`，官方网页端
+//!   用 `JSON.parse(b64decode(data))` 解 —— 详见 `translate.rs` 的模块头）：
 //!     ping                      心跳（客户端回一条 {"type":"ping"}）
 //!     task-started              轮次开始
-//!     task-running kind=acp_event            data 是 ACP 事件的 JSON 串
-//!     task-running kind=acp_ask_user_question data 是提问的 JSON 串
+//!     task-running kind=acp_event            data 是 ACP 事件的 base64(JSON)
+//!     task-running kind=acp_ask_user_question data 是提问的 base64(JSON)
+//!     permission-req            工具调用权限审批请求（必须回 permission-resp）
+//!     task-event                临时事件（不持久化，仅记录）
 //!     task-ended                轮次结束（终态；data 可能带最终 usage）
-//!     task-error                轮次出错（终态）
+//!     task-error / error        轮次出错（终态；上游常量叫 error）
 //! ```
 //!
 //! ── 为什么必须有状态、为什么走 WS ──────────────────────────────
@@ -25,7 +29,7 @@
 //! ── 终态怎么判（不挂死的关键）─────────────────────────────────
 //! 四个出口，**每个都会给下游一个收尾**（`finish` 帧 + `[DONE]`，或错误帧）：
 //!   1. `task-ended` → 正常收尾；
-//!   2. `task-error` → 异常收尾（错误帧）；
+//!   2. `task-error` / `error` → 异常收尾（错误帧）；
 //!   3. 连接被关 / 传输错误（没等到 task-ended）→ 异常收尾；
 //!   4. 空闲超时（默认 300 秒没有任何下行消息；上游每 10 秒有 ping，
 //!      所以空闲即断线）或总时长超过 1 小时（与 `resource.life` 对齐，
@@ -46,8 +50,11 @@
 //! ── 自动批准 / 自动回复（MonkeyCode 能不能用的关键）──────────────
 //!   - `auto-approve`：连接建立后立刻发一次（参考 `on("open")`）。Agent 的
 //!     工具调用因此不再等用户确认 —— 不发这一条，任务会停在第一个工具调用；
+//!   - 逐工具审批（`permission-req`，下游帧）→ 自动回 `permission-resp`
+//!     （`{id, approved: true, remember: false, persist: false}`），双保险：
+//!     `auto-approve` 没兜住的单次审批在这里被自动放行（见 `translate.rs`）；
 //!   - Agent 提问（`kind=acp_ask_user_question`）→ 自动回 `reply-question`
-//!     （`answers_json: ""` / `cancelled: false`，参考同款），任务继续走。
+//!     （`answers_json: ""` / `cancelled: false`，官方客户端同款载荷），任务继续走。
 //!
 //! ── 与参考的两处有意差异（都写在实现处）────────────────────────
 //!   1. 思考块（`agent_thought_chunk`）走 `delta.reasoning_content` 通道
@@ -84,6 +91,7 @@ use super::credentials::MonkeyCodeCredentials;
 use super::region::Region;
 use super::task;
 use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
+use super::wire::uplink_frame;
 pub use super::translate::Translator;
 use super::{client, endpoints, inflight};
 
@@ -208,6 +216,10 @@ fn connect_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
 /// 连接建立后的起始交互（参考 `task-runner.ts` 的 `on("open")`）：
 /// 先 `auto-approve`（工具调用自动批准），再 `user-input`（`mode=new` 下
 /// **必须**由客户端先发它，上游才开始执行）。
+///
+/// `user-input` 的 `data` 按官方客户端形态封装为 base64(JSON)（见
+/// `wire::uplink_frame` 与 `task::user_input_payload`）；`auto-approve`
+/// 无载荷，按原样发 `{"type":"auto-approve"}`。
 pub async fn start_task(stream: &mut TaskStream, prompt: &str) -> Result<(), GatewayError> {
     let auto_approve = json!({ "type": "auto-approve" }).to_string();
     stream
@@ -215,11 +227,7 @@ pub async fn start_task(stream: &mut TaskStream, prompt: &str) -> Result<(), Gat
         .send(Message::text(auto_approve))
         .await
         .map_err(|error| send_error("auto-approve", error))?;
-    let input = json!({
-        "type": "user-input",
-        "data": task::user_input_payload(prompt),
-    })
-    .to_string();
+    let input = uplink_frame("user-input", &task::user_input_payload(prompt));
     stream
         .socket
         .send(Message::text(input))

@@ -18,7 +18,7 @@ path = "src/main.rs"
 # 只控制「编不编进二进制」，不改变任何行为。
 [features]
 default = ["all"]
-all = ["demo", "commandcode", "modelscope", "orcaterm", "loomy", "lobsterai", "raccoon", "atomcode", "autoclaw", "officeace", "zcode", "workbuddy", "cline", "kuku", "monkeycode", "qoder", "qwenwork", "trae", "catpaw", "accio", "codearts", "antigravity", "doubaowork"]
+all = ["demo", "commandcode", "modelscope", "orcaterm", "loomy", "lobsterai", "raccoon", "atomcode", "autoclaw", "officeace", "zcode", "workbuddy", "cline", "kuku", "monkeycode", "qoder", "qwenwork", "trae", "catpaw", "accio", "codearts", "antigravity", "doubaowork", "kiro", "astudio"]
 demo = []
 commandcode = []
 modelscope = []
@@ -42,6 +42,8 @@ accio = []
 codearts = []
 antigravity = []
 doubaowork = []
+kiro = []
+astudio = []
 
 [build-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
@@ -53,13 +55,13 @@ agent2api-provider-protocol = { path = "../provider-protocol" }
 agent2api-provider-sdk = { path = "../provider-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "net", "io-util"] }
 # 各家的 HTTP 出网（与网关同一条栈：rustls，不依赖系统 openssl）
 # `system-proxy`：Antigravity 是仓内唯一「账号没配代理时跟随系统代理」的家
 # （上游是 Google，多数网络里只有经代理才可达，见 `antigravity/mod.rs` 的
 # 模块头）。这个特性打开 hyper-util 的系统代理匹配器：`reqwest::Client` 在
 # 不显式 `.no_proxy()` 时会自己读系统设置 —— 与网关 `egress` 同一口径。
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "socks", "system-proxy"] }
 futures = "0.3"
 # MonkeyCode 的任务流是 WebSocket（建任务 → WS 任务流 → ACP 事件）；
 # 与网关同一条栈（rustls，不依赖系统 openssl）
@@ -110,5 +112,5 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # 用 `windows` 而不是 `windows-sys`：这里要的是「一次调用 + 结构化错误 +
 # 释放 DPAPI 分配的内存」，windows crate 把 BOOL 包成 Result、把输出 blob
 # 包成带 Drop 的 HLOCAL。只开一个叶子 feature。
-windows = { version = "0.61", features = ["Win32_Security_Cryptography"] }
+windows = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_System_Registry"] }
 

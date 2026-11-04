@@ -24,11 +24,14 @@
 //! "matches resource.life"）。
 //!
 //! ── 起始 user-input 的格式（本家一个容易踩的点）─────────────────
-//! 参考的 TS 实现发**纯文本**；`docs/protocol/llm-protocol-complete.md` §5.1
-//! 把「`{"content": base64, "attachments": []}` 的 JSON 串」列为**推荐**的新
-//! 上行格式、纯文本为「仍兼容」。后端 `parseUserInputData()` 按「存储格式 →
-//! 新格式 → 纯文本」三级解析。这里发推荐的新格式；若上游版本只认纯文本，
-//! 改 `user_input_payload` 一处即可。
+//! 上行帧的 `data` 是 **base64(JSON)**（上游 `domain.TaskStream.Data` 是 Go 的
+//! `[]byte`）。官方客户端发的是「双层 base64」：
+//!   `data = b64encode({"content": b64encode(text), "attachments": []})`
+//! （网页端 `task-stream-client.ts::sendInitialUserInput`、桌面端
+//! `lib/cloud/stream.ts::send`，断言见 `stream.test.ts` 的「双层 base64」）。
+//! `user_input_payload` 只产出内层的 `{content, attachments}` 对象，外层由
+//! `wire::uplink_frame` 统一封装。后端 `parseUserInputData()` 按
+//! 「存储格式 → 新格式 → 纯文本」三级解析，本家走「新格式」这一档。
 //!
 //! ── 建任务失败怎么变 GatewayError ───────────────────────────────
 //!   - 传输层（连不上 / 超时）→ 502 / 504；
@@ -173,11 +176,12 @@ pub fn build_body(
     Value::Object(body)
 }
 
-/// 起始 `user-input` 的内容：新上行格式 `{"content": "<base64>", "attachments": []}`
-/// 的 **JSON 串**（`data` 字段的值；见模块头）。
-pub fn user_input_payload(prompt: &str) -> String {
+/// 起始 `user-input` 的内容载荷：`{"content": base64(提示词), "attachments": []}`
+/// 的**对象**。外层 `data` 再由 `wire::uplink_frame` 做 base64(JSON) 包装
+/// （官方客户端是双层 base64，见模块头）。
+pub fn user_input_payload(prompt: &str) -> Value {
     let encoded = base64::engine::general_purpose::STANDARD.encode(prompt.as_bytes());
-    json!({ "content": encoded, "attachments": [] }).to_string()
+    json!({ "content": encoded, "attachments": [] })
 }
 
 /// 创建任务，返回上游 task id（UUID）。

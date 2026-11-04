@@ -306,10 +306,11 @@ pub(super) fn account_from_credentials(
             object.insert("userId".to_string(), Value::String(parsed.user_id.clone()));
         }
         if let Some(expires_at) = parsed.expires_at {
-            object.insert(
-                "tokenExpiresAt".to_string(),
-                crate::json::json_number(expires_at),
-            );
+            // 两套键同时写，与 `persist_refresh` 的回写口径一致：网关读
+            // `expiresAt`，本插件 / 旧投影读 `tokenExpiresAt`。
+            let value = crate::json::json_number(expires_at);
+            object.insert("tokenExpiresAt".to_string(), value.clone());
+            object.insert("expiresAt".to_string(), value);
         }
         // 空备注名不留键：留一个空串会让公开形态把它当成「用户指定的名字」
         if object

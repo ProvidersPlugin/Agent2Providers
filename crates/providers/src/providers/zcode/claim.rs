@@ -118,6 +118,19 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 /// | 3.13.0 / 3.14.0 / 3.14.3 / 3.15.0 / 3.15.1 / 3.16.0 | `[]` |
 /// | 3.16.1 / 3.16.2 / 3.17.0 | 含 `zcode-v3-start-plan-1024` |
 ///
+/// ── 2026-11-03：营销活动来源的版本门（另一条链路）────────────
+/// 上游已把每日赠送套餐改由 `GET /api/v1/marketing/touch` 下发
+/// （`billing/preview` / `billing/current` 整段为空）。同一账号实测：
+///
+/// | `X-ZCode-App-Version` | `data.deliveries` |
+/// |---|---|
+/// | 3.16.3 | 0 条 |
+/// | 3.17.1 | 1 条 |
+/// | 3.18.0 | 1 条 |
+///
+/// 两条链路共用这一个版本号，默认值取两边都够用的更高版本 `3.18.0` ——
+/// 只满足 `billing/preview` 老门槛（3.16.1+）的版本，营销活动一条都拿不到。
+///
 /// 上一期（2026-10-23 的 ZCode 1024 Dev Day，5 亿 token）的门槛落在
 /// 3.16.0 → 3.16.1 之间；旧值 `3.14.0` 拿到的是一份**空列表**（`code: 0`，
 /// 不是错误），于是症状是「活动明明在，我们却一个套餐都探不到」——
@@ -127,7 +140,7 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 /// 空 `plans`，所以这张表要跟着官方 changelog（zcode.z.ai/cn/changelog）
 /// 一起更新；排障时也可以先用 `ZCODE_APP_VERSION` 环境变量试几个版本，
 /// 不必改代码重发版。
-const DEFAULT_APP_VERSION: &str = "3.16.2";
+const DEFAULT_APP_VERSION: &str = "3.18.0";
 
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";

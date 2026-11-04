@@ -882,8 +882,14 @@ pub fn credentials_from_record(
         CredentialOrigin::AccountStore,
         None,
     );
-    // 账号记录里的过期时间优先（可能是上次刷新后写回的值，比 JWT 更贴近实际）
-    if let Some(expires_at) = record.get("tokenExpiresAt").and_then(number_value) {
+    // 账号记录里的过期时间优先（可能是上次刷新后写回的值，比 JWT 更贴近实际）。
+    // 两个键都认：`expiresAt` 是网关口径，`tokenExpiresAt` 是本插件旧口径
+    // （写回时两套同时写，见 `persist_refresh`）；都在时取较新的那个。
+    let expires_at = ["expiresAt", "tokenExpiresAt"]
+        .iter()
+        .filter_map(|key| record.get(*key).and_then(number_value))
+        .reduce(f64::max);
+    if let Some(expires_at) = expires_at {
         credentials.expires_at = Some(expires_at);
     }
     // 邮箱同理：记录里存过就用记录里的（网页登录 / 手填凭证建的账号在创建时

@@ -36,6 +36,7 @@ pub mod ctx;
 mod errors;
 pub mod extensions;
 pub mod images;
+pub mod maintenance;
 mod log_context;
 pub mod provider;
 pub mod retry;

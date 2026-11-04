@@ -223,9 +223,11 @@ pub(super) async fn request_json_ex(
     ];
     headers.extend(extra_headers.iter().cloned());
     // 直连（源实现这条链路是裸 fetch，见模块头）
-    let response = send_raw(method, &url, None, &headers, None, Some(timeout_ms))
+    let proxy = agent2api_provider_sdk::maintenance::current().flatten();
+    let response = send_raw(method, &url, None, &headers, proxy.as_ref(), Some(timeout_ms))
         .await
         .map_err(|error| {
+            agent2api_provider_sdk::maintenance::record_transport_failure();
             if error.is_timeout() {
                 GatewayError::with_status(504, "积分查询超时")
             } else {

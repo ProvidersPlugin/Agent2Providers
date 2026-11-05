@@ -45,8 +45,8 @@
 //! 后端**（见 `ui/autoclaw-oauth.js` 与 `api::session::login_oauth_captcha_config`）。
 //! 领取走同一条路：前端解出参数 → 调后端的领取接口 → 本模块把它原样转发给上游。
 //! 于是本模块的签名里 `captcha` 是**入参**，本模块只负责「带上它去领取」。
-//! 代价是**领取无法全自动**：定时任务里没有可用的验证码，这一点在
-//! `api::zcode_claim` 的模块头有说明（所以不接自动领取）。
+//! 定时领取通过 `claim_verification` 请求已连接的管理界面完成当次验证；没有
+//! 界面或上游要求人工操作时如实返回 `captcha`，不借用模型调用的令牌池。
 //!
 //! ── 失败分类（biz code → 语义）──────────────────────────────
 //! 与客户端 `$vt` 映射器逐条对齐（参考实现 `src/claim/types.ts`）：
@@ -183,9 +183,8 @@ pub struct CaptchaConfig {
 
 /// 取风控配置（`GET {zcode}/api/v1/client/configs?app_version=&platform=`）。
 ///
-/// 返回 `Ok(None)` = 上游没有下发 captcha 段（或字段不全）：调用方据此
-/// **不弹验证码**，而不是弹一个初始化不出来的滑块（那种失败对用户来说
-/// 完全无法理解：滑块都没出现就被报「验证码组件不可用」）。
+/// 返回 `Ok(None)` = 配置不完整，不能据此免验证；只有明确 `enabled: false`
+/// 才表示可以不运行 SDK，关闭时允许省略 SDK 场景字段。
 pub async fn captcha_config(
     region: Region,
     proxy: Option<&ResolvedProxy>,
@@ -233,11 +232,12 @@ pub(super) fn parse_captcha_config(payload: &Value) -> Option<CaptchaConfig> {
     };
     let prefix = text("prefix");
     let scene_id = text("sceneId");
-    if prefix.is_empty() || scene_id.is_empty() {
+    let enabled = captcha.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    if enabled && (prefix.is_empty() || scene_id.is_empty()) {
         return None;
     }
     Some(CaptchaConfig {
-        enabled: captcha.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        enabled,
         prefix,
         scene_id,
         // 缺省 `ga`：与 AutoClaw 那条链的兜底一致（阿里云的默认站点）

@@ -1,12 +1,11 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-fn claim_lock() -> &'static tokio::sync::Mutex<()> {
+pub(super) fn claim_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::PluginCtx;
 use serde_json::{json, Value};
 
@@ -22,7 +21,7 @@ fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|text| !text.is_empty())
 }
 
-async fn detail(
+pub(super) async fn detail(
     client: &reqwest::Client,
     credentials: &Value,
 ) -> Result<Option<(String, Value)>, GatewayError> {
@@ -30,6 +29,14 @@ async fn detail(
     let Some(group) = text(&launch["data"]["ug_campaign_info"], "campaign_group_code") else {
         return Ok(None);
     };
+    Ok(Some((group.into(), campaign_detail(client, credentials, group).await?)))
+}
+
+pub(super) async fn campaign_detail(
+    client: &reqwest::Client,
+    credentials: &Value,
+    group: &str,
+) -> Result<Value, GatewayError> {
     let path = if group == V3_GROUP {
         "/alice/ug/campaign/v3/detail/"
     } else {
@@ -56,23 +63,23 @@ async fn detail(
             "豆包工作返回了不匹配的活动组",
         ));
     }
-    Ok(Some((group.into(), value)))
+    Ok(value)
 }
 
 #[derive(Clone, PartialEq)]
-struct Task {
-    key: String,
+pub(super) struct Task {
+    pub key: String,
     title: String,
-    group: String,
-    state: u64,
-    daily: bool,
-    checked: bool,
-    body: Option<Value>,
-    points: Option<f64>,
-    streak: Option<u32>,
+    pub group: String,
+    pub state: u64,
+    pub daily: bool,
+    pub checked: bool,
+    pub body: Option<Value>,
+    pub points: Option<f64>,
+    pub streak: Option<u32>,
 }
 
-fn tasks(value: &Value, group: &str) -> Vec<Task> {
+pub(super) fn tasks(value: &Value, group: &str) -> Vec<Task> {
     fn collect(value: &Value, group: &str, output: &mut Vec<Task>, depth: usize) {
         if depth > 8 {
             return;
@@ -139,105 +146,22 @@ fn tasks(value: &Value, group: &str) -> Vec<Task> {
     output
 }
 
-fn receipt(value: &Value) -> Result<bool, GatewayError> {
+pub(super) fn receipt(value: &Value) -> Result<bool, GatewayError> {
     let data = value["data"]
         .as_object()
         .ok_or_else(|| GatewayError::with_status(502, "豆包工作未返回奖励领取回执"))?;
-    if data.get("success") == Some(&Value::Bool(false)) {
-        return Err(GatewayError::with_status(502, "豆包工作奖励领取被拒绝"));
-    }
     if let Some(error) = data.get("biz_error").filter(|error| !error.is_null()) {
         if !matches!(api::number(&error["code"]), Some(0 | 4 | 6)) {
             return Err(api::error(200, error));
         }
     }
+    if data.get("success") == Some(&Value::Bool(false)) {
+        return Err(GatewayError::with_status(502, "豆包工作奖励领取被拒绝")
+            .with_code("reward_rejected"));
+    }
     Ok(api::number(&value["data"]["task_status"]) == Some(3)
         || value["data"]["checked_in_today"] == true
         || value["data"]["daily_checkin"]["checked_in_today"] == true)
-}
-
-pub async fn checkin(ctx: &PluginCtx, account: &str) -> Result<proto::CheckinReport, GatewayError> {
-    let _guard = claim_lock().lock().await;
-    let (_, credentials, client) = api::account(ctx, account, false).await?;
-    let Some((group, value)) = detail(&client, &credentials).await? else {
-        return Ok(report(
-            proto::CheckinOutcome::Inactive,
-            "当前没有豆包工作签到活动",
-        ));
-    };
-    let daily: Vec<_> = tasks(&value, &group)
-        .into_iter()
-        .filter(|task| task.daily)
-        .collect();
-    if daily.len() != 1 {
-        return Ok(report(
-            proto::CheckinOutcome::Inactive,
-            "当前活动未提供可确认的每日签到任务",
-        ));
-    }
-    let Some(task) = daily.first() else {
-        return Ok(report(
-            proto::CheckinOutcome::Inactive,
-            "当前没有每日签到任务",
-        ));
-    };
-    if task.checked || task.state == 3 {
-        return Ok(report(
-            proto::CheckinOutcome::Done,
-            "今日已领取豆包工作签到奖励",
-        ));
-    }
-    let Some(body) = task.body.as_ref() else {
-        return Ok(report(
-            proto::CheckinOutcome::Inactive,
-            "今日签到任务尚未满足领取条件",
-        ));
-    };
-    let response = api::post(
-        &client,
-        &credentials,
-        "/alice/ug/campaign/item/reward/claim/",
-        body,
-    )
-    .await?;
-    let confirmed = receipt(&response)?;
-    let fresh = detail(&client, &credentials).await?;
-    let after = fresh.as_ref().and_then(|(group, value)| {
-        tasks(value, group)
-            .into_iter()
-            .find(|row| row.daily && row.key == task.key && row.group == task.group)
-    });
-    if !after
-        .as_ref()
-        .is_some_and(|task| task.checked || task.state == 3)
-    {
-        if confirmed {
-            return Err(GatewayError::with_status(
-                502,
-                "豆包工作已接受领取，但回查尚未确认今日签到；稍后重试不会重复发奖",
-            ));
-        }
-        return Err(GatewayError::with_status(
-            502,
-            "豆包工作未确认今日签到奖励，请稍后重试或前往官方活动页",
-        ));
-    }
-    let points = crate::quota::number(response.pointer("/data/reward_amount")).or(task.points);
-    Ok(proto::CheckinReport {
-        outcome: proto::CheckinOutcome::Claimed,
-        credit: points.map(|points| format!("{points} 额度")),
-        streak: after.and_then(|task| task.streak).or(task.streak),
-        message: Some("豆包工作签到奖励已领取，已回查确认".into()),
-    })
-}
-
-fn report(outcome: proto::CheckinOutcome, message: &str) -> proto::CheckinReport {
-    proto::CheckinReport {
-        outcome,
-        credit: None,
-        streak: None,
-        message: Some(message.into()),
-    }
 }
 
 fn status_of(group: &str, value: &Value) -> Value {

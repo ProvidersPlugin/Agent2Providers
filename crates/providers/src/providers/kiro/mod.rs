@@ -20,7 +20,8 @@
 //! 参考实现把「Anthropic Messages 入站 + hosted web search」也做了；本网关
 //! 的入站是 OpenAI Chat，没有 `web_search_20250305` 这类服务端工具，所以
 //! 请求转换是 Chat → Kiro 会话（见 `request.rs`），不含 hosted web search。
-//! 其余协议知识（地址、头、事件名、错误文案）逐条对齐。
+//! 独立搜索经 `web-search.search` 管理动作提供给网关工具服务（见 `search.rs`），
+//! 不改变聊天协议。其余协议知识（地址、头、事件名、错误文案）逐条对齐。
 
 pub mod accounts;
 pub mod chat;
@@ -35,6 +36,7 @@ pub mod login;
 pub mod models;
 pub mod refresh;
 pub mod request;
+mod search;
 pub mod usage;
 
 use agent2api_provider_protocol as proto;
@@ -232,13 +234,16 @@ impl Provider for KiroProvider {
     /// 「重新读取登录方式」按钮）。
     fn admin_action<'a>(
         &'a self,
-        _ctx: &'a PluginCtx,
-        _account: &'a str,
+        ctx: &'a PluginCtx,
+        account: &'a str,
         action: &'a str,
-        _payload: &'a Value,
+        payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
             match action {
+                crate::native_search::CAPABILITIES | crate::native_search::SEARCH => {
+                    search::dispatch(ctx, account, action, payload).await
+                }
                 "auth.methods" => Ok(login_methods()),
                 other => Err(agent2api_provider_sdk::unsupported(format!(
                     "Kiro 不支持管理动作「{other}」"

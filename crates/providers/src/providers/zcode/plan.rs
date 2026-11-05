@@ -27,8 +27,11 @@ pub(super) fn code_hint(code: i64) -> Option<&'static str> {
              令牌由打开着的主窗口或浏览器面板页自动铸造；若持续出现，请稍后重试",
         ),
         3012 => Some(
-            "套餐池请求被上游风控拒绝（3012），不代表套餐额度已用尽。\
-             若官方 ZCode 客户端的同一账号也失败，请联系上游支持；\
+            "套餐池请求被上游拒绝（3012），不代表套餐额度已用尽。\
+             已停止后续重试，不再刷新凭证或切换账号。\
+             请用官方 ZCode 客户端核对同一账号、同一套餐池：若同样失败，\
+             需联系上游支持核查；若仅网关失败，请检查提供商插件与请求兼容性。\
+             反复重试或充值不能解除这类限制。\
              编码套餐与套餐池额度独立，切换通道不会转移这份额度",
         ),
         3001 => Some("上游判定参数错误（3001）：请重新登录该账号以刷新设备标识"),
@@ -74,6 +77,7 @@ pub(super) fn build_request(
             "套餐池（Start Plan）通道需要明确的模型名：请在客户端指定模型后重试",
         ));
     }
+    let model = start_plan_model(model);
     let mut payload = anthropic_outbound::anthropic_request_from_chat(body, model)
         .map_err(|message| GatewayError::with_status(400, format!("请求体转换失败：{message}")))?;
     super::reasoning::apply_to_anthropic(
@@ -106,13 +110,21 @@ pub(super) fn build_request(
             headers.push((super::captcha::VERIFY_REGION_HEADER.to_string(), captcha_region));
         }
     }
-    headers.extend(super::identity_headers(Some(ANTHROPIC_SDK_UA)));
-    headers.extend(request_context.headers());
-    if let Some(beta) = client_headers.get("anthropic-beta").map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        headers.push(("anthropic-beta".to_string(), beta.to_string()));
+    let version = system_prompt::client_version().ok_or_else(|| {
+        GatewayError::with_status(500, "ZCode 套餐请求模板缺少对应的客户端版本，请更新提供商插件")
+    })?;
+    let mut identity = super::identity_headers(Some(ANTHROPIC_SDK_UA));
+    // 套餐推理的版本与正文模板绑定；领取页的版本设置不能单独改写这份报文。
+    for (name, value) in &mut identity {
+        if name.eq_ignore_ascii_case("user-agent") {
+            *value = format!("ZCode/{version} {ANTHROPIC_SDK_UA}");
+        } else if name.eq_ignore_ascii_case("x-zcode-app-version") {
+            *value = version.to_string();
+        }
     }
+    headers.extend(identity);
+    headers.extend(request_context.headers());
+    headers.push(("x-zcode-query-source".to_string(), "main_turn".to_string()));
     Ok(ChatPlan {
         url: super::endpoint_mapping::apply(region, &format!("{}{MESSAGES_PATH}", plan_base_url(region))),
         headers,
@@ -136,6 +148,13 @@ fn captcha_pool_empty(provider_id: &str) -> GatewayError {
         i32::from(crate::readiness::LOCAL_PRECONDITION_STATUS),
         agent2api_provider_sdk::local_precondition(message),
     )
+}
+
+fn start_plan_model(model: &str) -> &str {
+    ["GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"]
+        .into_iter()
+        .find(|id| id.eq_ignore_ascii_case(model))
+        .unwrap_or(model)
 }
 
 fn client_max_tokens(body: &Value) -> Option<i64> {

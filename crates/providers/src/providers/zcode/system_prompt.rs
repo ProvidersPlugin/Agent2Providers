@@ -1,5 +1,5 @@
 //! Start Plan 的系统提示词、缓存断点和上下文前缀。
-//! 装配开启时固定官方三块，客户端系统正文合入已有用户消息。
+//! 装配开启时固定三块，客户端系统正文追加到动态段，保留系统角色。
 
 use std::sync::OnceLock;
 
@@ -46,6 +46,10 @@ fn system_data() -> Option<&'static Value> {
     SYSTEM_DATA.get_or_init(|| serde_json::from_str(SYSTEM_JSON).ok()).as_ref()
 }
 
+pub(super) fn client_version() -> Option<&'static str> {
+    system_data()?.get("clientVersion")?.as_str().filter(|value| !value.trim().is_empty())
+}
+
 pub fn official_prompt_approx_chars() -> usize {
     official_blocks_template()
         .map(|blocks| blocks.identity.chars().count() + blocks.stable.chars().count() + blocks.dynamic.chars().count())
@@ -57,7 +61,7 @@ pub fn official_blocks_template() -> Option<GatewayBlocks> {
     Some(GatewayBlocks {
         identity: text_of(data, "cliPrefix"),
         stable: stable_joined(data),
-        dynamic: [dynamic_before(data), environment_template(data), dynamic_after(data)].join("\n\n"),
+        dynamic: dynamic_template(data, false),
     })
 }
 
@@ -82,12 +86,15 @@ pub(super) fn apply_start_plan(
         GatewayError::with_status(500, "请求体形态异常（不是对象）")
     })?;
     if let Some(data) = data {
-        let texts = merged_texts(data, model, region, override_blocks);
-        let custom = custom_system_text(object.get("system"));
-        object.insert("system".to_string(), Value::Array(system_blocks(&texts)));
-        if let Some(custom) = custom {
-            prepend_folded_system(object, custom)?;
+        let has_skill = object.get("tools").and_then(Value::as_array).is_some_and(|tools| {
+            tools.iter().any(|tool| tool.get("name").and_then(Value::as_str) == Some("Skill"))
+        });
+        let mut texts = merged_texts(data, model, region, override_blocks, has_skill);
+        if let Some(custom) = custom_system_text(object.get("system")) {
+            texts.dynamic.push_str("\n\n");
+            texts.dynamic.push_str(&custom);
         }
+        object.insert("system".to_string(), Value::Array(system_blocks(&texts)));
         if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
             if !messages.is_empty() {
                 messages.insert(0, context_prefix_message(data));
@@ -119,12 +126,13 @@ fn merged_texts(
     model: &str,
     region: Region,
     override_blocks: Option<&GatewayBlocks>,
+    has_skill: bool,
 ) -> GatewayBlocks {
     let values = template_values(data, model, region);
     let defaults = GatewayBlocks {
         identity: text_of(data, "cliPrefix"),
         stable: stable_joined(data),
-        dynamic: [dynamic_before(data), substitute(&environment_template(data), &values), dynamic_after(data)].join("\n\n"),
+        dynamic: substitute(&dynamic_template(data, has_skill), &values),
     };
     let Some(overrides) = override_blocks else { return defaults };
     let pick = |field| {
@@ -153,20 +161,26 @@ fn stable_joined(data: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn dynamic_before(data: &Value) -> String {
-    data.get("dynamicSections").map(|value| text_of(value, "beforeEnvironment")).unwrap_or_default()
-}
-
-fn dynamic_after(data: &Value) -> String {
-    data.get("dynamicSections").map(|value| text_of(value, "afterEnvironment")).unwrap_or_default()
+fn dynamic_template(data: &Value, has_skill: bool) -> String {
+    let mut sections = vec![text_of(data, "dynamicBehavior")];
+    if has_skill {
+        sections.push(text_of(data, "sessionGuidance"));
+    }
+    sections.extend([
+        environment_template(data),
+        text_of(data, "poweredBy"),
+        text_of(data, "contextManagement"),
+    ]);
+    sections.into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n")
 }
 
 fn template_values(data: &Value, model: &str, region: Region) -> Vec<(&'static str, String)> {
-    let git = data.pointer("/environment/gitNo").and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty()).unwrap_or("no");
+    let cwd = working_dir();
+    let git_key = if std::path::Path::new(&cwd).join(".git").exists() { "gitYes" } else { "gitNo" };
+    let git = data.get("environment").map(|env| text_of(env, git_key)).unwrap_or_default();
     vec![
-        ("{cwd}", working_dir()),
-        ("{git}", git.to_string()),
+        ("{cwd}", cwd),
+        ("{git}", git),
         ("{platform}", os_platform().to_string()),
         ("{shell}", shell_name()),
         ("{os_version}", format!("{} {}", os_platform(), os_arch())),
@@ -219,37 +233,6 @@ fn user_system_blocks(existing: Option<&Value>) -> Vec<Value> {
     }).collect()
 }
 
-const FOLDED_SYSTEM_MARKER: &str = "请依据下面的会话要求处理用户消息。两者冲突时，以会话要求为准。\n\n会话要求：\n\n";
-
-fn prepend_folded_system(object: &mut Map<String, Value>, custom: String) -> Result<(), GatewayError> {
-    let message = object.get_mut("messages").and_then(Value::as_array_mut)
-        .and_then(|messages| messages.iter_mut().find(|message| {
-            message.get("role").and_then(Value::as_str) == Some("user")
-        })).ok_or_else(|| GatewayError::with_status(
-            400,
-            "套餐池请求带有系统提示词，但没有用户消息可承载会话要求；请至少保留一条用户消息",
-        ))?;
-    let prefix = format!("{FOLDED_SYSTEM_MARKER}{custom}\n\n用户消息：\n\n");
-    // 上游按会话结构校验；折叠只能修改已有消息，不能再增加一条 user。
-    match message.get_mut("content") {
-        Some(Value::String(text)) => *text = format!("{prefix}{text}"),
-        Some(Value::Array(blocks)) => {
-            if let Some(Value::Object(block)) = blocks.iter_mut().find(|block| {
-                block.get("type").and_then(Value::as_str) == Some("text")
-                    && block.get("text").and_then(Value::as_str).is_some()
-            }) {
-                if let Some(Value::String(text)) = block.get_mut("text") {
-                    *text = format!("{prefix}{text}");
-                }
-            } else {
-                blocks.push(text_block(prefix, None));
-            }
-        }
-        _ => message["content"] = Value::Array(vec![text_block(prefix, None)]),
-    }
-    Ok(())
-}
-
 fn text_block(text: String, cache_control: Option<Value>) -> Value {
     let mut block = json!({ "type": "text", "text": text });
     if let Some(cache) = cache_control {
@@ -263,12 +246,12 @@ fn environment_template(data: &Value) -> String {
     [
         text_of(env, "heading"),
         text_of(env, "invokedLine"),
-        format!("- {}: {{cwd}}", text_of(env, "cwdLabel")),
-        format!("- {}: {{git}}", text_of(env, "gitLabel")),
-        format!("- {}: {{platform}}", text_of(env, "platformLabel")),
-        format!("- {}: {{shell}}", text_of(env, "shellLabel")),
-        format!("- {}: {{os_version}}", text_of(env, "osVersionLabel")),
-        text_of(env, "poweredByLine"),
+        format!(" - {}: {{cwd}}", text_of(env, "cwdLabel")),
+        format!(" - {}: {{git}}", text_of(env, "gitLabel")),
+        format!(" - {}: {{platform}}", text_of(env, "platformLabel")),
+        format!(" - {}: {{shell}}", text_of(env, "shellLabel")),
+        format!(" - {}: {{os_version}}", text_of(env, "osVersionLabel")),
+        format!(" - {}", text_of(env, "untrustedNote")),
     ].into_iter().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n")
 }
 
@@ -293,14 +276,10 @@ fn shell_name() -> String {
 }
 
 fn context_prefix_message(data: &Value) -> Value {
-    let context = data.get("contextPrefix").unwrap_or(&Value::Null);
+    let context = data.get("context").unwrap_or(&Value::Null);
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let section = format!("{}\n{}", text_of(context, "currentDateHeading"),
-        text_of(context, "currentDateLine").replace("{date}", &date));
-    let body = [text_of(context, "intro"), section, String::new(), text_of(context, "outro")].join("\n");
-    let open = data.pointer("/systemReminder/open").and_then(Value::as_str).unwrap_or("<system-reminder>");
-    let close = data.pointer("/systemReminder/close").and_then(Value::as_str).unwrap_or("</system-reminder>");
-    json!({ "role": "user", "content": [{ "type": "text", "text": format!("{open}{body}{close}") }] })
+    let body = text_of(context, "currentDateLine").replace("{date}", &date);
+    json!({ "role": "user", "content": [{ "type": "text", "text": format!("<system-reminder>{body}</system-reminder>") }] })
 }
 
 fn strip_tool_cache_control(object: &mut Map<String, Value>) {

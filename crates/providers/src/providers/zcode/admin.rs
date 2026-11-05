@@ -2,10 +2,12 @@
 
 use serde_json::{json, Map, Value};
 
-use super::{captcha, plan, OFFICIAL_PROMPT_NOTE};
+use super::{captcha, claim_verification, plan, OFFICIAL_PROMPT_NOTE};
 
 pub(super) fn machine_action(action: &str, payload: &Value) -> Option<Result<Value, String>> {
     let outcome = match action {
+        "claim.verification.poll" => return Some(claim_verification::poll(payload)),
+        "claim.verification.complete" => return Some(claim_verification::complete(payload)),
         "captcha.stats" => captcha::stats(),
         "captcha.push" => {
             let accepted = payload.get("tokens").and_then(Value::as_array)

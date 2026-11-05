@@ -335,6 +335,8 @@ pub(super) struct Handled {
     pub(super) reply: Option<String>,
     /// 终态（None = 继续）
     pub(super) terminal: Option<Terminal>,
+    /// 心跳和历史游标不算模型进展，不能延后无输出超时。
+    pub(super) progress: bool,
 }
 
 // ─── 下行消息处理 ──────────────────────────────────────────────
@@ -349,7 +351,8 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
             return Handled::default();
         }
     };
-    match parsed.get("type").and_then(Value::as_str).unwrap_or("") {
+    let frame_type = parsed.get("type").and_then(Value::as_str).unwrap_or("");
+    let mut handled = match frame_type {
         // 心跳：回一条 ping（参考 `task-runner.ts` 的 `msg.type === "ping"`）
         "ping" => Handled {
             reply: Some(json!({ "type": "ping" }).to_string()),
@@ -396,7 +399,11 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
             );
             Handled::default()
         }
-    }
+    };
+    handled.progress = handled.progress || !handled.frames.is_empty()
+        || frame_type == "task-started"
+        || (frame_type != "ping" && handled.reply.is_some());
+    handled
 }
 
 /// `permission-req` → `permission-resp`（自动批准）。
@@ -637,7 +644,7 @@ fn handle_acp(translator: &mut Translator, acp: &Value) -> Handled {
                     frames: vec![frame],
                     ..Handled::default()
                 },
-                None => Handled::default(),
+                None => Handled { progress: !status.is_empty(), ..Handled::default() },
             }
         }
         "usage_update" => {

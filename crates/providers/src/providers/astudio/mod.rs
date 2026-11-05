@@ -119,8 +119,8 @@ impl Provider for AStudioProvider {
             })
             .with_checkin(proto::CheckinInfo {
                 description: Some(
-                    "AStudio 每日登录积分：服务端在当天账号会话首次活跃时发放；\
-                     插件以余额差观测，没涨不谎称已签"
+                    "AStudio 每日登录积分：执行官方客户端同款账号初始化，\
+                     分别核对通用积分与星火积分；未观测到新增奖励不标记已签"
                         .into(),
                 ),
                 modes: vec![proto::CheckinMode::Checkin],

@@ -75,6 +75,7 @@ mod reasoning;
 mod refresh;
 mod refresh_identity;
 mod region;
+mod search;
 mod web_session;
 
 pub use region::Region;
@@ -758,6 +759,9 @@ impl Provider for WorkBuddyProvider {
         payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
+            if matches!(action, crate::native_search::CAPABILITIES | crate::native_search::SEARCH) {
+                return search::dispatch(self, ctx, account, action, payload).await;
+            }
             if action == "activity.run" && self.region == Region::Intl {
                 self.ensure_token(ctx, account).await?;
             }

@@ -1,13 +1,13 @@
 //! MonkeyCode 任务流（WebSocket）的连接与驱动（会话转发的第二步）。
 //!
 //! 下行消息与 ACP 事件 → OpenAI 帧的翻译在 `translate.rs`；本文件管：
-//! 握手（URL / 头 / 超时）、起始消息（auto-approve + user-input）、心跳回复的
-//! 发送时机、空闲 / 总时长超时，以及流式 / 聚合两种出口的收尾。
+//! 握手（URL / 头 / 超时）、自动审批设置、心跳回复的发送时机、无进展 /
+//! 总时长超时，以及流式 / 聚合两种出口的收尾。
 //!
 //! ── 上游长什么样（参考 `task-runner.ts` 与 `docs/04-websocket/*`）──────
 //! ```text
-//!   WS   wss://<站点>/api/v1/users/tasks/stream?id=<taskId>&mode=new
-//!   连接成功后客户端**必须先发** auto-approve + user-input，上游才开始跑；
+//!   WS   wss://<站点>/api/v1/users/tasks/stream?id=<taskId>&mode=attach
+//!   环境就绪后订阅首轮历史与实时输出，不重复提交已在创建请求中的 content；
 //!   下行是 {type, kind?, data?, timestamp?} 的 JSON 文本帧；**`data` 一律是
 //!   base64(JSON)**（上游 `domain.TaskStream.Data` 是 Go 的 `[]byte`，官方网页端
 //!   用 `JSON.parse(b64decode(data))` 解 —— 详见 `translate.rs` 的模块头）：
@@ -31,9 +31,8 @@
 //!   1. `task-ended` → 正常收尾；
 //!   2. `task-error` / `error` → 异常收尾（错误帧）；
 //!   3. 连接被关 / 传输错误（没等到 task-ended）→ 异常收尾；
-//!   4. 空闲超时（默认 300 秒没有任何下行消息；上游每 10 秒有 ping，
-//!      所以空闲即断线）或总时长超过 1 小时（与 `resource.life` 对齐，
-//!      参考的 `TASK_TIMEOUT_MS` 同值）→ 异常收尾。
+//!   4. 无进展超时（默认 300 秒没有模型输出或执行进展，心跳不延后期限），
+//!      或总时长超过 1 小时（与 `resource.life` 对齐）→ 异常收尾。
 //! 参考在这几处是「静默 resolve、靠客户端等 EOF」；本网关必须显式收尾 ——
 //! 客户端的 SSE 解析器等的是 `[DONE]`，只断连接会被渲染成「回答被截断」。
 //!
@@ -89,9 +88,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::credentials::MonkeyCodeCredentials;
 use super::region::Region;
-use super::task;
 use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
-use super::wire::uplink_frame;
 pub use super::translate::Translator;
 use super::{client, endpoints, inflight};
 
@@ -104,7 +101,7 @@ pub type TaskSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// 到点后上游 VM 本来也要回收，继续等只会挂死下游。
 const TASK_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 
-/// 空闲兜底下限（配置值异常小的时候用；上游每 10 秒有 ping，正常不会触发）
+/// 无进展等待的下限，避免把正常的短暂思考误判成卡死。
 const MIN_IDLE_MS: u64 = 30_000;
 
 /// 已建连的任务流（`chat.rs` 装配后交给 `drive_stream` / `drive_aggregate`）。
@@ -127,11 +124,11 @@ impl TaskStream {
     /// 只关连接、不停止任务（起始交互失败时用：停止由调用方统一做，
     /// 见 `chat.rs` 的说明）。正常的收尾请用 `close_and_stop`。
     pub async fn close(mut self) {
-        let _ = self.socket.close(None).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), self.socket.close(None)).await;
     }
 }
 
-/// 连接任务流（`mode=new`：本请求新建任务轮次）。
+/// 接收创建请求已经启动的首轮；attach 同时回放连接前的输出，避免漏掉快响应。
 ///
 /// ── 失败翻译 ────────────────────────────────────────────────
 ///   - 握手被拒：401/403 → 401（登录态失效，重新粘贴 session）；
@@ -150,7 +147,7 @@ pub async fn connect(
     task_id: &str,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<TaskStream, GatewayError> {
-    let url = endpoints::task_stream_url(region, task_id, "new");
+    let url = endpoints::task_stream_url(region, task_id, "attach");
     let mut request = url.as_str().into_client_request().map_err(|error| {
         GatewayError::with_status(502, format!("MonkeyCode 任务流地址无效（{url}）：{error}"))
     })?;
@@ -180,7 +177,7 @@ pub async fn connect(
     .map_err(connect_error)?;
     logging::verbose(
         "[MonkeyCode]",
-        &format!("任务流已连接 task={task_id}（mode=new）"),
+        &format!("任务流已连接 task={task_id}（mode=attach）"),
     );
     Ok(TaskStream {
         socket,
@@ -213,29 +210,16 @@ fn connect_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
     }
 }
 
-/// 连接建立后的起始交互（参考 `task-runner.ts` 的 `on("open")`）：
-/// 先 `auto-approve`（工具调用自动批准），再 `user-input`（`mode=new` 下
-/// **必须**由客户端先发它，上游才开始执行）。
-///
-/// `user-input` 的 `data` 按官方客户端形态封装为 base64(JSON)（见
-/// `wire::uplink_frame` 与 `task::user_input_payload`）；`auto-approve`
-/// 无载荷，按原样发 `{"type":"auto-approve"}`。
-pub async fn start_task(stream: &mut TaskStream, prompt: &str) -> Result<(), GatewayError> {
+/// 首轮输入已由创建请求提交，这里只设置后续工具审批策略。
+pub async fn start_task(stream: &mut TaskStream) -> Result<(), GatewayError> {
     let auto_approve = json!({ "type": "auto-approve" }).to_string();
-    stream
-        .socket
-        .send(Message::text(auto_approve))
+    tokio::time::timeout(Duration::from_secs(10), stream.socket.send(Message::text(auto_approve)))
         .await
+        .map_err(|_| GatewayError::with_status(504, "MonkeyCode 任务流发送自动审批设置超时"))?
         .map_err(|error| send_error("auto-approve", error))?;
-    let input = uplink_frame("user-input", &task::user_input_payload(prompt));
-    stream
-        .socket
-        .send(Message::text(input))
-        .await
-        .map_err(|error| send_error("user-input", error))?;
     logging::verbose(
         "[MonkeyCode]",
-        &format!("任务 {} 已发送 auto-approve + user-input", stream.task_id),
+        &format!("任务 {} 已连接首轮结果并设置 auto-approve", stream.task_id),
     );
     Ok(())
 }
@@ -313,7 +297,7 @@ async fn drive(
 ) -> Result<Translator, GatewayError> {
     // 取消兜底：future 被丢弃时补一次停止（见 `StopOnDrop` 的说明）。
     // 正常出口都会 disarm，不会重复停止。
-    let mut stop_guard = StopOnDrop::new(&stream);
+    let mut stop_guard = StopOnDrop::new(stream.region, &stream.session, &stream.task_id, stream.proxy.as_ref());
     let mut pending: Vec<Bytes> = Vec::new();
     if mode.is_stream() {
         if let Some(frame) = translator.role_frame() {
@@ -332,6 +316,7 @@ async fn drive(
     );
     let total = Duration::from_millis(TASK_TIMEOUT_MS);
     let started = Instant::now();
+    let mut last_progress = started;
     // 循环是**表达式**：每个出口都用 break 带出终态，不存在「循环走完没终态」
     // 的路径（初始占位值是死代码，编译器会警告 —— 这也是这行的由来）
     let terminal = loop {
@@ -340,8 +325,13 @@ async fn drive(
                 "任务流超过 1 小时上限（与上游 resource.life 对齐）".to_string(),
             );
         }
+        if last_progress.elapsed() >= idle {
+            break Terminal::Failed(format!(
+                "任务连续 {} 秒没有模型输出或执行进展（心跳不计入进展），已停止等待", idle.as_secs(),
+            ));
+        }
         let remaining = total.saturating_sub(started.elapsed());
-        let wait = idle.min(remaining);
+        let wait = idle.saturating_sub(last_progress.elapsed()).min(remaining);
         match tokio::time::timeout(wait, stream.socket.next()).await {
             Err(_) => {
                 break if started.elapsed() >= total {
@@ -350,7 +340,7 @@ async fn drive(
                     )
                 } else {
                     Terminal::Failed(format!(
-                        "任务流空闲超时（{} 秒没有任何下行消息）",
+                        "任务连续 {} 秒没有模型输出或执行进展（心跳不计入进展），已停止等待",
                         idle.as_secs()
                     ))
                 };
@@ -370,7 +360,14 @@ async fn drive(
                     }
                     // 控制帧：ping/pong 由 tokio-tungstenite 处理（pong 的发送
                     // 会随下一次 send 刷出；上游的文本 ping 走上面的分支）
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => Handled::default(),
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                        match tokio::time::timeout(Duration::from_secs(10), stream.socket.flush()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => break Terminal::Failed(format!("任务流心跳回复失败：{error}")),
+                            Err(_) => break Terminal::Failed("任务流心跳回复超时".into()),
+                        }
+                        Handled::default()
+                    },
                     Message::Close(_) => Handled {
                         terminal: Some(Terminal::Failed(
                             "任务流连接已关闭（未收到 task-ended）".to_string(),
@@ -378,10 +375,15 @@ async fn drive(
                         ..Handled::default()
                     },
                 };
+                if handled.progress {
+                    last_progress = Instant::now();
+                }
                 pending.extend(handled.frames);
                 if let Some(reply) = handled.reply {
-                    if let Err(error) = stream.socket.send(Message::text(reply)).await {
-                        break Terminal::Failed(format!("任务流回复失败：{error}"));
+                    match tokio::time::timeout(Duration::from_secs(10), stream.socket.send(Message::text(reply))).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => break Terminal::Failed(format!("任务流回复失败：{error}")),
+                        Err(_) => break Terminal::Failed("任务流回复超时".into()),
                     }
                 }
                 if let Some(next) = handled.terminal {
@@ -439,7 +441,7 @@ async fn drive(
 ///
 /// 停止失败不影响本轮结论：`stop_task` 只返回 bool，不抛错。
 async fn close_and_stop(stream: &mut TaskStream) {
-    let _ = stream.socket.close(None).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.socket.close(None)).await;
     // 先注销再停止：自愈路径要能看到「这个任务已经不归任何人管了」。
     // 顺序其实两种都对（停止成功后任务本就不在运行中列表里），但先注销能
     // 覆盖「停止请求失败、任务仍占着槽位」的情况 —— 那时下一次自愈应该能
@@ -462,7 +464,7 @@ async fn close_and_stop(stream: &mut TaskStream) {
 /// 被取消（`JoinHandle::abort`、运行时关闭），栈上的局部变量直接析构，异步
 /// 收尾代码一行都不会跑 —— 任务就留在上游占着槽位。Drop 是同步的，只能
 /// 起一个后台任务去停（不等结果）；`disarmed` 由正常路径置位，避免重复停止。
-struct StopOnDrop {
+pub(super) struct StopOnDrop {
     region: Region,
     session: String,
     task_id: String,
@@ -471,18 +473,18 @@ struct StopOnDrop {
 }
 
 impl StopOnDrop {
-    fn new(stream: &TaskStream) -> Self {
+    pub(super) fn new(region: Region, session: &str, task_id: &str, proxy: Option<&ResolvedProxy>) -> Self {
         Self {
-            region: stream.region,
-            session: stream.session.clone(),
-            task_id: stream.task_id.clone(),
-            proxy: stream.proxy.clone(),
+            region,
+            session: session.to_string(),
+            task_id: task_id.to_string(),
+            proxy: proxy.cloned(),
             armed: true,
         }
     }
 
     /// 正常收尾已经停过了，取消兜底
-    fn disarm(&mut self) {
+    pub(super) fn disarm(&mut self) {
         self.armed = false;
     }
 }

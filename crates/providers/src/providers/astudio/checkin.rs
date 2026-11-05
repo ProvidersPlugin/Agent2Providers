@@ -1,10 +1,11 @@
-//! AStudio 每日签到：上游没有「领取」接口，签到 = 当天会话首次活跃的发放。
+//! AStudio 每日签到：执行桌面端启动时的账号初始化，触发每日登录奖励。
 //!
-//! ── 为什么用「前后余额差」观测 ──────────────────────────────
-//! 桌面端的弹窗只做通知，服务端在账号会话当天首次活跃时直接加积分。没有
-//! 可调用的领取接口，就只能：读余额 → 发几个与桌面端启动同类的只读请求
-//! （触发活跃）→ 等 2.5 秒 → 再读余额。**涨了才算签到成功**；没涨如实报
-//! 「未观测到新发放」，绝不谎称已签（那会让签到记录变成没发生过的断言）。
+//! ── 发奖动作与到账核对 ──────────────────────────────────────
+//! 本地 `auth.rs` 的登录收尾已使用 POST `tenant-app/v2/init-app`。
+//! 参考 `2951461586/AStudio2API` README §4.1 的客户端协议与实测记录：这个
+//! 无 body、带 Cookie 的 POST 才触发每日奖励；查询会员/积分或关闭弹窗不发奖。
+//! 读余额 → 初始化账号 → 等 2.5 秒 → 再读余额，分别核对通用与星火积分。
+//! 余额没涨不等于今日已领，也不能断言没有活动；只报告本次未观测到新到账。
 
 use agent2api_provider_sdk::PluginCtx;
 use serde_json::Value;
@@ -15,7 +16,7 @@ use super::accounts::Credentials;
 use super::client::{self, StudioError};
 use super::{endpoints, PROVIDER_ID};
 
-const TOUCH_WAIT_MS: u64 = 2500;
+const REWARD_WAIT_MS: u64 = 2500;
 
 pub async fn checkin(ctx: &PluginCtx, account: &str) -> Result<proto::CheckinReport, String> {
     let stored = ctx
@@ -67,10 +68,19 @@ pub async fn checkin(ctx: &PluginCtx, account: &str) -> Result<proto::CheckinRep
             })
         }
     };
-    // 会话活跃 touch：与桌面端启动时同类只读请求，失败不影响观测。
-    let _ = client::studio_json(&credentials, endpoints::MEMBERSHIP_ME, "会员信息").await;
-    let _ = client::studio_json(&credentials, endpoints::POINTS_SUMMARY, "积分汇总").await;
-    tokio::time::sleep(std::time::Duration::from_millis(TOUCH_WAIT_MS)).await;
+    // 不能用只读查询替代每日登录动作；上游拒绝时直接返回，不能继续报「余额没涨」。
+    if let Err(error) = client::init_app(&credentials).await {
+        return match error {
+            StudioError::Expired(message) => Err(message),
+            StudioError::Failed(message) => Ok(proto::CheckinReport {
+                outcome: proto::CheckinOutcome::Failed,
+                credit: None,
+                streak: None,
+                message: Some(message),
+            }),
+        };
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(REWARD_WAIT_MS)).await;
     let after = match read_balance(&credentials).await {
         Ok(value) => value,
         Err(StudioError::Expired(message)) => return Err(message),
@@ -83,33 +93,73 @@ pub async fn checkin(ctx: &PluginCtx, account: &str) -> Result<proto::CheckinRep
             })
         }
     };
-    let before_total = before.get("totalBalance").and_then(Value::as_f64);
-    let after_total = after.get("totalBalance").and_then(Value::as_f64);
-    let (Some(before_total), Some(after_total)) = (before_total, after_total) else {
+    let deltas = [
+        ("通用积分", balance_delta(before.points, after.points)),
+        ("星火积分", balance_delta(before.spark, after.spark)),
+    ];
+    if deltas.iter().all(|(_, delta)| delta.is_none()) {
         return Ok(proto::CheckinReport {
             outcome: proto::CheckinOutcome::Failed,
             credit: None,
             streak: None,
-            message: Some("积分余额读数不完整".into()),
-        });
-    };
-    let delta = after_total - before_total;
-    if delta > 0.0 {
-        return Ok(proto::CheckinReport {
-            outcome: proto::CheckinOutcome::Claimed,
-            credit: Some(format!("{delta}")),
-            streak: None,
-            message: Some(format!("每日登录积分 +{delta}")),
+            message: Some("签到前后积分读数不完整，无法确认奖励到账".into()),
         });
     }
+    // 两个余额池独立核对：只到账星火积分也算成功，缺失读数不能当成 0。
+    let rewards: Vec<String> = deltas
+        .iter()
+        .filter_map(|(label, delta)| {
+            delta
+                .filter(|value| *value > 0.0)
+                .map(|value| format!("{label} +{value}"))
+        })
+        .collect();
+    if !rewards.is_empty() {
+        let credit = rewards.join("，");
+        return Ok(proto::CheckinReport {
+            outcome: proto::CheckinOutcome::Claimed,
+            credit: Some(credit.clone()),
+            streak: None,
+            message: Some(format!("每日登录奖励已到账：{credit}")),
+        });
+    }
+    // 初始化成功不是领奖凭证；未到账保留重试，不能按「今日无活动」结束。
     Ok(proto::CheckinReport {
-        outcome: proto::CheckinOutcome::Inactive,
+        outcome: proto::CheckinOutcome::Failed,
         credit: None,
         streak: None,
-        message: Some("未观测到新发放：余额无变化（发放可能挂靠桌面端登录）".into()),
+        message: Some("每日登录已执行，但未观测到新增积分（可能今日已领取或暂未到账）".into()),
     })
 }
 
-async fn read_balance(credentials: &Credentials) -> Result<Value, StudioError> {
-    client::studio_json(credentials, endpoints::POINTS_BALANCE, "积分余额").await
+struct Balance {
+    points: Option<f64>,
+    spark: Option<f64>,
+}
+
+async fn read_balance(credentials: &Credentials) -> Result<Balance, StudioError> {
+    let value = client::studio_json(credentials, endpoints::POINTS_BALANCE, "积分余额").await?;
+    let balance = Balance {
+        points: balance_number(value.get("totalBalance")),
+        spark: balance_number(value.get("sparkTotalBalance")),
+    };
+    if balance.points.is_none() && balance.spark.is_none() {
+        return Err(StudioError::Failed("积分余额读数不完整".into()));
+    }
+    Ok(balance)
+}
+
+fn balance_number(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+        })
+        .filter(|number| number.is_finite() && *number >= 0.0)
+}
+
+fn balance_delta(before: Option<f64>, after: Option<f64>) -> Option<f64> {
+    let delta = after? - before?;
+    delta.is_finite().then_some(delta)
 }

@@ -52,10 +52,12 @@ pub mod balance;
 pub mod captcha;
 pub mod checkin;
 pub mod claim;
+mod claim_verification;
 pub mod coding_key;
 pub mod config_sync;
 pub mod credentials;
 pub mod endpoint_mapping;
+mod errors;
 mod login;
 mod models;
 pub mod monitor;
@@ -121,7 +123,7 @@ pub fn plan_label(plan: &str) -> &'static str {
 }
 
 /// 套餐池请求的网关提示词开关说明。
-pub const OFFICIAL_PROMPT_NOTE: &str = "套餐池默认按三块装配：身份句、稳定段、动态段；客户端系统正文合入已有的首条用户消息，不追加系统块或独立消息，也不会因此改成子代理。手动编辑的段优先于默认模板，未编辑的段随插件更新。关闭开关后只发送客户端正文，能否被接受取决于上游规则。3012 不等于额度耗尽，可能与请求兼容性或账号风控有关。";
+pub const OFFICIAL_PROMPT_NOTE: &str = "套餐池按三块装配：身份句、稳定段、动态段；客户端系统正文追加到动态段末尾，保留系统角色，不增加第四块，也不会因此改成子代理。套餐推理的客户端版本与模板一起更新，领取页的版本设置不会改变它。手动编辑的段优先于默认模板，未编辑的段随插件更新。关闭开关后只发送客户端正文，能否被接受取决于上游规则。3012 不等于额度耗尽，可能与请求兼容性或账号风控有关。";
 
 // ── 「插件读网关用户配置」的两个约定键（`settings.get` 的 `key`）──────────
 // ZCode 的官方三段提示词（正文 + 说明）全在本 crate 里，但「装不装」
@@ -360,94 +362,18 @@ impl Provider for ZcodeProvider {
             .unwrap_or(false)
     }
 
-    /// 上游错误分类。
-    ///
-    ///   - `401` → `TokenExpired`（编排层会刷新后同账号重试一次；本家没有续期
-    ///     协议，`refresh_token` 会如实报错）
-    ///   - `429` → `QuotaLimited`（编码套餐是「5 小时 + 每周」双窗口限额，上游
-    ///     不给结构化的恢复时间。「套餐已到期」也是这条 —— 上游用 429 表达它，
-    ///     而**换通道**才是出路）
-    ///   - 业务码 `1005` → `QuotaLimited`（活动套餐可用 HTTP 200 返回）
-    ///   - 其余 → 交给共用的内容拦截判定（`content_block`）
-    ///
-    /// ── 文案的取值链为什么要多一段 `error.message` ──────────────
-    /// 活动套餐通道说 Anthropic 协议，它的错误体是
-    /// `{"type":"error","error":{"type":"...","message":"..."}}` —— 顶层没有
-    /// `message`/`msg`。不多认这一段，那条通道上所有错误都会退化成「上游错误」。
     fn classify(&self, status: u16, body: &Value) -> proto::ErrorClass {
-        let raw = body
-            .get("message")
-            .or_else(|| body.get("msg"))
-            .or_else(|| body.get("error").and_then(|error| error.get("message")))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            // 上游的 401 是**空体**（实测：`Content-Length: 0`），而这正是活动
-            // 套餐通道上最常见的一种失败（套餐 JWT 用坏了）—— 照旧给「上游错误」
-            // 四个字，用户完全不知道下一步该做什么。这一档按状态码给一句可执行的话。
-            .unwrap_or_else(|| {
-                if status == 401 {
-                    "凭证被上游拒绝（套餐池通道认套餐 JWT、编码套餐认访问令牌）：\
-                     请在「账号」页重新登录该账号"
-                } else {
-                    "上游错误"
-                }
-            });
-        let code = body.get("code").and_then(Value::as_i64);
-        // 3007 是「验证码令牌被拒」的信号：记进令牌池 —— 界面据此把库存立刻
-        // 补齐；同时它把「推理免码」的结论翻回「要码」（见 `captcha` 的模块头）。
-        if code == Some(3007) {
-            captcha::note_challenge_and_require_token();
-        }
-        // 提示的两条来路：业务码表（`code_hint`）优先；限额档再按**错误原文**
-        // 补池子错位的引导（429「余额不足/无可用资源包」通常不是账号没钱，
-        // 而是额度记在另一个池子里）。
-        let hint = match code.and_then(plan::code_hint) {
-            Some(hint) => Some(hint),
-            None if status == 429 || code == Some(1005) => plan::quota_hint(raw),
-            None => None,
-        };
-        let message = match hint {
-            Some(hint) => format!("上游返回 {status}: {raw}（{hint}）"),
-            None => format!("上游返回 {status}: {raw}"),
-        };
-        if code == Some(3012) {
-            return proto::ErrorClass::Fatal {
-                status: if (200..300).contains(&status) { 502 } else { status },
-                message,
-                upstream_code: code,
-            };
-        }
-        if status == 401 {
-            return proto::ErrorClass::TokenExpired { message };
-        }
-        if status == 429 || code == Some(1005) {
-            return proto::ErrorClass::QuotaLimited {
-                reset_at: None,
-                message,
-                upstream_code: code,
-                status: 429,
-            };
-        }
-        // 被响应头检查拒绝的 2xx JSON 必须产生失败状态；保留原始 HTTP 状态在
-        // message 中，未知业务码不猜测为凭证失效或额度用尽。
-        let status = if (200..300).contains(&status) { 502 } else { status };
-        crate::content_block::classify_or_fatal(status, body, message, code)
+        errors::classify(status, body)
     }
 
     fn retry_decision(
         &self,
-        _status: u16,
+        status: u16,
         body: &Value,
         _attempt: usize,
         _budget: usize,
     ) -> agent2api_provider_sdk::RetryDecision {
-        if body.get("code").and_then(Value::as_i64) == Some(3012) {
-            return agent2api_provider_sdk::RetryDecision::Stop {
-                reason: "上游风控拒绝（3012），停止本次请求，不再原地重发或换账号".to_string(),
-            };
-        }
-        agent2api_provider_sdk::RetryDecision::Default
+        errors::retry_decision(status, body)
     }
 
     // ── 凭证 ──────────────────────────────────────────────────
@@ -519,9 +445,8 @@ impl Provider for ZcodeProvider {
 
     /// 每日签到：领当天那份赠送套餐（`checkin::claim_daily_checkin`）。
     ///
-    /// 与 `claim_status` / `claim`（手动领取）走同一条上游链路，差别只在
-    /// 无人值守的处置：拿不到验证码令牌时给中性结果而不是失败，见 `checkin`
-    /// 的模块头。
+    /// 手动入口直接提交当次验证；定时入口经已连接的界面按需验证。
+    /// 没有可用界面或验证未完成时返回 Captcha，不记已领取。
     fn checkin<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -585,7 +510,7 @@ impl Provider for ZcodeProvider {
 
     /// 领取一个套餐（`claim` 参数是套餐 id；空串 = 领第一个可领的）。
     ///
-    /// 人机验证令牌由**界面**铸造后推进 [`captcha`] 的池子，这里只消费。
+    /// 验证凭据经已连接的管理界面按需取得，不复用模型调用的令牌池。
     fn claim<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -615,7 +540,7 @@ impl Provider for ZcodeProvider {
                 }));
             };
             let attempt = claim::claim_plan(
-                ctx, self.region, account, &jwt, mid, &user_id, proxy.as_ref(), &plan, None,
+                ctx, self.region, account, &jwt, mid, &user_id, proxy.as_ref(), &plan, None, None,
             ).await.map_err(GatewayError::into_message)?;
             let mut result = claim_json(&attempt.outcome);
             result["marketingError"] = serde_json::json!(attempt.marketing_error);
@@ -707,11 +632,14 @@ impl Provider for ZcodeProvider {
         payload: &'a Value,
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
-            claim::refresh_app_version_override(ctx).await;
             if let Some(outcome) = admin::machine_action(action, payload) {
-                config_sync::maybe_sync(ctx).await;
+                if !action.starts_with("claim.verification.") {
+                    claim::refresh_app_version_override(ctx).await;
+                    config_sync::maybe_sync(ctx).await;
+                }
                 return outcome;
             }
+            claim::refresh_app_version_override(ctx).await;
             let record = crate::store::record(ctx, self.region.provider_id(), account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -724,8 +652,8 @@ impl Provider for ZcodeProvider {
                 "claim.captcha-config" => match claim::captcha_config(self.region, proxy.as_ref())
                     .await
                 {
-                    // `enabled: false` 或配置不全 → 前端不弹滑块
-                    Ok(None) => Ok(serde_json::json!({ "enabled": false })),
+                    // 只有上游明确关闭才允许免验证，配置缺失不能当成关闭。
+                    Ok(None) => Err("领取验证配置不完整，请稍后重试".to_string()),
                     Ok(Some(config)) => {
                         captcha::apply_config(&config);
                         Ok(serde_json::json!({
@@ -867,6 +795,8 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
         proto::CheckinOutcome::Done
     } else if value.get("success").and_then(Value::as_bool) == Some(true) {
         proto::CheckinOutcome::Claimed
+    } else if value.get("outcome").and_then(Value::as_str) == Some("captcha") {
+        proto::CheckinOutcome::Captcha
     } else if value.get("outcome").and_then(Value::as_str) == Some("inactive") {
         proto::CheckinOutcome::Inactive
     } else {
@@ -969,7 +899,7 @@ async fn claim_action(
     };
     let attempt = claim::claim_plan(
         ctx, region, account, jwt, device_mid, user_id, proxy, &plan,
-        Some((&captcha_verify_param, captcha_region.as_deref())),
+        Some((&captcha_verify_param, captcha_region.as_deref())), None,
     ).await.map_err(GatewayError::into_message)?;
     Ok(match attempt.outcome {
         claim::ClaimOutcome::Claimed { plan_id, starts_at, ends_at } => {

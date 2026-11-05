@@ -11,7 +11,7 @@ use crate::errors::GatewayError;
 use crate::logging;
 
 use super::plans::{identifier, ClaimablePlan, OwnedPlan};
-use super::super::{captcha, region::Region};
+use super::super::{claim_verification, region::Region};
 use super::{app_version, claim_upstream, marketing, ownership, ClaimFailure, ClaimOutcome};
 
 const LEDGER_KIND: &str = "zcodeClaimPlans";
@@ -31,6 +31,15 @@ struct Ledger {
     checkin_sources_at: Option<i64>,
     #[serde(default)]
     checkin_sources_complete: bool,
+    #[serde(default)]
+    checkin_verification: Option<VerificationRequired>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct VerificationRequired {
+    at: i64,
+    plan_id: String,
+    message: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -234,6 +243,7 @@ pub async fn claim_plan(
     proxy: Option<&WireProxy>,
     plan: &ClaimablePlan,
     captcha: Option<(&str, Option<&str>)>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<ClaimAttempt, GatewayError> {
     let key = format!("zcode-claims:{}:{account}", region.provider_id());
     crate::flight::run(&key, || async {
@@ -267,19 +277,39 @@ pub async fn claim_plan(
                 failure_ends_at: saved.claim_ends_at.or(saved.plan.ends_at),
             }
         } else {
-            let pooled = if captcha.is_none() && captcha::required() { captcha::take() } else { None };
+            // 领取只接受当次验证，不读取模型调用的令牌池，也不套用推理免码开关。
+            let verification = if captcha.is_none() {
+                match claim_verification::prepare(region, account, plan, proxy, deadline).await {
+                    Ok(verification) => verification,
+                    Err(error) if error.status_code == 428 => {
+                        let message = error.message;
+                        ledger.checkin_verification = Some(VerificationRequired {
+                            at: crate::http::now_ms(), plan_id: plan.plan_id.clone(), message: message.clone(),
+                        });
+                        if let Err(error) = save(ctx, account, &ledger).await {
+                            logging::verbose("[Claim]", &format!("领取验证状态保存失败：{error}"));
+                        }
+                        let daily_checkin = daily_checkin_view(&ledger, crate::http::now_ms());
+                        return Ok(ClaimAttempt {
+                            outcome: ClaimOutcome::Failed {
+                                plan_id: plan.plan_id.clone(), failure: ClaimFailure::Captcha,
+                                code: 428, message, failure_ends_at: None,
+                            },
+                            marketing_error: None, daily_checkin, claimed_at: None,
+                        });
+                    }
+                    Err(error) => return Err(error.into_message()),
+                }
+            } else { None };
             let (param, region_tag) = captcha.unwrap_or_else(|| {
-                pooled.as_ref().map(|(param, region)| {
-                    (param.as_str(), (!region.is_empty()).then_some(region.as_str()))
+                verification.as_ref().map(|value| {
+                    (value.param.as_str(), Some(value.region.as_str()))
                 }).unwrap_or(("", None))
             });
             let result = claim_upstream(region, jwt, &plan.plan_id, param, region_tag, device_mid, proxy).await;
             ownership::invalidate(region, account, jwt, device_mid, proxy);
             result?
         };
-        if matches!(&outcome, ClaimOutcome::Failed { failure: ClaimFailure::Captcha, .. }) {
-            captcha::note_challenge();
-        }
         let settled = matches!(&outcome,
             ClaimOutcome::Claimed { .. }
             | ClaimOutcome::Failed { failure: ClaimFailure::AlreadyClaimed, code: 1003, .. }
@@ -294,6 +324,9 @@ pub async fn claim_plan(
             }
         }
         if settled {
+            if ledger.checkin_verification.as_ref().is_some_and(|pending| pending.plan_id == plan.plan_id) {
+                ledger.checkin_verification = None;
+            }
             let saved = ledger.plans.get_mut(&plan.plan_id)
                 .ok_or_else(|| GatewayError::with_status(502, "领取台账缺少目标套餐"))?;
             if !already_claimed { saved.claimed_at = Some(crate::http::now_ms()); }
@@ -337,6 +370,14 @@ pub async fn claim_plan(
             }
         }
         let now = crate::http::now_ms();
+        if let ClaimOutcome::Failed { failure: ClaimFailure::Captcha, message, .. } = &outcome {
+            ledger.checkin_verification = Some(VerificationRequired {
+                at: now, plan_id: plan.plan_id.clone(), message: message.clone(),
+            });
+            if let Err(error) = save(ctx, account, &ledger).await {
+                logging::verbose("[Claim]", &format!("领取验证状态保存失败：{error}"));
+            }
+        }
         Ok(ClaimAttempt {
             outcome,
             marketing_error,
@@ -391,13 +432,22 @@ fn daily_checkin_view(ledger: &Ledger, now: i64) -> Value {
     }).count();
     let completed = current && ledger.checkin_sources_complete && !targets.is_empty()
         && completed_count == targets.len();
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "at": now,
+        "kind": "plans",
         "completed": completed,
         "completedCount": completed_count,
         "totalCount": targets.len(),
         "sourcesComplete": current && ledger.checkin_sources_complete,
-    })
+    });
+    if let Some(pending) = ledger.checkin_verification.as_ref().filter(|pending| {
+        !completed && same_day(pending.at, now)
+            && ledger.plans.get(&pending.plan_id).is_some_and(|saved| !saved.claimed_for_at(&saved.plan, now))
+    }) {
+        value["status"] = Value::from("captcha");
+        value["message"] = Value::from(pending.message.clone());
+    }
+    value
 }
 
 async fn load(ctx: &PluginCtx, account: &str) -> Result<Ledger, GatewayError> {

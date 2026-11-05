@@ -20,7 +20,8 @@
 //! 一次对话 = 建任务 + 挂 WebSocket 任务流 + 消费 ACP 事件，不是「一次 HTTP
 //! 请求一次回答」，单请求构造容纳不了这条链。转发实现按职责拆成几个文件：
 //!   `task.rs`      输入侧翻译（messages → prompt）与建任务（POST /users/tasks）
-//!   `stream.rs`    WS 连接、起始消息（auto-approve / user-input）、心跳、超时、
+//!   `startup.rs`   轮询任务环境就绪，读取环境失败状态
+//!   `stream.rs`    WS 连接、auto-approve、心跳、无进展超时、
 //!                  终态与错误帧（四个出口都会给下游一个收尾，不会挂死）
 //!   `translate.rs` 下行消息与 ACP 事件 → OpenAI chunk、自动回复 Agent 提问
 //!   `chat.rs`      装配入口（`conversation` 转调）与流式 / 非流式分流
@@ -36,8 +37,8 @@
 //!
 //! ── 本家没有的东西（如实声明，别照抄别家）──────────────────────
 //!   - **没有续期**：session 30 天硬限制，上游无 refresh 接口 → `refresh: false`；
-//!   - **没有网页登录**：登录要么带验证码、要么要 OAuth 窗口，插件只接
-//!     「粘贴 session」这一条 → `web_login: false`；
+//!   - **网页登录需桌面窗口**：用户完成官方验证码后由窗口宿主读取 HttpOnly
+//!     session，插件校验并保存；浏览器面板仍使用「粘贴 session」；
 //!   - **不做签到与余额**：没有实测可用的余额接口 → `usage: false`、`checkin: false`；
 //!   - **任务流不挂账号代理**：tokio-tungstenite 没有代理支持，参考实现同样
 //!     只给 REST 调用挂代理（见 `stream::connect` 的说明）。
@@ -54,9 +55,11 @@ mod inflight;
 mod login;
 mod models;
 mod region;
+mod startup;
 mod stream;
 mod task;
 mod translate;
+mod web_login;
 mod wire;
 
 use serde_json::Value;
@@ -101,8 +104,7 @@ impl Provider for MonkeyCodeProvider {
             // 没有签到
             checkin: false,
             claims: false,
-            // 登录要验证码 / OAuth 窗口，插件只接「粘贴 session」
-            web_login: false,
+            web_login: true,
             sse_model_rewrite: false,
             sse_strip_newline_chunks: false,
             anonymous_default_session: false,
@@ -114,6 +116,10 @@ impl Provider for MonkeyCodeProvider {
             env_credentials: false,
         })
         .with_login(vec![
+            proto::LoginMethod::Browser {
+                button: "网页登录".into(),
+                hint: Some("在桌面内嵌窗口完成官方登录，成功后自动添加账号；浏览器面板请粘贴 session。".into()),
+            },
             proto::LoginMethod::Token {
                 label: "Session".to_string(),
                 placeholder: "monkeycode_ai_session 的值（可整行粘贴 Cookie）".to_string(),
@@ -283,6 +289,30 @@ impl Provider for MonkeyCodeProvider {
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
             };
             Ok(models::refresh(self.region, &credentials.session, force).await)
+        })
+    }
+
+    fn login_start<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        _method: &'a str,
+        _payload: &'a Value,
+    ) -> SendFuture<'a, proto::LoginStart> {
+        Box::pin(async move { web_login::start(self.region) })
+    }
+
+    fn login_callback<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        callback: proto::LoginCallback,
+    ) -> SendFuture<'a, proto::LoginPoll> {
+        Box::pin(web_login::callback(self.region, callback))
+    }
+
+    fn login_cancel<'a>(&'a self, _ctx: &'a PluginCtx, flow: &'a str) -> SendFuture<'a, ()> {
+        Box::pin(async move {
+            web_login::cancel(self.region, flow);
+            Ok(())
         })
     }
 

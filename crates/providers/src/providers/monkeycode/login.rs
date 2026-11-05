@@ -49,15 +49,17 @@ pub fn normalize_session(raw: &str) -> String {
     {
         text = rest.trim();
     }
-    // `monkeycode_ai_session=xxx` 形态（取 `=` 之后的第一个分号前的内容）
-    if let Some(rest) = text.strip_prefix(endpoints::SESSION_COOKIE_NAME) {
-        if let Some(value) = rest.strip_prefix('=') {
-            text = value.trim();
+    for part in text.split(';') {
+        let Some((name, value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        if name.trim() == endpoints::SESSION_COOKIE_NAME {
+            return value.trim().trim_matches(|ch| ch == '"' || ch == '\'').to_string();
         }
     }
-    // 取第一个分号之前的内容（Cookie 串里可能带着别的 cookie）
-    if let Some((head, _)) = text.split_once(';') {
-        text = head.trim();
+    // 非 Cookie 串的输入按裸 session 处理。
+    if text.contains(';') || text.contains('=') {
+        return String::new();
     }
     // 去掉成对的引号
     let text = text.trim_matches(|ch| ch == '"' || ch == '\'').trim();
@@ -153,6 +155,9 @@ pub async fn verify_session(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
+    if user_id.is_empty() {
+        return Err(GatewayError::with_status(401, "MonkeyCode 未返回已登录用户，请在对应站点完成普通用户登录后重试"));
+    }
     let name = display_name_of(&user);
     let provided = provided_image_id
         .map(str::trim)

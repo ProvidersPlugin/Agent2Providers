@@ -38,8 +38,9 @@
 //!
 //! ── 余额 / 签到 ────────────────────────────────────────────
 //! 余额：`GET /bizapi/gfpro/getgfvipremain` → `data.list[0].totalPoint`。
-//! 签到：「免费领积分」活动的每日任务领取（`freepoint/homenew` 面板 +
-//! `freepoint/taskComplete`，任务 `LOGIN` / `CHAT`），见 `checkin.rs`。
+//! 签到：优先「库库 30 天签到」（`act/v2/kukuai30/*`，2026-10-21 起），
+//! 旧「免费领积分」任务（`freepoint/homenew` + `freepoint/taskComplete`）
+//! 作兜底，见 `checkin.rs`。
 //! 业务会话前提（换发 genflowpro STOKEN）见 `engine.rs`。
 //!
 //! ── 刷新 / 登录形态 ────────────────────────────────────────
@@ -134,7 +135,7 @@ impl Provider for KukuProvider {
                 model_refresh: true,
                 // `/bizapi/gfpro/getgfvipremain`
                 usage: true,
-                // freepoint 每日任务（`checkin`）
+                // 30 天签到 + freepoint 每日任务（`checkin`）
                 checkin: true,
                 claims: false,
                 // 主站登录页（壳侧从 WebView Cookie 存储取回登录态）
@@ -185,7 +186,7 @@ impl Provider for KukuProvider {
                 ..Default::default()
             })
         .with_checkin(proto::CheckinInfo {
-            description: Some("「免费领积分」的每日任务 · 逐个领取".to_string()),
+            description: Some("每日签到（30 天活动）与免费领积分任务".to_string()),
             modes: vec![proto::CheckinMode::Checkin],
             ..Default::default()
         })
@@ -283,7 +284,7 @@ impl Provider for KukuProvider {
         })
     }
 
-    /// 每日签到：freepoint 的 `LOGIN` / `CHAT` 两个任务。
+    /// 每日签到：优先 30 天签到活动，旧 freepoint 任务作兜底。
     fn checkin<'a>(
         &'a self,
         ctx: &'a PluginCtx,
@@ -357,11 +358,19 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let credit = value
+        .get("credit")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let streak = value
+        .get("streak")
+        .and_then(Value::as_u64)
+        .map(|days| days as u32);
     if success {
         proto::CheckinReport {
             outcome: proto::CheckinOutcome::Claimed,
-            credit: None,
-            streak: None,
+            credit: credit.clone(),
+            streak,
             message: Some(if message.is_empty() {
                 "签到成功".to_string()
             } else {
@@ -377,8 +386,8 @@ fn checkin_report(value: &Value) -> proto::CheckinReport {
             } else {
                 proto::CheckinOutcome::Failed
             },
-            credit: None,
-            streak: None,
+            credit,
+            streak,
             message: Some(if message.is_empty() {
                 "签到失败（上游未给出原因）".to_string()
             } else {

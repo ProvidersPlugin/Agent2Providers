@@ -52,6 +52,7 @@ mod ids;
 mod json;
 mod limits;
 mod model_rules;
+mod native_search;
 mod paths;
 mod proxy_util;
 mod queue;

@@ -1,16 +1,34 @@
 //! AStudio 的两套出网：模型目录（Bearer）与账号面（Cookie）。
 //!
 //! ── 账号面的信封 ────────────────────────────────────────────
-//! `{flag: true, code: 0, data: …}` 才算成功。`flag: false`、非 0 的 `code`、
-//! HTTP 401/403、`code: 80000`、`desc` 里含「重新登录」都表示网页会话失效 ——
-//! 这类错误**必须**透出去（账号行要显示「需要重新登录」），不能被折叠成
-//! 一句「读取失败」。
+//! `{flag: true, code: 0, data: …}` 才算成功。HTTP 401/403、`code: 80000`、
+//! `desc` 里含「重新登录」表示网页会话失效；其余 `flag: false` 或非 0 的
+//! `code` 是业务失败，都必须透出去，不能被折叠成「余额无变化」。
 
+use reqwest::Method;
 use serde_json::{json, Value};
 
 use super::accounts::Credentials;
 use super::endpoints;
 use crate::http;
+
+/// 桌面端版本（安装包 `package.json` 的 version，用于 `studioVersion` 头）。
+const STUDIO_VERSION: &str = "3.5.1";
+
+/// 账号面请求共用桌面端身份头，登录、余额与签到不能各自漏带。
+pub(super) fn decorate(mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let client_type = if cfg!(target_os = "windows") {
+        Some("21")
+    } else if cfg!(target_os = "macos") {
+        Some("22")
+    } else {
+        None
+    };
+    if let Some(kind) = client_type {
+        request = request.header("clientType", kind);
+    }
+    request.header("studioVersion", STUDIO_VERSION)
+}
 
 /// 账号面失败的两种形态。
 pub enum StudioError {
@@ -28,9 +46,34 @@ impl StudioError {
     }
 }
 
-/// 调一次账号面接口。
+/// 读取账号面信息。
 pub async fn studio_json(
     credentials: &Credentials,
+    path: &str,
+    operation: &str,
+) -> Result<Value, StudioError> {
+    studio_request(credentials, Method::GET, path, operation).await
+}
+
+/// 复用桌面端启动时的每日登录动作：带 Cookie 的 POST，不附带请求体。
+pub async fn init_app(credentials: &Credentials) -> Result<(), StudioError> {
+    let value = studio_request(
+        credentials,
+        Method::POST,
+        endpoints::INIT_APP,
+        "每日登录",
+    )
+    .await?;
+    match value.get("banned").and_then(Value::as_bool) {
+        Some(false) => Ok(()),
+        Some(true) => Err(StudioError::Failed("AStudio 账号已被封禁，无法签到".into())),
+        None => Err(StudioError::Failed("每日登录返回的账号状态不完整".into())),
+    }
+}
+
+async fn studio_request(
+    credentials: &Credentials,
+    method: Method,
     path: &str,
     operation: &str,
 ) -> Result<Value, StudioError> {
@@ -40,10 +83,12 @@ pub async fn studio_json(
         path.trim_start_matches('/')
     );
     let client = http::control_client(None, "");
-    let response = client
-        .get(&url)
+    let request = client
+        .request(method, &url)
         .header("Accept", "application/json")
         .header("Cookie", credentials.cookie_header())
+        .timeout(std::time::Duration::from_secs(20));
+    let response = decorate(request)
         .send()
         .await
         .map_err(|error| {
@@ -55,13 +100,22 @@ pub async fn studio_json(
             "AStudio 会话已失效（HTTP {status}），请重新登录 AStudio"
         )));
     }
-    let text = response.text().await.unwrap_or_default();
+    let text = response.text().await.map_err(|error| {
+        StudioError::Failed(format!("读取{operation}响应失败：{}", http::describe(&error)))
+    })?;
     let payload: Value = serde_json::from_str(&text)
         .map_err(|_| StudioError::Failed(format!("{operation}返回的不是 JSON（HTTP {status}）")))?;
-    let envelope = payload.as_object().cloned().unwrap_or_default();
-    let code = envelope.get("code").and_then(Value::as_i64);
+    let envelope = payload
+        .as_object()
+        .ok_or_else(|| StudioError::Failed(format!("{operation}返回的结果格式异常")))?;
+    let code = envelope.get("code").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|text| text.trim().parse::<i64>().ok()))
+    });
+    let flag = envelope.get("flag").and_then(Value::as_bool);
     let failed = !(200..300).contains(&status)
-        || envelope.get("flag").and_then(Value::as_bool) == Some(false)
+        || flag == Some(false)
         || code.is_some_and(|code| code != 0);
     if failed {
         let desc = envelope
@@ -80,7 +134,14 @@ pub async fn studio_json(
             format!("{operation}失败（HTTP {status}：{desc}）")
         }));
     }
-    Ok(envelope.get("data").cloned().unwrap_or(Value::Null))
+    if flag != Some(true) || code != Some(0) {
+        return Err(StudioError::Failed(format!("{operation}返回的成功状态不完整")));
+    }
+    envelope
+        .get("data")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .ok_or_else(|| StudioError::Failed(format!("{operation}返回的数据不完整")))
 }
 
 /// 拉模型目录（`GET /api/v1/model-manager/models`）。

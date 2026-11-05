@@ -7,24 +7,12 @@
 //! 记的一致：同一期再领回 `1003 already claimed`。手动领取、自动签到与
 //! 领取状态预览共用逐套餐台账，已领取后从上游预览消失也不会丢失完成事实。
 //!
-//! 与 `claim.rs` 里那个**手动领取**的差别只有三点：
-//!   1. 这是**无人值守**的调度（每天定时跑），因此不弹滑块、不向用户要验证码；
-//!   2. 拿不到验证码令牌时给**中性结果**（`inactive`，等下一轮），不是失败 ——
-//!      与 Qoder 国际版「缺 UMID 组件」同一处置口径；
-//!   3. 结果翻成 `CheckinReport`（`claimed` / `done` / `inactive` / `failed`），
-//!      网关据此落 `checkinAt` 与台账。
-//!
-//! ── 人机验证：本家的死结与它现在的处置 ─────────────────────
-//! `POST /api/v1/zcode-plan/billing/claim` 要求带
-//! `X-Aliyun-Captcha-Verify-Param`（阿里云无痕验证），没有就是
-//! `3007 captcha verify failed`。令牌只能由 WebView 里的阿里云 SDK 铸出来
-//! （见 `captcha.rs` 模块头），Docker / headless 部署铸不出 —— 因此自动签到
-//! 在那种部署上**必然拿不到令牌**。
-//!
-//! 处置：令牌池里有就用（桌面端开着界面时会自动补货，那是最常见的部署形态）；
-//! 没有就走一次**不带令牌的领取尝试** —— 上游的风控配置可能是
-//! `skip_model_request: true`（那一刻不要码），那时这一下就成功了。仍然 3007
-//! 就回中性结果，提示「打开界面让它补铸令牌」，第二天照常再试。绝不自己造令牌。
+//! ── 验证与结果 ──────────────────────────────────────────────
+//! 手动领取和定时领取使用同一份逐套餐台账。定时领取发现未领套餐后，按领取配置
+//! 向已连接的管理界面请求一次官方 SDK 验证，结果只服务本账号的本次领取。
+//! 不读取模型调用令牌池，也不把 `skip_model_request` 当成领取免验证。
+//! 无可用界面、取消或超时返回 `captcha`，不写已领取、不作为无活动窗口重试。
+//! 等待有上限，验证任务结束后迟到的凭据不会被其它领取或模型调用复用。
 //!
 //! ── 顺序：补报激活 → 探测 → 领取 ───────────────────────────
 //! 资格由激活事件（`app_launch` / `app_daily_active`）发放，而本家不跑官方
@@ -78,8 +66,8 @@ fn daily_window_start(now: i64) -> i64 {
 /// 返回 `{success, msg, ...}` 形状与其余各家一致（`billing::checkin` 的
 /// `claim_result` 只认 `success` / `msg`），另外带：
 ///   - `alreadyCompleted: true` —— 今天已领（落 `checkinAt` 用）；
-///   - `outcome: "inactive"` —— 中性未领取（窗口没开 / 没有可领套餐 / 缺验证码），
-///     网关不落账，按 `retryAt` 稍后重试。
+///   - `outcome: "inactive"` —— 窗口没开 / 没有可领套餐，按 `retryAt` 稍后重试；
+///   - `outcome: "captcha"` —— 需要人工完成验证，不把它误当成等待活动。
 pub async fn claim_daily_checkin(
     ctx: &PluginCtx,
     region: Region,
@@ -177,6 +165,7 @@ pub async fn claim_daily_checkin(
         }
         let attempt = claim::claim_plan(
             ctx, region, account_id, &jwt, mid, &user_id, proxy.as_ref(), plan, None,
+            Some(started + ROUND_TIMEOUT),
         ).await;
         let stop = match &attempt {
             Ok(attempt) => matches!(&attempt.outcome,
@@ -224,10 +213,11 @@ fn plan_result(
                             format!("「{plan_name}」{}（{code}）：{message}", failure.label()),
                             failure_ends_at.map(|at| at.saturating_mul(1000)),
                         ),
-                        ClaimFailure::Captcha => inactive(
-                            format!("「{plan_name}」领取需要有效的人机验证令牌，请在界面中主动完成验证后领取"),
-                            None,
-                        ),
+                        ClaimFailure::Captcha => json!({
+                            "success": false, "outcome": "captcha",
+                            "planId": plan_id, "planName": plan_name,
+                            "msg": format!("「{plan_name}」需要人工验证：{message}"),
+                        }),
                         other => failed_soft(format!("「{plan_name}」{}（{code}）：{message}", other.label())),
                     }
                 }
@@ -248,10 +238,11 @@ fn combine_results(results: Vec<Value>, expected: usize, daily_checkin: Value) -
         && !results.is_empty() && results.len() == expected
         && results.iter().all(|row| row.get("success").and_then(Value::as_bool) == Some(true)
             || row.get("alreadyCompleted").and_then(Value::as_bool) == Some(true));
+    let needs_verification = results.iter().any(|row| row.get("outcome").and_then(Value::as_str) == Some("captcha"));
     let pending = results.iter().any(|row| row.get("outcome").and_then(Value::as_str) == Some("inactive"));
     let failed = results.iter().any(|row| row.get("success").and_then(Value::as_bool) != Some(true)
         && row.get("alreadyCompleted").and_then(Value::as_bool) != Some(true)
-        && row.get("outcome").and_then(Value::as_str) != Some("inactive"));
+        && !matches!(row.get("outcome").and_then(Value::as_str), Some("inactive" | "captcha")));
     let mut msg = results.iter().filter_map(|row| row.get("msg").and_then(Value::as_str))
         .collect::<Vec<_>>().join("；");
     if !completed && daily_checkin.get("sourcesComplete").and_then(Value::as_bool) != Some(true) {
@@ -262,7 +253,8 @@ fn combine_results(results: Vec<Value>, expected: usize, daily_checkin: Value) -
         "alreadyCompleted": !succeeded && completed,
         "msg": msg,
         "outcome": if completed { if succeeded { "claimed" } else { "done" } }
-            else if failed { "failed" } else if pending { "inactive" } else { "failed" },
+            else if failed { "failed" } else if needs_verification { "captcha" }
+            else if pending { "inactive" } else { "failed" },
         "results": results,
         "dailyCheckin": daily_checkin,
     });

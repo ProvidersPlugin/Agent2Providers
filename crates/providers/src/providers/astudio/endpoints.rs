@@ -9,7 +9,8 @@
 //!             （OpenAI Responses 协议，Authorization: Bearer <modelBearerToken>）
 //!   模型目录  GET  https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models
 //!   账号面    https://agent.xfyun.cn/xingchen-studio/…
-//!             points/balance、membership/me、membership/plan-config、points/summary
+//!             points/balance、membership/me、membership/plan-config
+//!   每日登录  POST tenant-app/v2/init-app（带网页会话，无请求体）
 //! ```
 //!
 //! 这些地址来自桌面端写进 acode 内核的 `base_url` / `wire_api`，与官方客户端
@@ -39,4 +40,6 @@ pub const REGISTRY_PREFIXES: &[&str] = &["Production", "Canary", "Development"];
 pub const POINTS_BALANCE: &str = "points/balance";
 pub const MEMBERSHIP_ME: &str = "membership/me";
 pub const PLAN_CONFIG: &str = "membership/plan-config";
-pub const POINTS_SUMMARY: &str = "points/summary";
+
+/// 当日首次调用触发每日登录奖励（POST，无请求体）；登录与签到共用。
+pub const INIT_APP: &str = "tenant-app/v2/init-app";

@@ -90,7 +90,7 @@ pub(super) async fn normalize(
 /// `accessToken`（session）/ `userId` / `imageId` / `tokenTail` / `expiresAt`
 /// / `source` / `name`。这样 `credentials::from_record` 能逐字复用（它读的
 /// 就是这几个键），账号页的公开视图也不变。
-fn account_of(
+pub(super) fn account_of(
     region: Region,
     verified: &Value,
     source: &str,
@@ -121,7 +121,7 @@ fn account_of(
     secret.insert("tokenTail".to_string(), Value::String(token_tail(&session)));
     secret.insert(
         "expiresAt".to_string(),
-        Value::from(now + SESSION_TTL_MS),
+        Value::from(verified.get("expiresAt").and_then(Value::as_i64).unwrap_or(now + SESSION_TTL_MS)),
     );
     secret.insert("source".to_string(), Value::String(source.to_string()));
     secret.insert("name".to_string(), Value::String(name.clone()));
@@ -192,6 +192,7 @@ pub(super) fn account_view(region: Region, secret: &Value) -> Value {
         "edition": region.provider_id(),
         "editionLabel": region.label(),
         "source": crate::store::pick(secret, &["source"]),
+        "expiresAt": secret.get("expiresAt").cloned().unwrap_or(Value::Null),
         // 本家没有续期协议（30 天硬限制）
         "hasRefreshToken": false,
         "hasSession": !session.is_empty(),

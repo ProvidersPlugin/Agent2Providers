@@ -17,11 +17,10 @@
 //! TTL 30 天、HttpOnly + Secure + SameSite=Lax。本网关只接**普通用户**这一路
 //! （团队登录是另一套端点与另一套账号体系，不在本期范围）。
 //!
-//! ── 鉴权形态：粘贴式（**无验证码 / 无短信 / 无 OAuth 窗口**）──────────
-//! 本家的密码登录要 go-cap 验证码、OAuth 要百智云 SCaptcha + 短信 —— 两条都
-//! 不适合网关代跑。参考 `docs/02-auth/03-login-methods.md` 的结论：从浏览器
-//! 复制 session cookie 是最省事、最可靠的一条路，因此本网关的登录入口就是
-//! 「粘贴 session」+ 一次 `GET /users/status` 校验（见 `login.rs`）。
+//! ── 登录入口 ────────────────────────────────────────────────
+//! 桌面端打开官方登录页，由用户完成验证码与第三方授权，宿主读取 HttpOnly
+//! session 后交插件校验；纯网页面板继续使用粘贴 session。两条路径共用
+//! GET /users/status 校验，不代解验证码。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -165,8 +164,7 @@ pub fn host_id(region: Region) -> String {
 /// 任务流 WebSocket 的完整 URL：`wss://<站点>/api/v1/users/tasks/stream?id=&mode=`。
 ///
 /// scheme 按参考的 `httpToWs` 转换（https → wss、http → ws，自建 / 测试站点
-/// 走后者）；`mode` 由调用方给（当前只有 `new`：本次请求新建任务轮次，
-/// 见 `stream.rs` 的模块头）。
+/// 走后者）；本插件创建请求已提交首轮输入，使用 attach 回放并接收结果。
 pub fn task_stream_url(region: Region, task_id: &str, mode: &str) -> String {
     let base = region.base_url();
     let ws_base = if let Some(rest) = base.strip_prefix("https://") {

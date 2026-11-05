@@ -8,8 +8,9 @@
 //!   ② 模型名 → 目录条目（upstreamId / cliName）        models::resolve_task_model
 //!   ③ OpenAI messages → prompt（system 单列）          task::build_prompt
 //!   ④ POST /api/v1/users/tasks 建任务                  task::create_task
-//!   ⑤ 连 wss://…/tasks/stream?id=&mode=new             stream::connect
-//!   ⑥ 发 auto-approve + user-input                     stream::start_task
+//!   ⑤ 等任务环境就绪                                startup::wait_ready
+//!   ⑥ 连 wss://…/tasks/stream?id=&mode=attach           stream::connect
+//!      首轮 content 已由上游自动执行，只设置 auto-approve
 //!   ⑦ 消费 ACP 事件 → 本网关的 OpenAI 兼容流            stream::drive_stream
 //!   ⑧ PUT /api/v1/users/tasks/stop 收尾（**必须**）     client::stop_task
 //! ```
@@ -56,7 +57,7 @@ use crate::logging;
 
 use super::credentials::MonkeyCodeCredentials;
 use super::region::Region;
-use super::{client, credentials, inflight, models, stream, task};
+use super::{client, credentials, inflight, models, startup, stream, task};
 
 /// 转发入口（`mod.rs` 的 `Provider::conversation` 转调）。
 pub async fn run_chat(
@@ -143,7 +144,14 @@ async fn run_chat_inner(
     // 登记为「本进程正在驱动」：10811 自愈时据此跳过，避免停掉并发请求
     // 正在用的任务（见 `inflight.rs` 的说明）。
     inflight::register(&task_id);
-    // ② 连任务流并发出起始交互（同上，失败在返回前）
+    let mut stop_guard = stream::StopOnDrop::new(region, &credentials.session, &task_id, proxy.as_ref());
+    if let Err(error) = startup::wait_ready(region, &credentials, &task_id, proxy.as_ref()).await {
+        client::stop_task(region, &credentials.session, &task_id, proxy.as_ref()).await;
+        inflight::unregister(&task_id);
+        stop_guard.disarm();
+        return Err(error);
+    }
+    // ② 环境就绪后接收首轮的历史与实时消息。
     //
     // ── 这两步失败必须回头停止任务 ──────────────────────────────
     // 任务在上一步已经建出来了（上游已分配并发槽位）。连不上 WS / 发不出起始
@@ -154,13 +162,15 @@ async fn run_chat_inner(
         Err(error) => {
             client::stop_task(region, &credentials.session, &task_id, proxy.as_ref()).await;
             inflight::unregister(&task_id);
+            stop_guard.disarm();
             return Err(error);
         }
     };
-    if let Err(error) = stream::start_task(&mut connection, &prompt.content).await {
+    if let Err(error) = stream::start_task(&mut connection).await {
         connection.close().await;
         client::stop_task(region, &credentials.session, &task_id, proxy.as_ref()).await;
         inflight::unregister(&task_id);
+        stop_guard.disarm();
         return Err(error);
     }
     let translator = stream::Translator::new(
@@ -184,10 +194,12 @@ async fn run_chat_inner(
         })
         .await
         .map_err(|error| GatewayError::with_status(499, error))?;
+        stop_guard.disarm();
         stream::drive_stream(connection, translator, &mut sink).await?;
         Ok(())
     } else {
         // ── 非流式：聚合完再一次性推（此时还没报头，失败可以带状态码）──
+        stop_guard.disarm();
         let completion = stream::drive_aggregate(connection, translator).await?;
         let payload = serde_json::to_string(&completion).map_err(|error| {
             GatewayError::with_status(500, format!("MonkeyCode 聚合结果序列化失败：{error}"))

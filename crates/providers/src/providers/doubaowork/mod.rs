@@ -6,6 +6,8 @@ mod accounts;
 mod api;
 mod catalog;
 mod chat;
+mod checkin;
+mod checkin_state;
 mod client;
 mod cookies_db;
 mod desktop;
@@ -204,7 +206,21 @@ impl Provider for DoubaoWorkProvider {
         account: &'a str,
     ) -> SendFuture<'a, proto::CheckinReport> {
         Box::pin(async move {
-            rewards::checkin(ctx, account)
+            checkin::run(ctx, account)
+                .await
+                .map(|result| result.report)
+                .map_err(crate::errors::GatewayError::into_control_message)
+        })
+    }
+
+    fn checkin_with_options<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        _manual: bool,
+    ) -> SendFuture<'a, agent2api_provider_sdk::CheckinResult> {
+        Box::pin(async move {
+            checkin::run(ctx, account)
                 .await
                 .map_err(crate::errors::GatewayError::into_control_message)
         })

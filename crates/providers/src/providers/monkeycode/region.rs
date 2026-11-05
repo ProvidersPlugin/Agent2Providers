@@ -94,6 +94,13 @@ impl Region {
         }
     }
 
+    pub fn login_hosts(self) -> &'static [&'static str] {
+        match self {
+            Self::Cn => &["monkeycode-ai.com", "baizhi.cloud"],
+            Self::Intl => &["monkeycode-ai.net", "github.com", "accounts.google.com"],
+        }
+    }
+
     /// 环境变量前缀：`MONKEYCODE_` / `MONKEYCODE_INTL_`。
     ///
     /// 不能两地共用一个变量名：那会让「只想给国际版配代理 / 换站点」变成

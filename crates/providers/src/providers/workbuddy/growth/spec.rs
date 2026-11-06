@@ -97,6 +97,16 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
         "Sequential_Tasks_5" => {
             TaskSpec::new("miniglmchat", 1, "小程序 GLM5.2 对话", false).with_mp()
         }
+        // 十次对话：判据与 `_3`（同链，target 5）完全相同 —— 都是 mp 口径
+        // `chat_request_send`。target 由任务表兜底（accept 前上游下发 0），
+        // 上报间隔走 `MP_CHAT_GAP_MS`（见 events.rs 的 minichat 分支）。
+        "Sequential_Tasks_6" => TaskSpec::new("minichat", 10, "小程序对话 ×10", false).with_mp(),
+        // 体验灵感功能：判据是「灵感详情页点击 + CTA 点击 + 发送 prompt」整组桌面事件
+        // （参考实现 DesktopPlaybookPromptSequence，playbook_prompt 三账号实测点亮）。
+        // 查询/accept/claim 仍走 mp 口径，故 `with_mp()`。
+        "Sequential_Tasks_7" => {
+            TaskSpec::new("playbookcta", 1, "灵感详情页点击+CTA+prompt 事件组", false).with_mp()
+        }
         "school_season" => TaskSpec::new("schoolseason", 1, "校园日活动（mini chat+activityId）", false).with_mp(),
         // ── 需本人操作 ──
         "Expert_Philanthropy" => TaskSpec::unforgeable("真实捐款动作"),
@@ -165,7 +175,8 @@ pub async fn ids_for(
         "miniexpert" => Ok(slice(fetch_market_experts(account, false, None).await)),
         // 无载体类型：返回空 id 占位（events.rs 构造时不需要对象）
         "chat" | "glmchat" | "cat" | "automation" | "richmeow" | "buddy5" | "library"
-        | "buddyfirst" | "minichat" | "schoolseason" | "miniautomation" | "miniglmchat" => {
+        | "buddyfirst" | "minichat" | "schoolseason" | "miniautomation" | "miniglmchat"
+        | "playbookcta" => {
             Ok((0..need).map(|_| ObjectId { id: String::new(), meta: Value::Null }).collect())
         }
         other => Err(format!("未知 kind：{other}")),

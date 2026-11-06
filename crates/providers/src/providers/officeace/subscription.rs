@@ -124,6 +124,18 @@ async fn call(
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let payload = serde_json::from_str::<Value>(&text).ok();
+    let upstream_code = payload
+        .as_ref()
+        .and_then(|payload| payload.get("error_code"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let upstream_message = payload
+        .as_ref()
+        .and_then(|payload| payload.get("error_msg"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let expired = payload.as_ref().is_some_and(|payload| {
         let code = payload.get("error_code").and_then(Value::as_str).unwrap_or("");
         let message = payload.get("error_msg").and_then(Value::as_str).unwrap_or("");
@@ -131,12 +143,34 @@ async fn call(
         code == "APIG.0602" && message.to_ascii_lowercase().contains("security token has expired")
             || code == "APIG.1002"
     });
-    if expired || status == 401 || status == 403 {
+    // 401 是鉴权被拒（APIG.0301 与 0303 一族），凭据可能被服务端提前吊销，
+    // 挂续期标记让调用方换新凭据重试一次
+    if expired || status == 401 {
         let error = GatewayError::with_status(
             i32::from(status),
             "OfficeAce 控制面凭据已失效（临时 AK/SK 会过期）：请重新登录一次",
         );
-        return Err(if expired { error.with_code(CONTROL_TOKEN_EXPIRED) } else { error });
+        return Err(error.with_code(CONTROL_TOKEN_EXPIRED));
+    }
+    // 403 是订阅状态的业务拒绝（如 OfficeAce.11020604 未订购套餐），归为中性
+    // 结果，不引导重新登录，也不挂续期标记——重新登录改变不了订阅状态
+    if status == 403 {
+        let detail = if upstream_code.is_empty() {
+            excerpt(&text)
+        } else {
+            format!("{upstream_message}（{upstream_code}）")
+        };
+        let detail = if detail.is_empty() {
+            "上游未给出错误详情".to_string()
+        } else {
+            detail
+        };
+        return Err(GatewayError::with_status(
+            403,
+            format!(
+                "OfficeAce 控制面拒绝（403）：{detail}；未订购套餐时没有可领的奖励，重新登录不改变结果"
+            ),
+        ));
     }
     if status != 200 {
         return Err(GatewayError::with_status(

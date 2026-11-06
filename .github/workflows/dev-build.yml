@@ -1,0 +1,105 @@
+name: dev-build
+
+# 手动触发的开发构建：Windows 与 Linux amd64 编译打包，产物挂到草稿 Release。
+#
+# 与上游 build.yml 的关系：上游那条只向独立构建仓库派发，本仓库自身不编译，
+# fork 里也没有那个构建仓库的 secrets。开发迭代需要点一下就有一套可用产物，
+# 所以这条工作流把编译搬回本仓库自跑，它不替代发版流程：正式发版仍然走
+# tag、构建仓库、官方签名那条路
+#
+# 签名：配了 AGENT2API_PLUGIN_KEY secret 就出签名包，没配则保持未签名
+# （复合 action 只告警不失败），未签名包网关允许安装，界面标黄
+#
+# 产物：两个 agent2api-providers-<version>-<target>.zip，目录结构与
+# scripts/pack.mjs 的契约一致（pack.json + bin/<三元组入口> + ui/ +
+# licenses/），可在网关「提供商插件 → 安装插件包」直接安装，
+# 平台口径：Docker 部署只出 amd64 镜像，对应 x86_64-unknown-linux-gnu，
+# Windows 走 msvc 原生
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空 = pack.json 里的 version，tag 会带 -ci.<序号> 后缀）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 编译 release 产物
+        run: cargo build --release -p agent2api-providers
+
+      - name: 打包
+        run: node scripts/pack.mjs --target ${{ matrix.target }} --skip-build
+
+      - name: 签名（配了密钥才生效）
+        uses: ./.github/actions/sign-pack
+        with:
+          key: ${{ secrets.AGENT2API_PLUGIN_KEY }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pack-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 计算版本号与 tag
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="$INPUT_VERSION"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(node -p "require('./pack.json').version")"
+          fi
+          case "$VERSION" in
+            ''|*[!0-9A-Za-z.+-]*) echo "版本号不合法: $VERSION" >&2; exit 1 ;;
+          esac
+          TAG="v${VERSION}-ci.${GITHUB_RUN_NUMBER}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 发布草稿 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --draft \
+            --title "dev build ${{ steps.meta.outputs.tag }}" \
+            --notes "手动触发的开发构建，未签名时网关安装会标黄" \
+            dist/*.zip

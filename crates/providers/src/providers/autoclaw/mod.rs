@@ -691,9 +691,15 @@ async fn persist_refresh(
     }
     let account_id = refreshed.id.as_str();
     let record = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    // 记录里必须仍是刷新前那份凭证，否则说明别处已经换过（不回写）
-    let current_token = crate::store::pick(&record, &["token", "accessToken"]);
-    let current_refresh = crate::store::pick(&record, &["refreshToken"]);
+    // 记录里必须仍是刷新前那份凭证，否则说明别处已经换过（不回写）。
+    // 登录链路落库的令牌可能带 `Bearer ` 前缀，凭证快照读取时统一剥掉，
+    // 比较两侧必须同口径，否则同一份凭证会被误判成「已换过」而跳过回写
+    let current_token = crate::crypto::strip_bearer(&crate::store::pick(
+        &record,
+        &["token", "accessToken"],
+    ));
+    let current_refresh =
+        crate::crypto::strip_bearer(&crate::store::pick(&record, &["refreshToken"]));
     if current_token != previous.token || current_refresh != previous.refresh_token {
         if current_token.is_empty() {
             return Err(GatewayError::with_status(409, "AutoClaw 续期时账号凭据发生变化，请重新登录"));
@@ -726,7 +732,11 @@ async fn persist_refresh(
         return Ok(refreshed.token.clone());
     }
     let latest = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    let token = crate::store::pick(&latest, &["token", "accessToken"]);
+    // 与上面的比较同口径：库里可能带前缀，比较与返回都按剥前缀后的值
+    let token = crate::crypto::strip_bearer(&crate::store::pick(
+        &latest,
+        &["token", "accessToken"],
+    ));
     if token.is_empty() || token == previous.token {
         return Err(GatewayError::with_status(409, "AutoClaw 续期结果未能落盘，请重新登录该账号"));
     }

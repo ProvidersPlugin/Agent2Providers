@@ -477,6 +477,47 @@ pub async fn light_up(
             }
             None
         }
+        // 灵感功能闭环（Sequential_Tasks_7）：桌面对话链 + 灵感详情页点击 + CTA 点击 +
+        // 发送 prompt，四段合成一组发往 chat 域 —— 逐字段对齐参考实现的
+        // `DesktopPlaybookPromptSequence`（该形态实测点亮过 playbook_prompt）。
+        // 案例固定用参考实现实测过的 `pm-gtm-launch-plan`（id/name/type 三者同源）。
+        "playbookcta" => {
+            const CASE_ID: &str = "pm-gtm-launch-plan";
+            const CASE_NAME: &str = "新产品上市 GTM 发布计划一页纸";
+            for index in 0..need.max(1) {
+                let now = now_ms();
+                let conv = format!("wb-run-pb-{now}-{index}");
+                let req = format!("wb-run-pb-req-{now}-{index}");
+                let msg = format!("msg-pb-{now}-{index}");
+                let mut events = desktop_chat_sequence(account, &conv, &req, &msg);
+                events.push(json!({
+                    "eventCode": "web_element_click", "timestamp": now_ms(), "reportDelay": 0,
+                    "pageName": "playbook_detail", "elementId": "playbook_ctaClick",
+                    "elementName": CASE_NAME, "source": "discover", "userId": account.uid,
+                }));
+                events.push(json!({
+                    "eventCode": "playbook_cta_click", "timestamp": now_ms(), "reportDelay": 0,
+                    "source": "discover", "position": 0,
+                    "id": CASE_ID, "name": CASE_NAME, "type": "document",
+                    "categoryId": "", "categoryName": "", "userId": account.uid,
+                }));
+                events.push(json!({
+                    "eventCode": "playbook_prompt_send", "timestamp": now_ms(), "reportDelay": 0,
+                    "source": "discover", "id": CASE_ID, "name": CASE_NAME, "type": "document",
+                    "categoryId": "", "categoryName": "", "promptLength": 96,
+                    "isOfficial": 1, "conversationId": conv, "requestId": req,
+                    "userId": account.uid,
+                }));
+                if let Err(error) = report_desktop_events(account, &events).await {
+                    return Some(error);
+                }
+                if index + 1 < need.max(1) {
+                    tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
+                        .await;
+                }
+            }
+            None
+        }
         // 五连 Buddy 事件；失败降级为单发 buddyapp_enter_click（旧形状兜底）
         "buddy5" => {
             let (buddy_id, buddy_name) = buddy_app_of(code);
@@ -515,13 +556,24 @@ pub async fn light_up(
         }
         // MP 事件组：走 billing 域 /v2/report（mp 指纹在 body 里）
         "minichat" | "miniexpert" | "miniautomation" | "miniglmchat" => {
-            for (index, object) in objects.iter().enumerate().take(need.max(1)) {
+            let count = need.max(1);
+            // 只有「minichat 且要发多条」才是对话计数任务（`_3` ×5 / `_6` ×10）：
+            // 这类进度由上游按真人节奏累计，间隔必须拉到 `MP_CHAT_GAP_MS`，否则会被
+            // 先计数后回滚（参考实现实测；见该常量的注释）。其余 mp 事件保持 1.2 秒。
+            let gap = if kind == "minichat" && count > 1 {
+                super::MP_CHAT_GAP_MS
+            } else {
+                super::GROWTH_WRITE_GAP_MS
+            };
+            for (index, object) in objects.iter().enumerate().take(count) {
                 let event = build_event(account, kind, object, index);
                 if let Err(error) = report_mp_event(account, &event).await {
                     return Some(error);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
-                    .await;
+                // 末尾不再空等：最后一条上报完直接去回读/领奖
+                if index + 1 < count {
+                    tokio::time::sleep(std::time::Duration::from_millis(gap)).await;
+                }
             }
             None
         }

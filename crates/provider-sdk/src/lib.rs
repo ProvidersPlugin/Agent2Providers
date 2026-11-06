@@ -33,6 +33,7 @@
 
 mod checkin;
 pub mod ctx;
+pub mod egress;
 mod errors;
 pub mod extensions;
 pub mod images;

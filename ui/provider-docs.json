@@ -293,6 +293,24 @@
         "pt-BR": "Exibe percentuais restantes das janelas de cota por grupo de modelos, não saldo em dinheiro."
       }]
     },
+    "quwork": {
+      "capabilities": {
+        "chat": { "status": "implemented_unverified" },
+        "refresh": { "status": "implemented_unverified" },
+        "model_refresh": { "status": "implemented_unverified" },
+        "usage": { "status": "implemented_unverified" },
+        "checkin": { "status": "implemented_unverified" },
+        "claims": { "status": "implemented_unverified" }
+      },
+      "notes": [{
+        "zh-CN": "基于 QuWork 1.6.0 与官方公开目录实现，尚未使用真实账号验证。本机导入只保存引用，不改官方文件；远程可粘贴凭证 JSON。模型凭证 llmToken 与登录凭证 accessToken 分开，后者用于续期、积分和奖励。每日奖励先查后领，结果不明不重复提交；月度赠送只读展示；权益兑换需填写兑换码或订单号并确认，兑换码激活需要原客户端设备标识。",
+        "zh-Hant": "依據 QuWork 1.6.0 與官方公開目錄實作，尚未以真實帳號驗證。本機匯入僅儲存參照，不改官方檔案；遠端可貼上憑證 JSON。模型憑證 llmToken 與登入憑證 accessToken 分開，後者用於續期、積分和獎勵。每日獎勵先查後領，結果不明不重複提交；月度贈送僅供查閱；權益兌換須填寫兌換碼或訂單號並確認，兌換碼啟用需要原用戶端裝置識別。",
+        "en": "Implemented against QuWork 1.6.0 and its public catalog; not validated with a real account. Local import stores a read-only reference; remote users can paste credential JSON. Model calls use llmToken; renewal, credits and rewards use accessToken. Daily rewards check status first and never repeat uncertain claims. Monthly gifts are read-only. Redemption requires a code or order number and confirmation; code activation needs the original client's device identity.",
+        "ja": "QuWork 1.6.0 と公式公開一覧を基に実装し、実アカウントでは未検証です。本機の取り込みは参照のみを保存し、公式ファイルは変更しません。リモートでは認証 JSON を貼り付けられます。モデルは llmToken、更新・ポイント・報酬は accessToken を使用します。日次報酬は事前に状態を確認し、不明な結果を再送しません。月次付与は閲覧のみです。引き換えはコードまたは注文番号と確認が必要で、コードの有効化には元のクライアントのデバイス識別情報が必要です。",
+        "ko": "QuWork 1.6.0과 공식 공개 목록을 기반으로 구현했으며 실제 계정으로 검증하지 않았습니다. 로컬 가져오기는 읽기 전용 참조만 저장하며 공식 파일을 변경하지 않습니다. 원격에서는 인증 JSON을 붙여 넣을 수 있습니다. 모델 호출은 llmToken, 갱신·포인트·보상은 accessToken을 사용합니다. 일일 보상은 상태를 먼저 확인하고 불확실한 요청은 재전송하지 않습니다. 월별 지급은 조회 전용입니다. 교환에는 코드 또는 주문 번호와 확인이 필요하며 코드 활성화에는 원래 클라이언트의 장치 식별 정보가 필요합니다.",
+        "pt-BR": "Implementado com base no QuWork 1.6.0 e no catálogo público; não validado com conta real. A importação local salva apenas uma referência de leitura, sem alterar arquivos oficiais. Remotamente, cole as credenciais JSON. Modelos usam llmToken; renovação, pontos e recompensas usam accessToken. Recompensas diárias consultam o estado antes e não repetem envios incertos. Presentes mensais são somente leitura. O resgate exige código ou número do pedido e confirmação; ativar códigos exige a identidade do dispositivo do cliente original."
+      }]
+    },
     "doubaowork": {
       "capabilities": {
         "refresh": { "status": "unsupported" }

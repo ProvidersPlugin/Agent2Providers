@@ -94,6 +94,7 @@ impl ChatSession {
             },
             language: options.language.to_string(),
             id: id.clone(),
+            client: crate::http::control_client(None, "direct"),
         };
         let accepted = heartbeat.send("busy").await;
         match accepted {
@@ -170,6 +171,7 @@ struct Heartbeat {
     credential: Credential,
     language: String,
     id: String,
+    client: reqwest::Client,
 }
 
 impl Heartbeat {
@@ -198,7 +200,7 @@ impl Heartbeat {
             true, // 心跳签名带 Host —— 与区域 API 不同，别统一
         )
         .map_err(|reason| GatewayError::with_status(500, reason))?;
-        let mut request = crate::http::control_client(None, "direct")
+        let mut request = self.client
             .put(&endpoint)
             .timeout(Duration::from_secs(30))
             .body(b"{}".to_vec());

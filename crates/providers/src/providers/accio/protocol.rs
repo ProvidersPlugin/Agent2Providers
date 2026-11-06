@@ -77,7 +77,9 @@ const QUOTA_HINTS: &[&str] = &[
 ];
 
 /// 鉴权类信号
-const AUTH_HINTS: &[&str] = &["unauthorized", "not logged in", "invalid token", "token expired", "invalid_token"];
+const AUTH_HINTS: &[&str] = &[
+    "unauthorized", "not logged in", "not_login", "invalid token", "token expired", "invalid_token",
+];
 
 /// 上游错误的粗分类（转发层据此决定换账号 / 刷新 / 透传）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -98,7 +100,7 @@ pub enum UpstreamKind {
 /// 普通的 400 直接透传给客户端 —— 账号页不会进冷却，下一个请求还会选它。
 pub fn classify_upstream_error(status: u16, message: &str) -> UpstreamKind {
     let lower = message.to_ascii_lowercase();
-    if status == 401 || status == 403 {
+    if status == 401 {
         return UpstreamKind::Auth;
     }
     if status == 429 {

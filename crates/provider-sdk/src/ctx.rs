@@ -100,7 +100,10 @@ impl PluginCtx {
     ) -> Result<StoreAccount, StoreError> {
         let params = serde_json::json!({ "provider": provider, "account": account });
         let value = self.call.call(proto::methods::plugin::STORE_GET, params).await?;
-        serde_json::from_value(value).map_err(|e| StoreError::Unavailable(format!("返回形状不对: {e}")))
+        let mut account: StoreAccount = serde_json::from_value(value)
+            .map_err(|e| StoreError::Unavailable(format!("返回形状不对: {e}")))?;
+        crate::egress::apply(&mut account);
+        Ok(account)
     }
 
     /// 列出一个 provider 的全部账号。

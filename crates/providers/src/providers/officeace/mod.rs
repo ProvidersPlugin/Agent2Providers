@@ -42,6 +42,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! 本 crate 编译期禁止 unwrap/expect/panic（见 `main.rs` 的 deny）。
 
+mod activation;
 pub mod balance;
 pub mod chat;
 pub mod checkin;
@@ -387,6 +388,24 @@ impl Provider for OfficeAceProvider {
         })
     }
 
+    fn admin_action<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        action: &'a str,
+        _payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            match action {
+                "subscription.preview" => activation::preview(ctx, account).await,
+                "subscription.ensure" => activation::ensure(ctx, account).await,
+                _ => Err(agent2api_provider_sdk::unsupported(format!(
+                    "该提供商没有实现管理动作「{action}」"
+                ))),
+            }
+        })
+    }
+
     // ── 账号 ──────────────────────────────────────────────────
 
     /// 添加账号：手工导入网关凭据（`baseUrl` + `modelAppKey` / `modelAppSecret`）。
@@ -666,6 +685,19 @@ async fn normalize(input: proto::NormalizeInput) -> Result<proto::NormalizedAcco
     }
     if credential.expires_at > 0 {
         secret["expiresAt"] = Value::from(credential.expires_at);
+    }
+    let refresh_token = crate::store::pick(&payload, &["refreshToken", "refresh_token"]);
+    if !refresh_token.is_empty() {
+        secret["refreshToken"] = Value::String(refresh_token);
+    }
+    if let Some(key_pair) = payload.get("dpopKeyPair").filter(|value| value.is_object()) {
+        secret["dpopKeyPair"] = key_pair.clone();
+    }
+    for key in ["accountId", "principalId", "accountName"] {
+        let value = crate::store::pick(&payload, &[key]);
+        if !value.is_empty() {
+            secret[key] = Value::String(value);
+        }
     }
     if let Some(name) = input
         .name

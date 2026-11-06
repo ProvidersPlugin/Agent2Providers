@@ -64,6 +64,8 @@ pub mod doubaowork;
 pub mod kiro;
 #[cfg(feature = "astudio")]
 pub mod astudio;
+#[cfg(feature = "quwork")]
+pub mod quwork;
 
 use agent2api_provider_sdk::BoxProvider;
 
@@ -185,6 +187,9 @@ pub fn registry() -> Vec<BoxProvider> {
 
     #[cfg(feature = "astudio")]
     list.push(Box::new(astudio::AStudioProvider));
+
+    #[cfg(feature = "quwork")]
+    list.push(Box::new(quwork::QuWorkProvider));
 
     list
 }

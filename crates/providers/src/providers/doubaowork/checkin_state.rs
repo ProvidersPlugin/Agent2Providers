@@ -11,11 +11,23 @@ const RETRY_GAP_MS: i64 = 10 * 60 * 1000;
 const CONFIRM_WINDOW_MS: i64 = 30 * 60 * 1000;
 const MAX_ROUNDS: u32 = 4;
 
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ClaimEndpoint {
+    #[default]
+    ItemReward,
+    LandingCheckin,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Attempt {
     pub group: String,
     pub item: String,
+    #[serde(default)]
+    pub endpoint: ClaimEndpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_failure: Option<i64>,
     pub submitted_at: i64,
     pub rounds: u32,
     pub points: Option<f64>,

@@ -238,7 +238,12 @@ pub async fn refresh_session(
     let session = json!({ "auth": auth, "account": auth.get("account").unwrap_or(&Value::Null) });
     let mut headers = super::contract::framework_headers(&session, region, false);
     headers.push(("X-Refresh-Token".to_string(), refresh_token.to_string()));
-    let url = context.auth_url("/auth/token/refresh");
+    // 续期路由在 `/v2/plugin/auth/token/refresh`：少了 `plugin` 这一段会命中上游
+// 网关的兜底路由，返回 404「Route Not Found」（不是 401，也不是凭证问题）。
+// 实测（2026-11-06，直连）：`/v2/auth/token/refresh` → 404；
+// `/v2/plugin/auth/token/refresh` → 401（路由存在，仅 token 无效）。国内站与
+// 国际站结果一致。
+let url = context.auth_url("/plugin/auth/token/refresh");
     let response = send_raw("POST", &url, Some(&json!({})), &headers, proxy,
         Some(if region == super::Region::Cn { 8_000 } else { 30_000 }))
         .await

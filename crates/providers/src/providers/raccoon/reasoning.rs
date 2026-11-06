@@ -3,6 +3,25 @@
 use agent2api_provider_protocol as proto;
 use serde_json::{json, Value};
 
+/// 上游（`/api/web/llm/v2/chat/completions`）接受的思考档位值。
+///
+/// 实测（2026-11-04，直连上游）：`minimal` / `low` / `medium` / `high` /
+/// `xhigh` / `max` / `ultra` 均返回 200，且思考量随档位变化
+/// （同一提示词：low → reasoning 89 tokens，max → 142）；
+/// `off` 与表外值返回 400（`invalid_request_error`）。
+///
+/// 上游只认 `reasoning_effort` 这个键名 —— 传 `effort` 直接 400
+/// （`Unexpected keyword argument 'effort'`）。
+const SUPPORTED_EFFORTS: &[&str] = &[
+    "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+fn is_supported_effort(value: &str) -> bool {
+    SUPPORTED_EFFORTS
+        .iter()
+        .any(|known| value.eq_ignore_ascii_case(known))
+}
+
 fn model_name(model: &str) -> String {
     model
         .rsplit('/')
@@ -51,8 +70,14 @@ pub(super) fn patch(level: &str, model: &str, body: &Value) -> proto::ReasoningP
     let Some(rank) = crate::reasoning::effort_rank(level) else {
         return skip("关闭思考或未知档位不注入绑定");
     };
+    // 表外档位上游会 400（`invalid_request_error`），别把它送上去。
+    if !is_supported_effort(level) {
+        return skip("该思考等级上游不接受，不注入");
+    }
     let (field, value) = match family(model) {
-        "thinking" => ("thinking", json!({ "type": "enabled" })),
+        // 「thinking」家族上游认 `reasoning_effort`，注入**档位名**而不是只给
+        // 一个「开思考」的开关 —— 否则映射上配的档位到了上游就丢了。
+        "thinking" => ("reasoning_effort", json!(level)),
         "low_high" => (
             "reasoning_effort",
             json!(if rank <= 1 { "low" } else { "high" }),
@@ -91,13 +116,26 @@ pub(super) fn normalize(body: &Value, model: &str) -> Value {
         // high。只有「关闭思考」两档才改写成 `thinking.disabled`：`none` / `off`
         // 不是所有上游都认，而开关能明确表达关闭。
         "thinking" if !fields.get("thinking").is_some_and(|value| !value.is_null()) => {
-            let off = fields
+            let effort = fields
                 .get("reasoning_effort")
                 .and_then(Value::as_str)
-                .is_some_and(crate::reasoning::is_thinking_off);
-            if off {
-                fields.remove("reasoning_effort");
-                fields.insert("thinking".to_string(), json!({ "type": "disabled" }));
+                .map(str::to_string);
+            match effort {
+                Some(effort) if crate::reasoning::is_thinking_off(&effort) => {
+                    fields.remove("reasoning_effort");
+                    fields.insert("thinking".to_string(), json!({ "type": "disabled" }));
+                }
+                Some(effort) if is_supported_effort(&effort) => {
+                    // 原样保留：档位名要一路带到上游，也带到网关的日志里。
+                    fields.insert("reasoning_effort".to_string(), json!(effort));
+                }
+                Some(_) => {
+                    // 表外值上游会 400（`invalid_request_error`）—— 删掉它，
+                    // 退回「开思考」的默认形态，至少请求不会整个失败。
+                    fields.remove("reasoning_effort");
+                    fields.insert("thinking".to_string(), json!({ "type": "enabled" }));
+                }
+                None => {}
             }
         }
         "low_high" => {
@@ -130,12 +168,21 @@ pub(super) fn normalize(body: &Value, model: &str) -> Value {
 }
 
 pub(super) fn outbound(body: &Value) -> Option<String> {
+    // 优先读 `reasoning_effort` —— 那是真正随请求发出的档位（上游认这个键名，
+    // `normalize()` 会保留它）。
+    //
+    // 只有当出站体里确实**没有任何**档位信息时，才从 `thinking.type` 反推：
+    // 「开了思考但没有具体档位」是一个真实存在的状态，报成 "high" 会让网关的
+    // 请求日志显示一个上游并未收到的档位 —— 用户看到 (high) 会以为上游收到了
+    // high，实际上它只收到了「开思考」。
+    //
+    // 这里返回 `None`（= 没有等级随行），与网关侧 `upstream_reasoning` 文档里
+    // 「空串 = 没有等级随行」的定义一致。
     body.get("reasoning_effort")
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(
             || match body.pointer("/thinking/type").and_then(Value::as_str) {
-                Some("enabled") => Some("high".to_string()),
                 Some("disabled") => Some("off".to_string()),
                 _ => None,
             },

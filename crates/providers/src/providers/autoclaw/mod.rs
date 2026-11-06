@@ -438,8 +438,7 @@ impl Provider for AutoClawProvider {
 
     /// 查积分 + 订阅（`balance.rs`：资产钱包 + `subscribe-info` 合成一次调用）。
     ///
-    /// 两条链路都在 userapi 域、都带那套 `X-Auth-Sign` 签名头 + Bearer，且源
-    /// 实现是裸 fetch（不走账号代理）—— 与刷新接口同一取舍。
+    /// 两条链路都在 userapi 域，带同一套 `X-Auth-Sign` 签名头与 Bearer。
     fn quota_sources(&self, report: &Value) -> Vec<Value> {
         crate::quota::sources(&self.meta().id, report)
     }
@@ -691,14 +690,10 @@ async fn persist_refresh(
     }
     let account_id = refreshed.id.as_str();
     let record = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    // 记录里必须仍是刷新前那份凭证，否则说明别处已经换过（不回写）
-    let current_token = crate::store::pick(&record, &["token", "accessToken"]);
-    let current_refresh = crate::store::pick(&record, &["refreshToken"]);
-    if current_token != previous.token || current_refresh != previous.refresh_token {
-        if current_token.is_empty() {
-            return Err(GatewayError::with_status(409, "AutoClaw 续期时账号凭据发生变化，请重新登录"));
-        }
-        return Ok(current_token);
+    // 两份凭证必须按相同规则解析；原始 secret 仍用于后续的原子条件写入。
+    let current = credentials::credentials_from_record(&record, refreshed.region)?;
+    if current.token != previous.token || current.refresh_token != previous.refresh_token {
+        return Ok(current.token);
     }
     let mut next = crate::store::secret_view(&record);
     // 两套键同时写：`token` / `tokenExpiresAt` 是本插件与旧投影的口径，
@@ -726,11 +721,11 @@ async fn persist_refresh(
         return Ok(refreshed.token.clone());
     }
     let latest = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    let token = crate::store::pick(&latest, &["token", "accessToken"]);
-    if token.is_empty() || token == previous.token {
+    let current = credentials::credentials_from_record(&latest, refreshed.region)?;
+    if current.token == previous.token && current.refresh_token == previous.refresh_token {
         return Err(GatewayError::with_status(409, "AutoClaw 续期结果未能落盘，请重新登录该账号"));
     }
-    Ok(token)
+    Ok(current.token)
 }
 
 // ─── 请求头 ────────────────────────────────────────────────────

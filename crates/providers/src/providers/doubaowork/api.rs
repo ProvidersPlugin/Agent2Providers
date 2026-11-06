@@ -22,9 +22,7 @@ pub fn client(
 ) -> Result<reqwest::Client, GatewayError> {
     type Key = (String, Option<crate::timeouts::Timeouts>);
     static CLIENTS: OnceLock<Mutex<HashMap<Key, reqwest::Client>>> = OnceLock::new();
-    let proxy = proxy
-        .map(proto::WireProxy::to_url)
-        .unwrap_or_else(|| gateway_proxy.trim().to_string());
+    let proxy = crate::http::proxy_url(proxy, gateway_proxy);
     let timeouts = stream.then(crate::timeouts::current);
     let key = (proxy.clone(), timeouts);
     let clients = CLIENTS.get_or_init(Mutex::default);

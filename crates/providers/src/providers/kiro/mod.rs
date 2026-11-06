@@ -183,8 +183,8 @@ impl Provider for KiroProvider {
         Box::pin(async move {
             let mut account_id = account.to_string();
             if account_id.is_empty() {
-                if let Ok((id, _)) = refresh::ensure(ctx, "").await {
-                    account_id = id;
+                if let Ok(stored) = ctx.store_get(PROVIDER_ID, "").await {
+                    account_id = stored.id;
                 }
             }
             Ok(models::list(&account_id))

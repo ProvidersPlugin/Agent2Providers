@@ -8,8 +8,8 @@
 //! ── 为什么不用 `auth_http::send_raw` ─────────────────────────
 //! `send_raw` 在 body 非空时会**自己补一个 `Content-Type`**，而签名要求
 //! `content-type` 以**同一个值**进签名头集合 —— 两条路一起走会发成两个
-//! `Content-Type`。照 `codearts::welfare` 的先例：用直连客户端（`crate::http::client`）
-//! 直接发，显式带上签名算出的全套头（`Host` 由签名层从 URL 注入，见 `signer`）。
+//! `Content-Type`。使用账号出口的客户端直接发，显式带上签名算出的全套头
+//! （`Host` 由签名层从 URL 注入，见 `signer`）。
 //!
 //! ── 三条实测坑（写在这里，别在别处重推）──────────────────────
 //!   1. 领奖励 `POST /v1/subscription/bonus/claim` **必须** body 给 `{}` 且带
@@ -99,8 +99,6 @@ async fn call(
         date_override: None,
     })
     .map_err(|reason| GatewayError::with_status(500, format!("OfficeAce 订阅请求签名失败：{reason}")))?;
-    // 直连客户端（不套账号代理）：控制面与 LLM 域是两个站点，与网关那份同一取舍。
-    // `crate::http::control_client(None, "direct")` 就是网关 `egress::client_for(None)` 的等价物。
     let client = crate::http::control_client(None, "direct");
     let built = match method {
         "POST" => client

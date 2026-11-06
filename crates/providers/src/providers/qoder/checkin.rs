@@ -26,7 +26,7 @@
 //!   - **领取后活动行不消失**，`claimStatus` 由 `CLAIMABLE` 变 `CLAIMED`。
 //!     所以「今天已领取」直接从活动列表读，不需要本地记账；
 //!   - 顶层的 `claimable` 标志**不能当判据**：领完之后它仍是 `true`（同账号还有一条
-//!     可领的促销活动），必须按 `actionType` 逐行筛。
+//!     可领的促销活动），必须逐行确认每日权益；Sonus 等限时活动单独手动领取。
 //!
 //! ── 国际版为什么要两段拉取（issue #140，CreditDaddy 实测结论）──
 //! 国际版服务端**只对带设备风控头**（`Cosy-MachineToken` / `Cosy-MachineCode` /
@@ -57,15 +57,12 @@ use serde_json::{json, Value};
 
 use agent2api_provider_sdk::PluginCtx;
 use crate::http::ApiResponse;
-use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::errors::GatewayError;
 
-use super::credentials::Credentials;
-use super::{auth, endpoints, refresh, risk};
+use super::auth;
+use super::campaigns::{self, campaign_time, CampaignSession};
 use super::endpoints::Site;
 
-/// 活动类型：可领取权益（促销类活动是 `VIEW_DETAILS`，不是签到，不能领）
-const ACTION_CLAIM_BENEFIT: &str = "CLAIM_BENEFIT";
 /// 活动状态：可领取
 const STATUS_CLAIMABLE: &str = "CLAIMABLE";
 /// 活动状态：已领取
@@ -105,44 +102,19 @@ pub async fn claim_daily_checkin(
     if site == Site::QoderIntl && crate::http::now_ms() < daily_window_start() {
         return Ok(no_claim(site, false, None));
     }
-    let credentials = refresh::ensure_fresh(ctx, site, account_id, false).await?;
-    let (record, _) = refresh::snapshot(ctx, site, account_id).await?;
-    let proxy = auth::account_proxy(&record)?;
-    let response = fetch_campaigns(&credentials, proxy.as_ref()).await?;
-    let list = auth::payload(response, "签到活动查询")?;
-
-    // ── 国际版：先拿顶层 uid，叠风控头重拉一次（中国版不需要）────
-    // 401 重拉后的重试同样要叠头 —— 那时令牌换了，但流程不变。
-    let mut headers = endpoints::sash_headers(&credentials.access_token);
-    let mut risk_note: Option<String> = None;
-    if site == Site::QoderIntl {
-        let uid = list.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
-        let (augmented, note) = risk::augment_headers(headers, site, &uid).await;
-        headers = augmented;
-        risk_note = note;
-        let second = fetch_campaigns_with(&credentials, proxy.as_ref(), &headers).await?;
-        let second = auth::payload(second, "签到活动查询（风控重拉）")?;
-        return claim_from(site, credentials, proxy, second, risk_note).await;
-    }
-
-    claim_from(site, credentials, proxy, list, risk_note).await
+    let session = campaigns::load(ctx, site, account_id).await?;
+    claim_from(site, session).await
 }
 
 /// 活动列表解析 + 领取（两个地区共用的收尾）。
-async fn claim_from(
-    site: Site,
-    credentials: Credentials,
-    proxy: Option<ResolvedProxy>,
-    list: Value,
-    risk_note: Option<String>,
-) -> Result<Value, GatewayError> {
-    let rows = list.get("campaigns").and_then(Value::as_array)
+async fn claim_from(site: Site, session: CampaignSession) -> Result<Value, GatewayError> {
+    let rows = session.list.get("campaigns").and_then(Value::as_array)
         .ok_or_else(|| GatewayError::with_status(502, format!("{} 签到活动响应缺少 campaigns，未确认领取状态", site.display_name())))?;
 
     let mut claimable: Option<&Value> = None;
     let mut claimed = false;
     for row in rows {
-        if row.get("actionType").and_then(Value::as_str) != Some(ACTION_CLAIM_BENEFIT) {
+        if !campaigns::is_daily(row) {
             continue;
         }
         let now = crate::http::now_ms();
@@ -162,32 +134,20 @@ async fn claim_from(
     }
 
     let Some(target) = claimable else {
-        return Ok(no_claim(site, claimed, risk_note));
+        return Ok(no_claim(site, claimed, session.risk_note));
     };
     let campaign_id = target.get("campaignId").and_then(Value::as_str).unwrap_or("");
     if campaign_id.is_empty() {
         return Err(GatewayError::with_status(502, format!("{} 签到活动缺少活动标识，无法领取", site.display_name())));
     }
 
-    let url = format!(
-        "{}{}/{}/claim",
-        site.open_api(),
-        endpoints::CAMPAIGNS_PATH,
-        campaign_id
-    );
-    let mut headers = endpoints::sash_headers(&credentials.access_token);
-    if site == Site::QoderIntl {
-        let uid = list.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
-        let (augmented, _) = risk::augment_headers(headers, site, &uid).await;
-        headers = augmented;
-    }
-    let claim = claim_campaign(&url, &credentials, proxy.as_ref(), &headers).await?;
+    let claim = campaigns::submit(&session, campaign_id).await?;
     // 409 只有带 ALREADY_CLAIMED 才能证明已领；401 交给 SDK 统一刷新重试一次。
     if matches!(claim.status, 200..=299 | 409)
         && result_of(&claim).as_deref() == Some(RESULT_ALREADY_CLAIMED) {
         return Ok(json!({ "success": false, "alreadyCompleted": true, "msg": "今日已领取" }));
     }
-    let body = auth::payload(claim, "签到领取")?;
+    let body = campaigns::unwrap_data(auth::payload(claim, "签到领取")?);
 
     if body.get("status").and_then(Value::as_str) != Some(STATUS_CLAIMED) {
         let status = body.get("status").and_then(Value::as_str).unwrap_or("未知");
@@ -225,47 +185,11 @@ async fn claim_from(
     }))
 }
 
-/// 活动列表（默认头束：`forceRefresh` 拿实时 `claimStatus`）。
-async fn fetch_campaigns(
-    credentials: &Credentials,
-    proxy: Option<&ResolvedProxy>,
-) -> Result<ApiResponse, GatewayError> {
-    let headers = endpoints::sash_headers(&credentials.access_token);
-    fetch_campaigns_with(credentials, proxy, &headers).await
-}
-
-/// 活动列表（指定头束 —— 国际版第二段要叠风控头）。
-async fn fetch_campaigns_with(
-    credentials: &Credentials,
-    proxy: Option<&ResolvedProxy>,
-    headers: &[(String, String)],
-) -> Result<ApiResponse, GatewayError> {
-    let url = format!(
-        "{}{}{}",
-        credentials.site.open_api(),
-        endpoints::CAMPAIGNS_PATH,
-        endpoints::CAMPAIGNS_QUERY
-    );
-    auth::request("GET", &url, None, headers, proxy).await
-}
-
-/// 领取一个活动。请求体是空对象（抓包确认：无参数），`Origin` 指向该地区门户
-/// （参考实现只在 POST 上带它）。
-async fn claim_campaign(
-    url: &str,
-    credentials: &Credentials,
-    proxy: Option<&ResolvedProxy>,
-    headers: &[(String, String)],
-) -> Result<ApiResponse, GatewayError> {
-    let mut headers = headers.to_vec();
-    headers.push(("content-type".to_string(), "application/json".to_string()));
-    headers.push(("origin".to_string(), credentials.site.open_api().to_string()));
-    auth::request("POST", url, Some(&json!({})), &headers, proxy).await
-}
-
 /// 领取响应的 `result` 字段（并发/重放标记），拿不到给 None。
 fn result_of(response: &ApiResponse) -> Option<String> {
-    let value = response.payload.as_ref()?.get("result")?.as_str()?.trim();
+    let payload = response.payload.as_ref()?;
+    let body = payload.get("data").filter(|value| value.is_object()).unwrap_or(payload);
+    let value = body.get("result")?.as_str()?.trim();
     if value.is_empty() {
         None
     } else {
@@ -294,14 +218,6 @@ const RETRY_GAP_MS: i64 = 10 * 60_000;
 /// 留 1 小时（足够覆盖上游延迟下发）就给出终态：如实说「今天没有可领的」，
 /// **不再带 `retryAt`**，网关据此把它移出重试名单。
 const RETRY_GRACE_MS: i64 = 60 * 60_000;
-
-fn campaign_time(value: Option<&Value>) -> Option<i64> {
-    let value = value?;
-    if let Some(number) = value.as_i64().or_else(|| value.as_str()?.parse().ok()) {
-        return Some(if number.unsigned_abs() < 100_000_000_000 { number.saturating_mul(1000) } else { number });
-    }
-    chrono::DateTime::parse_from_rfc3339(value.as_str()?).ok().map(|time| time.timestamp_millis())
-}
 
 /// 「这次没领到」的结果：区分「今天已领」「没有可领的活动」与「缺风控身份」。
 fn no_claim(site: Site, claimed: bool, risk_note: Option<String>) -> Value {

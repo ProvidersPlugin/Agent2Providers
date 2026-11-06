@@ -209,6 +209,12 @@
       "label": "AStudio",
       "order": 32,
       "default_enabled": true
+    },
+    {
+      "id": "quwork",
+      "label": "QuWork",
+      "order": 33,
+      "default_enabled": true
     }
   ],
   "icons": "assets",

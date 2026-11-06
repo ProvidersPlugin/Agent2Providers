@@ -395,6 +395,18 @@ impl Serve {
     /// 控制面方法（全部一问一答）。
     async fn handle_control(self: &Arc<Self>, id: i64, method: &str, params: Value) {
         let Some(provider) = self.provider_of(&params) else {
+            self.handle_control_scoped(id, method, params).await;
+            return;
+        };
+        let ctx = self.ctx(&provider.provider_id());
+        match crate::egress::for_request(&ctx, method, &params).await {
+            Ok(route) => crate::egress::scope(route, self.handle_control_scoped(id, method, params)).await,
+            Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
+        }
+    }
+
+    async fn handle_control_scoped(self: &Arc<Self>, id: i64, method: &str, params: Value) {
+        let Some(provider) = self.provider_of(&params) else {
             self.reply_err(
                 id,
                 proto::WireError::with_code(
@@ -636,7 +648,8 @@ impl Serve {
             .await;
             return;
         };
-        let req = match serde_json::from_value::<proto::ConversationRequest>(params) {
+        let ctx = self.ctx(&provider.provider_id());
+        let req = match serde_json::from_value::<proto::ConversationRequest>(params.clone()) {
             Ok(req) => req,
             Err(e) => {
                 self.reply_err(
@@ -658,7 +671,6 @@ impl Serve {
             .await
             .insert(id, Running { cancel: cancel.clone(), credit: credit.clone() });
 
-        let ctx = self.ctx(&provider.provider_id());
         let mut sink = StreamSink {
             host: self.clone(),
             id,
@@ -672,7 +684,10 @@ impl Serve {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Err("调用已被取消".to_string()),
-                result = provider.conversation(&ctx, req, view) => result,
+                result = async {
+                    let route = crate::egress::for_request(&ctx, proto::methods::gateway::CONVERSATION, &params).await?;
+                    crate::egress::scope(route, provider.conversation(&ctx, req, view)).await
+                } => result,
             }
         };
 

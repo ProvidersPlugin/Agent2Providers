@@ -297,8 +297,7 @@ pub(super) fn signed_auth_headers(token: &str) -> Vec<(String, String)> {
 /// 调一次刷新接口（源实现 `callRefreshApi`）：`POST {userapi}{path}`，
 /// body `{refresh_token, source_id: "autoclaw", device_id?}`。
 ///
-/// 鉴权接口**不走账号级代理**：账号代理是给转发（流式长请求）准备的出口，
-/// 鉴权域与 LLM 域是两个站点（与 raccoon 刷新同一取舍）。
+/// 鉴权与转发共用当前账号操作的出口。
 ///
 /// userapi 域由**凭证自己的地区**决定（`credentials.region`）—— 两地的刷新
 /// 接口路径逐字相同，只有域名不同，因此这里不需要第二份路径表。

@@ -158,7 +158,7 @@ impl Provider for DemoProvider {
                 .filter(|value| !value.is_empty())
                 .or_else(|| std::env::var("DEMO_UPSTREAM").ok())
                 .unwrap_or_else(|| "http://127.0.0.1:18080".to_string());
-            let client = reqwest::Client::new();
+            let client = crate::http::stream_client(req.proxy.as_ref(), &ctx.env.proxy);
             let response = client
                 .post(format!("{base}/v1/chat/completions"))
                 .header("content-type", "application/json")

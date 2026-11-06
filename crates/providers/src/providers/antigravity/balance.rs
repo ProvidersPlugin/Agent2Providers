@@ -5,7 +5,7 @@
 //! ```text
 //! POST {base}/v1internal:retrieveUserQuotaSummary
 //!   header Authorization: Bearer {access_token}
-//!          User-Agent: vscode/1.X.X (Antigravity/{ver})   ← 原生 OAuth UA
+//!          User-Agent: antigravity/hub/{ver} (aidev_client; os_type=…; arch=…)
 //!          Content-Type: application/json
 //!          x-goog-user-project: {pid}                      ← project 非空才带
 //!   body   {"project": "<pid>"}（没有 pid 时 `{}`；上游忽略它，Manager 同款）
@@ -23,7 +23,7 @@
 //! `models::fetch_once` 同一套（403 去头重试、429/5xx 换基址）。
 //!
 //! ── 与 Manager 的对照（哪几处照搬、哪几处不同）────────────────
-//!   · 照搬：端点与基址顺序、请求体两形态、原生 OAuth UA、`paidTier` 优先的
+//!   · 照搬：端点与基址顺序、请求体两形态、`paidTier` 优先的
 //!     订阅档取值链、组名去掉结尾 ` Models` 与 `Claude and GPT` → `Claude/GPT`
 //!     （Manager 前端 `AccountTable.tsx` 的 `.replace(/ models?$/i, …)`）；
 //!   · 不同：Manager 把摘要并进它自己的模型配额面板（`quota_groups`），本仓把它
@@ -91,52 +91,11 @@ pub async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gat
         credentials
     };
 
-    let mut last_error = String::new();
-    let mut summary: Option<Value> = None;
-    for base in endpoints::V1_BASE_URLS {
-        match fetch_summary_once(
-            base,
-            &credentials.access_token,
-            &credentials.project_id,
-            proxy.as_ref(),
-        )
-        .await
-        {
-            SummaryAttempt::Ok(payload) => {
-                summary = Some(payload);
-                break;
-            }
-            SummaryAttempt::Retry(reason) => {
-                last_error = reason;
-                logging::verbose(
-                    "[Antigravity]",
-                    &format!("额度摘要换下一个环境重试（{base}）：{last_error}"),
-                );
-            }
-            SummaryAttempt::Fatal { status, detail } => {
-                if status == 401 {
-                    // 上游 401 = 这把 access token 被拒。这里**不自己刷新**：
-                    // `core::usage_query` 的通用链路会调适配器的
-                    // `refresh_access_token` 强制刷一次、再把查询重打一遍 ——
-                    // 手工导入的账号可能没有 `expiresAt`，`expiring()` 判不出来就
-                    // 不会预刷新，这条链路是它唯一的自愈机会（与其余家同一口径）
-                    return Err(GatewayError::with_status(
-                        401,
-                        format!("{}（凭证可能已失效，可重试或重新登录）", failure(&detail)),
-                    ));
-                }
-                return Err(GatewayError::with_status(502, failure(&detail)));
-            }
-        }
-    }
-    let Some(summary_payload) = summary else {
-        let detail = if last_error.is_empty() {
-            "所有环境均不可用".to_string()
-        } else {
-            last_error
-        };
-        return Err(GatewayError::with_status(502, failure(&detail)));
-    };
+    let summary_payload = fetch_summary(
+        &credentials.access_token,
+        &credentials.project_id,
+        proxy.as_ref(),
+    ).await?;
 
     let (wallets, windows, available_view) = wallets_of(&summary_payload);
 
@@ -185,6 +144,38 @@ pub async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gat
     Ok(document)
 }
 
+/// 目录补充与余额查询使用同一账号、同一出口的额度事实。
+pub(super) async fn fetch_summary(
+    access_token: &str,
+    project_id: &str,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Value, GatewayError> {
+    let mut last_error = "所有环境均不可用".to_string();
+    for base in endpoints::V1_BASE_URLS {
+        match fetch_summary_once(base, access_token, project_id, proxy).await {
+            SummaryAttempt::Ok(payload) => return Ok(payload),
+            SummaryAttempt::Retry(reason) => {
+                last_error = reason;
+                logging::verbose(
+                    "[Antigravity]",
+                    &format!("额度摘要换下一个环境重试（{base}）：{last_error}"),
+                );
+            }
+            SummaryAttempt::Fatal { status: 401, detail } => {
+                // 401 保留给宿主的凭证刷新重试，不在此处重复刷新。
+                return Err(GatewayError::with_status(
+                    401,
+                    format!("{}（凭证可能已失效，可重试或重新登录）", failure(&detail)),
+                ));
+            }
+            SummaryAttempt::Fatal { detail, .. } => {
+                return Err(GatewayError::with_status(502, failure(&detail)));
+            }
+        }
+    }
+    Err(GatewayError::with_status(502, failure(&last_error)))
+}
+
 /// 一次额度摘要请求的中间结果（供环境轮询判断要不要换下一条基址）
 enum SummaryAttempt {
     /// 拿到了摘要
@@ -198,10 +189,8 @@ enum SummaryAttempt {
 
 /// 打一次额度摘要（单条基址）。
 ///
-/// 处置与 `models::fetch_once` 同一套（同一台主机、同一组头，请求口径复用
-/// `models::send_json`）：传输失败 / 429 / 5xx 换下一条基址；403 且带了
-/// `x-goog-user-project` 去掉该头重试一次（规格坑 #3）；其余 4xx 是请求本身的
-/// 问题，换域名白撞。
+/// 传输、超时与出口复用 `models::send_json`，请求头使用额度接口的 Hub 身份；
+/// 传输失败 / 429 / 5xx 换基址，403 去掉 project 头重试，其他 4xx 原样失败。
 async fn fetch_summary_once(
     base: &str,
     access_token: &str,
@@ -214,14 +203,24 @@ async fn fetch_summary_once(
     } else {
         json!({ "project": project_id.trim() })
     };
-    let response = match models::send_json(&url, access_token, project_id, &body, proxy).await {
+    let response = match models::send_json(
+        &url,
+        endpoints::quota_headers(access_token, project_id),
+        &body,
+        proxy,
+    ).await {
         Ok(response) => response,
         Err(reason) => return SummaryAttempt::Retry(reason),
     };
     if response.status == 403 && !project_id.trim().is_empty() {
         // 规格坑 #3：403 + 带了 `x-goog-user-project` → 去掉该头重试一次
         // （body 不变：上游对这类方法忽略请求体里的 project 字段）
-        return match models::send_json(&url, access_token, "", &body, proxy).await {
+        return match models::send_json(
+            &url,
+            endpoints::quota_headers(access_token, ""),
+            &body,
+            proxy,
+        ).await {
             Ok(retried) => classify(retried),
             Err(reason) => SummaryAttempt::Retry(reason),
         };
@@ -339,14 +338,7 @@ fn wallets_of(payload: &Value) -> (Vec<Value>, Vec<Value>, String) {
                 // 中文短名，否则英文界面里会冒出一串汉字（与 `zcode::plan_state`
                 // 「状态键由后端给、文案只在前端拼」同一条纪律）
                 let mut row = Map::new();
-                let group_models: Vec<String> = super::models::list().iter().filter_map(|model| {
-                    let id = model.get("id").and_then(Value::as_str)?;
-                    let lower = id.to_ascii_lowercase();
-                    let group = group_name.to_ascii_lowercase();
-                    ((group.contains("gemini") && lower.contains("gemini"))
-                        || (group.contains("claude") && (lower.contains("claude") || lower.contains("gpt"))))
-                        .then(|| id.to_string())
-                }).collect();
+                let group_models = super::argon::quota_models(payload, group, bucket);
                 row.insert("models".to_string(), json!(group_models));
                 row.insert("key".to_string(), Value::String(bucket_key(bucket)));
                 row.insert("label".to_string(), Value::String(display_name.clone()));

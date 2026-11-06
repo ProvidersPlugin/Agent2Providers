@@ -69,7 +69,16 @@ pub async fn refresh(ctx: &PluginCtx, region: Region, account: &str) -> CatalogO
             Ok(proxy) => proxy,
             Err(error) => return CatalogOutcome::failed(error.message),
         };
-        let result = refresh_session(ctx, region, &session, proxy.as_ref()).await;
+        let route = match agent2api_provider_sdk::egress::from_account(entry) {
+            Ok(route) => route,
+            Err(_) => {
+                reason = "账号代理不可用，请检查账号设置".to_string();
+                continue;
+            }
+        };
+        let result = agent2api_provider_sdk::egress::scope(
+            Some(route), refresh_session(ctx, region, &session, proxy.as_ref()),
+        ).await;
         refreshed |= result.refreshed;
         if !result.reason.is_empty() {
             reason = result.reason;

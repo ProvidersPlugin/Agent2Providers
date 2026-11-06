@@ -83,6 +83,7 @@
 
 pub mod accounts;
 pub mod adapter;
+mod argon;
 pub mod antigravity_outbound;
 pub mod antigravity_schema;
 mod antigravity_signatures;

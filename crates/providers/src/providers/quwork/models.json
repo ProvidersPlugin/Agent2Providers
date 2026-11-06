@@ -1,0 +1,33 @@
+{
+  "key": "qurvis-desktop-model-config",
+  "schemaVersion": 1,
+  "version": 7,
+  "updatedAt": "2026-11-04T00:00:00Z",
+  "enabled": true,
+  "defaultModel": { "providerId": "deepseek-official", "modelId": "deepseek-flash" },
+  "providers": [{
+    "id": "qurwork",
+    "api": "openai-completions",
+    "baseURL": "https://qurwork-llm.rrzu.com/v1",
+    "models": [
+      { "enabled": true, "id": "kimi-k2.7-code", "name": "Kimi-K2.7-Code", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": false, "sort": 6 },
+      { "enabled": true, "id": "glm-5.2", "name": "GLM-5.2", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": false, "sort": 7 },
+      { "enabled": true, "id": "qwen3.7-plus", "name": "Qwen3.7-Plus", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": true, "sort": 5 },
+      { "enabled": true, "id": "MiniMax-M2.5", "name": "MiniMax-M2.5", "contextWindow": 1000000, "maxTokens": 32768, "supportsImage": false, "sort": 5 },
+      { "enabled": true, "id": "kimi-k2.6", "name": "Kimi-K2.6", "contextWindow": 1000000, "maxTokens": 262144, "supportsImage": true, "sort": 6 },
+      { "enabled": true, "id": "glm-5.3-flash", "name": "GLM-5.3 Flash", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": true, "sort": 4 },
+      {
+        "enabled": true, "id": "deepseek-flash", "name": "DeepSeek-V4.1-Flash", "contextWindow": 1000000, "maxTokens": 384000, "supportsImage": true, "sort": 1,
+        "reasoningEfforts": { "off": "off", "low": "low", "high": "high", "max": "max" },
+        "compat": { "supportsStore": false, "supportsDeveloperRole": false, "supportsReasoningEffort": true, "maxTokensField": "max_tokens", "requiresReasoningContentOnAssistantMessages": true, "thinkingFormat": "deepseek", "supportsStrictMode": true }
+      },
+      {
+        "enabled": true, "id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro 正式版", "contextWindow": 1000000, "maxTokens": 384000, "supportsImage": false, "sort": 2,
+        "reasoningEfforts": { "off": "off", "low": "low", "high": "high", "max": "max" },
+        "compat": { "supportsStore": false, "supportsDeveloperRole": false, "supportsReasoningEffort": true, "maxTokensField": "max_tokens", "requiresReasoningContentOnAssistantMessages": true, "thinkingFormat": "deepseek", "supportsStrictMode": true }
+      },
+      { "enabled": true, "id": "qwen3.8-max", "name": "Qwen3.8-Max", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": false, "sort": 8 },
+      { "enabled": true, "id": "qwen3.8-flash", "name": "Qwen3.8-Flash", "contextWindow": 1000000, "maxTokens": 128000, "supportsImage": true, "sort": 3 }
+    ]
+  }]
+}

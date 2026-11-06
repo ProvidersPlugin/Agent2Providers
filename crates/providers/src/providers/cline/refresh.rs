@@ -184,7 +184,6 @@ async fn refresh_and_save(
 
 /// 打一次续期请求（不落盘，纯网络 + 解析）。
 async fn refresh_request(credentials: &ClineCredentials) -> Result<ClineCredentials, GatewayError> {
-    // 续期**不走账号代理**（与网关那份一致：`client_for(None)` = 直连）
     let headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Accept".to_string(), "application/json".to_string()),

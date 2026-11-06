@@ -328,8 +328,9 @@ fn strict_client(proxy: Option<&WireProxy>) -> Result<reqwest::Client, GatewayEr
         .timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy();
-    if let Some(proxy) = proxy {
-        let proxy = reqwest::Proxy::all(proxy.to_url())
+    let proxy = crate::http::proxy_url(proxy, "direct");
+    if !proxy.is_empty() && proxy != "direct" {
+        let proxy = reqwest::Proxy::all(&proxy)
             .map_err(|_| GatewayError::with_status(502, "网页请求代理地址无效"))?;
         builder = builder.proxy(proxy);
     }

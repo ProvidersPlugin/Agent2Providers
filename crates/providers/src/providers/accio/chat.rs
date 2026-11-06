@@ -258,7 +258,8 @@ pub(crate) async fn record_limited(ctx: &PluginCtx, limit: &LimitContext, messag
 /// 一帧的错误 → 网关错误（额度类带 429、鉴权类带 401）
 fn frame_error(frame: &Frame) -> GatewayError {
     let text = frame.error_text();
-    let kind = protocol::classify_upstream_error(200, &text);
+    let status = frame.error_code.parse::<u16>().ok().unwrap_or(200);
+    let kind = protocol::classify_upstream_error(status, &text);
     let status = match kind {
         UpstreamKind::Quota => 429,
         UpstreamKind::Auth => 401,
@@ -456,13 +457,19 @@ pub async fn drive_stream(
 /// 非流式：拉完整条流再聚合成一个 `chat.completion`。
 pub async fn drive_aggregate(
     ctx: &PluginCtx,
-    response: reqwest::Response,
+    mut source: FrameStream,
     mut translator: Translator,
     telemetry: std::sync::Arc<RequestTelemetry>,
     limit: &LimitContext,
+    prefetched: Vec<Frame>,
 ) -> Result<Value, GatewayError> {
-    let mut source = FrameStream::new(response);
-    while let Some(frame) = source.next().await? {
+    let mut prefetched = prefetched.into_iter();
+    loop {
+        let frame = match prefetched.next() {
+            Some(frame) => Some(frame),
+            None => source.next().await?,
+        };
+        let Some(frame) = frame else { break };
         if frame.is_error() {
             let error = frame_error(&frame);
             if error.status_code == 429 {

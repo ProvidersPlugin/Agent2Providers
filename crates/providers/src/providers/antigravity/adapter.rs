@@ -202,7 +202,10 @@ impl Provider for AntigravityProvider {
                 .into_message());
             }
             // 对外 id → 上游真名（表见 models.rs；对不上的原样透传）
-            let wire_model = models::upstream_model_id(requested);
+            let effort = crate::model_rules::read_client_level(&req.body);
+            let wire_model = super::argon::resolve_model(requested, effort.as_deref())
+                .map(str::to_string)
+                .unwrap_or_else(|| models::upstream_model_id(requested));
             if wire_model != requested {
                 logging::verbose(
                     "[Antigravity]",
@@ -533,7 +536,8 @@ impl Provider for AntigravityProvider {
                     ),
                 }
             }
-            Ok(models::refresh(&credentials.access_token, &project_id, proxy.as_ref(), force).await)
+            let account_id = record.get("id").and_then(Value::as_str).unwrap_or(account);
+            Ok(models::refresh(account_id, &credentials.access_token, &project_id, proxy.as_ref(), force).await)
         })
     }
 

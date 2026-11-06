@@ -175,7 +175,6 @@ async fn get_json_allow_status(
     token: &str,
     allowed: &[u16],
 ) -> Result<Option<Value>, GatewayError> {
-    // 管理接口不走账号代理（与网关那份一致：`client_for(None)` = 直连）
     let headers = vec![
         ("Accept".to_string(), "application/json".to_string()),
         ("Authorization".to_string(), format!("Bearer {token}")),

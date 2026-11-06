@@ -103,6 +103,12 @@ pub(super) async fn post_json(
     let url = format!("{}{path}", base_url.trim_end_matches('/'));
     let payload = serde_json::to_string(body)
         .map_err(|error| CatPawError::upstream(format!("请求体序列化失败: {error}")))?;
+    // ── 入口的字节墙（issue #6）──────────────────────────────────
+    // 判据落在**真正出门的那串字节**上。round 的 systemPrompt / rulesMessage
+    // 是在上一层注入的，拿客户端原始 body 估算会少算这一截；放这里还能一并
+    // 覆盖 turn（工具续接那一发，带完整工具结果，往往是最大的一份）。
+    // 超限就在本地收尾：发出去只会换回一页 openresty HTML，白等一个往返。
+    super::body_limit::check_body_limit(payload.len() as i64)?;
     let client = egress::control_client(proxy, "direct");
     let mut builder = client
         .post(&url)
@@ -132,6 +138,12 @@ pub(super) async fn post_json(
     }
     if !(200..300).contains(&status) {
         logging::log("[CatPaw]", &format!("上游 {path} HTTP {status}"));
+        // 体积拒绝要翻成人话：openresty 回的是默认 HTML 页，原样透给客户端
+        // 只会得到「HTTP 413: <html><head><title>413 Request Entity Too
+        // Large…</title>…」这种看不出该怎么办的东西（issue #6 的诉求 3）。
+        if super::body_limit::is_entry_rejection(status, &text) {
+            return Err(super::body_limit::upstream_rejection_error(status));
+        }
         let detail: String = text.trim().chars().take(500).collect();
         return Err(CatPawError::http(
             status,
@@ -263,6 +275,8 @@ pub(super) async fn turn_request(
     let url = format!("{}/api/agent/conversation/turn", request.base_url.trim_end_matches('/'));
     let payload = serde_json::to_string(body)
         .map_err(|error| CatPawError::upstream(format!("请求体序列化失败: {error}")))?;
+    // 与 `post_json` 同一道闸：turn 带完整的工具结果，同样受入口的 1 MiB 限制。
+    super::body_limit::check_body_limit(payload.len() as i64)?;
     let client = egress::stream_client(request.proxy.as_ref(), "direct");
     let mut builder = client.post(&url).body(payload);
     for (key, value) in request_headers(&ctx.credentials, "text/event-stream") {
@@ -282,6 +296,10 @@ pub(super) async fn turn_request(
             "[CatPaw]",
             &format!("上游 turn HTTP {status} conversationId={}", short_id(&ctx.conversation_id)),
         );
+        // 与 `post_json` 同一口径：体积拒绝不把上游 HTML 透出去。
+        if super::body_limit::is_entry_rejection(status, &text) {
+            return Err(super::body_limit::upstream_rejection_error(status));
+        }
         let detail: String = text.trim().chars().take(500).collect();
         return Err(CatPawError::http(
             status,

@@ -40,7 +40,7 @@ use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::logging;
 
 use super::models::MODELS;
-use super::{conversation::CatPawCredentials, upstream_http};
+use super::{body_limit, conversation::CatPawCredentials, upstream_http};
 
 /// 目录路径（`modelTypesService-CPgwL2qX.js` 的路径常量 `_`）
 const MODEL_TYPES_PATH: &str = "/api/agent/maas/model-types";
@@ -393,7 +393,7 @@ pub async fn refresh(
 pub fn list() -> Vec<Value> {
     let remote = remote_models();
     if remote.is_empty() {
-        return static_list();
+        return static_list().into_iter().map(finalize_entry).collect();
     }
     remote
         .into_iter()
@@ -431,7 +431,48 @@ pub fn list() -> Vec<Value> {
             entry.get("modelType").and_then(Value::as_i64)?;
             Some(entry)
         })
+        .map(finalize_entry)
         .collect()
+}
+
+/// 清单出口的**最后一道收敛**（issue #6）。
+///
+/// 两件事都必须落在「所有条目都成型之后」这一处：
+///   · `maxInputTokens` 收敛到 [`body_limit::ADVERTISED_CONTEXT_WINDOW`] —— 上游
+///     声明的 1M 是按 token 记的，而入口按 **1 MiB 字节**拒收；照 1M 声明，下游
+///     把窗口配到 400K 就必然撞 413（issue #6 的复现）；
+///   · `defaultContextWindow` 一并收敛：它是**默认档位**，客户端按它开新会话时
+///     连「用户有没有改过窗口」都不必问 —— 留着 1024000 等于把默认值直接送进
+///     413，而 maxInputTokens 却写着 200K，两个字段自相矛盾；
+///   · 补上 `maxRequestBytes`，把「这一家还有一道字节墙」如实告诉下游。它是本家
+///     独有的额外键，其余家不发。宿主的 `models/shape.rs::list_item` 是**逐键
+///     白名单重建**（不是透传），所以那边必须同步把它映成 `max_request_bytes`
+///     —— 否则这个键只活在插件内部，下游一个字节都看不到。
+fn finalize_entry(mut entry: Value) -> Value {
+    let Some(object) = entry.as_object_mut() else { return entry };
+    let declared = object.get("maxInputTokens").and_then(Value::as_i64);
+    let window = body_limit::advertised_context_window(declared);
+    // 上游给的是**字符串**形式的档位（`"1024000"`），类型照旧，只把数值收敛。
+    let default_window = object
+        .get("defaultContextWindow")
+        .and_then(Value::as_str)
+        .and_then(|text| text.parse::<i64>().ok())
+        .map(|value| body_limit::advertised_context_window(Some(value)));
+    object.insert(
+        "maxInputTokens".to_string(),
+        Value::from(window),
+    );
+    if let Some(default_window) = default_window {
+        object.insert(
+            "defaultContextWindow".to_string(),
+            Value::String(default_window.to_string()),
+        );
+    }
+    object.insert(
+        "maxRequestBytes".to_string(),
+        Value::from(body_limit::ENTRY_BODY_LIMIT_BYTES),
+    );
+    entry
 }
 
 /// 静态表形态的清单（远程不可用时的回落，也是 `list()` 的兜底）
@@ -513,3 +554,51 @@ pub fn count() -> usize {
 /// 目录请求超时的公开常量（与其它三家的 `REFRESH_TIMEOUT` 同用途）
 #[allow(dead_code)]
 pub const REFRESH_TIMEOUT: Duration = Duration::from_millis(REQUEST_TIMEOUT_MS);
+
+#[cfg(test)]
+mod finalize_tests {
+    use super::*;
+
+    /// 默认档位不能比广告的窗口更宽（issue #6）。
+    ///
+    /// 客户端按 `defaultContextWindow` 开新会话时不需要用户先改设置 —— 留着
+    /// 上游的 `"1024000"` 就等于把默认值直接送进 1 MiB 的墙，而
+    /// `maxInputTokens` 同时写着 200K，两个字段自相矛盾。
+    #[test]
+    fn the_default_window_is_narrowed_with_the_advertised_one() {
+        let entry = finalize_entry(serde_json::json!({
+            "id": "glm-5.3-flash",
+            "maxInputTokens": 1024000,
+            "defaultContextWindow": "1024000",
+        }));
+        assert_eq!(
+            Some(body_limit::ADVERTISED_CONTEXT_WINDOW),
+            entry.get("maxInputTokens").and_then(Value::as_i64)
+        );
+        assert_eq!(
+            Some(body_limit::ADVERTISED_CONTEXT_WINDOW.to_string()),
+            entry
+                .get("defaultContextWindow")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            "默认档位必须与广告窗口一致，否则新会话默认就超限"
+        );
+        assert_eq!(
+            Some(body_limit::ENTRY_BODY_LIMIT_BYTES),
+            entry.get("maxRequestBytes").and_then(Value::as_i64)
+        );
+        // 上游本来就更窄时不该被抬高；没声明默认档位的条目不该被凭空加上。
+        let narrow = finalize_entry(serde_json::json!({
+            "id": "x",
+            "maxInputTokens": 65536,
+            "defaultContextWindow": "32768",
+        }));
+        assert_eq!(Some(65_536), narrow.get("maxInputTokens").and_then(Value::as_i64));
+        assert_eq!(
+            Some("32768"),
+            narrow.get("defaultContextWindow").and_then(Value::as_str)
+        );
+        let absent = finalize_entry(serde_json::json!({ "id": "y" }));
+        assert!(absent.get("defaultContextWindow").is_none());
+    }
+}

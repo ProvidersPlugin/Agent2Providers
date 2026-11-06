@@ -200,6 +200,62 @@ pub fn today(now_ms: i64) -> String {
         .unwrap_or_else(|| chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string())
 }
 
+/// 下一个北京零点的毫秒时刻（`now_ms` 恰在零点时给**明天**零点）。
+///
+/// 与 [`today`] 同一个固定偏移：福利日池按 UTC+8 零点翻页，容器跑在 UTC 时
+/// 跟着机器时区走会早 8 小时放开（见 `today` 的说明）。
+///
+/// 用途只有一处：`InferHub.4291.200 / insufficient quota` 表示**当天**的池子
+/// 打满了，而上游不给重置时间。不给恢复时刻的话，存储层会落到「缺失即 10 分钟」
+/// 的兜底冷却，于是一个当天不会再回来的账号每 10 分钟被白撞一次
+/// （`provider_loop/tests.rs` 的 `codearts_daily_pool_envelope_*` 钉着这条）。
+pub fn next_day_boundary_ms(now_ms: i64) -> i64 {
+    let offset_ms = i64::from(DAY_ZONE_OFFSET_SECONDS) * 1000;
+    let shifted = now_ms.saturating_add(offset_ms);
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    let next_local_day = shifted.div_euclid(DAY_MS) + 1;
+    next_local_day
+        .saturating_mul(DAY_MS)
+        .saturating_sub(offset_ms)
+}
+
+#[cfg(test)]
+mod day_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn the_next_boundary_is_the_following_beijing_midnight() {
+        // 2026-11-03 12:00 北京时间 = 04:00 UTC
+        let noon_beijing = 1_793_678_400_000i64;
+        let boundary = next_day_boundary_ms(noon_beijing);
+        assert_eq!(
+            "2026-11-04",
+            today(boundary),
+            "零点那一刻已经属于新的一天"
+        );
+        assert_eq!(
+            "2026-11-03",
+            today(boundary - 1),
+            "零点前一毫秒仍属于今天"
+        );
+        assert_eq!(
+            boundary,
+            next_day_boundary_ms(noon_beijing + 11 * 60 * 60 * 1000),
+            "同一天里的任何时刻都指向同一个零点"
+        );
+    }
+
+    #[test]
+    fn exactly_at_midnight_the_boundary_moves_to_tomorrow() {
+        let noon_beijing = 1_793_678_400_000i64;
+        let boundary = next_day_boundary_ms(noon_beijing);
+        assert!(
+            next_day_boundary_ms(boundary) > boundary,
+            "恰在零点时必须给明天，否则冷却会立刻失效"
+        );
+    }
+}
+
 /// 一次 ops 请求：签名 GET/POST + `code == 0` 的 envelope 判定。
 ///
 /// 头集合只有三项（`Content-Type` / `Agent-Type: PromptCenter` / `X-Language`），

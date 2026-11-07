@@ -150,6 +150,7 @@ mod tests {
             security_token: "hQpjbi1ub3J0aC0wABCdefGHIjklMNOpqrsTUVwxyz0123456789".to_string(),
             refresh_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.payload.signature".to_string(),
             oauth_context: Some(OAuthContext {
+                client_id: None,
                 pkce_pair: PkcePair {
                     code_verifier: "7743bb196b8892a1cd0f5e6d7c8b9a0f1e2d3c4b5a69788796a5b4c3d2e1f00".to_string(),
                     code_challenge: "ZoSPwv6ZLUIIEVzxQY5kRk9dC8dP0qY1uS2nT3mW4vX".to_string(),

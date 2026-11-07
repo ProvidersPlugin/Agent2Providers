@@ -8,7 +8,7 @@
 //!   · 体：标准 OpenAI chat；上游**恒流式**，所以要 `stream:true` +
 //!     `stream_options.include_usage`；非流式的客户端请求由本仓聚合器拼回。
 //!
-//! ── 两个实测坑（都写在这里，别在别处重推）──────────────────────
+//! ── 三个实测坑（都写在这里，别在别处重推）──────────────────────
 //!   1. **推理预算**：上游把 `max_tokens` 当「推理 + 正文」的总预算，给小了会
 //!      HTTP 200 但正文空串（`finish_reason=length`、`reasoning_tokens` 吃掉全部）。
 //!      这里的做法是**追加**一个下限（默认 1024），不是 `max()` —— `max()` 会把
@@ -21,6 +21,8 @@
 //!      于是客户端自带 `thinking` 时这一发会以 400 透传（同 body 重发结论不变），
 //!      去掉该字段即可。本家**自己从不注入** `thinking`：适配器没有实现
 //!      `reasoning_patch`，所以映射绑定的思考等级不会踩到这条（它对本家是空操作）。
+//!   3. **生成预算硬上限**：DeepSeek 为 393216，GLM 为 131072；超过时上游返回
+//!      400 `ModelArts.81001`。追加推理预算后再限制上限，避免把合法请求加到越界。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -77,9 +79,34 @@ pub fn apply_reasoning_allowance(body: &mut Value) -> Option<(i64, i64)> {
     if requested < TINY_MAX_TOKENS {
         return None;
     }
-    let raised = requested + REASONING_ALLOWANCE;
+    let raised = requested.saturating_add(REASONING_ALLOWANCE);
     body["max_tokens"] = json!(raised);
     Some((requested, raised))
+}
+
+/// 果办上游明确报出的 `max_tokens` 参数上限：
+/// DeepSeek：`max_tokens range is [1, 393216]`；GLM：`限制数值范围[1,131072]`。
+/// Qwen 限制的是输入与生成的总长度，不套用这里的静态参数上限；未知模型同样不限制。
+fn max_tokens_ceiling(wire_model: &str) -> Option<i64> {
+    let name = wire_model.to_ascii_lowercase();
+    if name.contains("deepseek") {
+        Some(393_216)
+    } else if name.contains("glm") {
+        Some(131_072)
+    } else {
+        None
+    }
+}
+
+/// 必须在追加推理预算之后调用；缺少字段或未超限时不改请求。
+fn clamp_max_tokens(body: &mut Value) -> Option<i64> {
+    let ceiling = max_tokens_ceiling(body.get("model").and_then(Value::as_str)?)?;
+    let current = body.get("max_tokens").and_then(Value::as_i64)?;
+    if current <= ceiling {
+        return None;
+    }
+    body["max_tokens"] = json!(ceiling);
+    Some(ceiling)
 }
 
 /// 流式补 `stream_options.include_usage`（**不覆盖**客户端已有的取值）。
@@ -158,6 +185,7 @@ pub fn build_chat_plan(
         object.insert("stream".to_string(), Value::Bool(true));
     }
     apply_reasoning_allowance(&mut body);
+    clamp_max_tokens(&mut body);
     ensure_include_usage(&mut body);
 
     let mut headers = vec![

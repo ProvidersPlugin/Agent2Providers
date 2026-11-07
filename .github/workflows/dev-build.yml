@@ -18,11 +18,7 @@ name: dev-build
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号（留空 = pack.json 里的 version，tag 会带 -ci.<序号> 后缀）'
-        required: false
-        type: string
+    # 版本号一律取 pack.json，触发时不需要填任何信息
 
 permissions:
   contents: write
@@ -79,14 +75,9 @@ jobs:
 
       - name: 计算版本号与 tag
         id: meta
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VERSION="$INPUT_VERSION"
-          if [ -z "$VERSION" ]; then
-            VERSION="$(node -p "require('./pack.json').version")"
-          fi
+          VERSION="$(node -p "require('./pack.json').version")"
           case "$VERSION" in
             ''|*[!0-9A-Za-z.+-]*) echo "版本号不合法: $VERSION" >&2; exit 1 ;;
           esac
@@ -100,6 +91,6 @@ jobs:
           set -euo pipefail
           gh release create "${{ steps.meta.outputs.tag }}" \
             --draft \
-            --title "dev build ${{ steps.meta.outputs.tag }}" \
+            --title "${{ steps.meta.outputs.version }}" \
             --notes "手动触发的开发构建，未签名时网关安装会标黄" \
             dist/*.zip

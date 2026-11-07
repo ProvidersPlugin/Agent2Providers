@@ -202,7 +202,7 @@
       }]
     },
     "qoder": {
-      "capabilities": { "claims": { "status": "not_applicable" } },
+      "capabilities": { "claims": { "status": "supported" } },
       "notes": [{
         "zh-CN": "每日签到通过活动领取完成，活动窗口每天 10:00（UTC+8）刷新。",
         "zh-Hant": "每日簽到透過活動領取完成，活動時段每天 10:00（UTC+8）更新。",
@@ -213,7 +213,7 @@
       }]
     },
     "qoder-intl": {
-      "capabilities": { "claims": { "status": "not_applicable" } },
+      "capabilities": { "claims": { "status": "supported" } },
       "notes": [{
         "zh-CN": "每日奖励领取需要 UMID 设备风控组件，按账号状态和上游活动规则执行。",
         "zh-Hant": "每日獎勵領取需要 UMID 裝置風控元件，依帳號狀態和上游活動規則執行。",

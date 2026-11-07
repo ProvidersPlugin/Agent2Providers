@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use agent2api_provider_sdk::PluginCtx;
@@ -8,18 +8,34 @@ use crate::errors::GatewayError;
 use super::{control, credentials, oauth, subscription};
 use credentials::OfficeAceCredential;
 
-fn pending_accounts() -> &'static Mutex<HashSet<String>> {
-    static PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(HashSet::new()))
+/// pending 标记的有效期（毫秒）：上游受理开通后迟迟不返回 `SUBSCRIBED` 时，
+/// 超过此时长即视为本次开通未生效，回落到真实订阅状态并允许重新提交
+const PENDING_TTL_MS: i64 = 10 * 60 * 1000;
+
+/// 记录每个账号进入 pending 的时间（毫秒时间戳），超时回落用
+fn pending_accounts() -> &'static Mutex<HashMap<String, i64>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn pending(account_id: &str) -> bool {
-    pending_accounts().lock().unwrap_or_else(|error| error.into_inner()).contains(account_id)
+    let mut accounts = pending_accounts().lock().unwrap_or_else(|error| error.into_inner());
+    match accounts.get(account_id) {
+        Some(&since) if crate::logging::now_ms() - since < PENDING_TTL_MS => true,
+        _ => {
+            accounts.remove(account_id);
+            false
+        }
+    }
 }
 
 fn set_pending(account_id: &str, value: bool) {
     let mut accounts = pending_accounts().lock().unwrap_or_else(|error| error.into_inner());
-    if value { accounts.insert(account_id.to_string()); } else { accounts.remove(account_id); }
+    if value {
+        accounts.insert(account_id.to_string(), crate::logging::now_ms());
+    } else {
+        accounts.remove(account_id);
+    }
 }
 
 pub async fn preview(ctx: &PluginCtx, account_id: &str) -> Result<Value, String> {
@@ -257,5 +273,29 @@ fn redact(message: &mut String, value: &Value) {
             *message = message.replace(value, "[已隐藏]");
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_marks_and_clears() {
+        let account_id = "officeace-pending-mark-test";
+        set_pending(account_id, true);
+        assert!(pending(account_id));
+        set_pending(account_id, false);
+        assert!(!pending(account_id));
+    }
+
+    #[test]
+    fn pending_falls_back_after_timeout() {
+        let account_id = "officeace-pending-timeout-test";
+        pending_accounts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(account_id.to_string(), crate::logging::now_ms() - PENDING_TTL_MS - 1000);
+        assert!(!pending(account_id));
     }
 }

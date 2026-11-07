@@ -83,6 +83,7 @@ jobs:
           esac
           TAG="v${VERSION}-ci.${GITHUB_RUN_NUMBER}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: 发布草稿 Release
         env:

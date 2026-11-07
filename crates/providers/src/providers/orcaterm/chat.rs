@@ -150,12 +150,31 @@ async fn create_conversation(
     let code = value.get("code").and_then(Value::as_i64).unwrap_or(-1);
     if code != 0 {
         let message = value.get("message").and_then(Value::as_str).unwrap_or("未知错误");
+        if is_credential_rejection(code, message) {
+            return Err(HttpFailure {
+                status: 401,
+                message: format!("OrcaTerm 登录态已失效（code={code}：{message}）"),
+            });
+        }
         return Err(HttpFailure {
             status: 502,
             message: format!("OrcaTerm 建会话失败（code={code}：{message}）"),
         });
     }
     Ok(format!("cid-{uuid}-orcaterm"))
+}
+
+/// 上游用 HTTP 200 包装凭证失效，须与普通业务错误区分。
+fn is_credential_rejection(code: i64, message: &str) -> bool {
+    if code == 0 {
+        return false;
+    }
+    let text = message.to_ascii_lowercase();
+    text.contains("token")
+        && (text.contains("invalid")
+            || text.contains("expired")
+            || text.contains("失效")
+            || text.contains("过期"))
 }
 
 /// 打开对话 SSE 流。

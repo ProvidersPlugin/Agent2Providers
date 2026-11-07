@@ -432,7 +432,7 @@ pub fn build_upstream_body(
     let request_id = super::cosy::random_uuid().unwrap_or_default();
     let session_id = session_id_for(user_id, upstream_key, session_seed);
 
-    json!({
+    let mut payload = json!({
         "request_id": request_id,
         "request_set_id": record_id,
         "chat_record_id": record_id,
@@ -484,7 +484,14 @@ pub fn build_upstream_body(
             "name": last_user_text.chars().take(30).collect::<String>(),
             "begin_at": crate::logging::now_ms(),
         },
-    })
+    });
+    // Qoder 后台按 business.model_key 归属模型；缺失时可能回落到 Auto。
+    if site.is_qoder() {
+        if let Some(business) = payload.get_mut("business").and_then(Value::as_object_mut) {
+            business.insert("model_key".to_string(), Value::String(upstream_key.to_string()));
+        }
+    }
+    payload
 }
 
 /// 按站点成形发往上游的 `model_config`。

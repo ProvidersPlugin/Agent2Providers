@@ -823,6 +823,7 @@ mod tests {
             security_token: "sts-probe+token/0000".to_string(),
             domain_id: "dom".to_string(),
             oauth_context: Some(OAuthContext {
+                client_id: None,
                 pkce_pair: PkcePair { code_verifier: "verifier".to_string(), ..PkcePair::default() },
                 dpop_key_pair: DpopKeyPair {
                     private_key_jwk: Jwk { kty: "EC".into(), crv: "P-256".into(), d: "AQ".into(), ..Jwk::default() },

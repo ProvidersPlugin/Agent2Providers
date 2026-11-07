@@ -102,6 +102,6 @@ jobs:
           fi
           gh release create "$TAG" \
             --draft \
-            --title "${{ steps.meta.outputs.version }}" \
+            --title "$TAG" \
             --notes "手动触发的开发构建，未签名时网关安装会标黄" \
             dist/*.zip

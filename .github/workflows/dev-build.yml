@@ -81,7 +81,7 @@ jobs:
           case "$VERSION" in
             ''|*[!0-9A-Za-z.+-]*) echo "版本号不合法: $VERSION" >&2; exit 1 ;;
           esac
-          TAG="v${VERSION}-ci.${GITHUB_RUN_NUMBER}"
+          TAG="v${VERSION}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -90,6 +90,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # 同版本重复构建时覆盖旧草稿（草稿的 tag 未落库，删除无副作用）
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "${{ steps.meta.outputs.tag }}" \
             --draft \
             --title "${{ steps.meta.outputs.version }}" \

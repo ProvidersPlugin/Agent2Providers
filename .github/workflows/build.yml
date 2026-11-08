@@ -1,0 +1,72 @@
+name: release
+
+# 推 `v*` tag 时把发版交给独立构建仓库（`Agent2Builder/agent2api-providers-releases`）。
+#
+# ── 主仓库为什么不再自己构建 ────────────────────────────────
+# 插件是五平台矩阵（Windows + 两个 macOS + 两个 Linux），跑一次是实打实的
+# 重负载；而 tag 是发版动作、频率不可控。把「打一个版本标签」变成「自动兑换
+# 五次虚拟机开机」，最坏情况下会被判定为 Actions 滥用。所以编译整体搬到
+# 专用构建账号下的仓库，主仓库这条工作流只做一件事：发一条极轻的派发请求。
+#
+# ── 密钥在哪 ────────────────────────────────────────────────
+# 签名私钥（`AGENT2API_PLUGIN_KEY`）**只存在构建仓库的 secrets 里**，主仓库
+# 没有、也不需要。主仓库唯一要配的是 `BUILDER_DISPATCH_TOKEN`——一个对构建
+# 仓库有 contents write 权限的 token，只用来派发事件。
+#
+# ── 为什么用 repository_dispatch 而不是 workflow_call ───────
+# 跨仓库的 `workflow_call` 要求两边在同一个仓库内，跨账号只能用 dispatch。
+# 这也是 magpie（yetone/magpie → yetone/magpie-releases）的做法。
+#
+# ── tag 仍然照常打 ──────────────────────────────────────────
+# 它是版本标记，也是 Cargo 按 tag 引用契约库的依据（网关 `server/Cargo.toml`
+# 的 `agent2api-provider-protocol = { git = ..., tag = "v..." }`），只是它不再
+# 触发本仓库的任何编译。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号（不带 v 前缀；对应的 tag 必须已存在）'
+        required: true
+        type: string
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      ref: ${{ steps.meta.outputs.ref }}
+    steps:
+      - name: 解析版本号与 ref
+        id: meta
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF="$GITHUB_REF_NAME"
+            VERSION="${REF#v}"
+          else
+            VERSION="$INPUT_VERSION"
+            REF="v$VERSION"
+          fi
+          # 换行或引号会往下面的 JSON 里注入字段
+          [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "版本号不合法: $VERSION" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "派发构建：版本 $VERSION（ref: $REF）"
+
+      - name: 派发到构建仓库
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          # 对构建仓库有 contents write 权限的 token（放在主仓库 secrets 里）
+          token: ${{ secrets.BUILDER_DISPATCH_TOKEN }}
+          repository: Agent2Builder/agent2api-providers-releases
+          event-type: release
+          client-payload: '{"ref": "${{ steps.meta.outputs.ref }}", "version": "${{ steps.meta.outputs.version }}"}'
+
+      - name: 提示去哪看进度
+        run: echo "构建在 https://github.com/Agent2Builder/agent2api-providers-releases/actions"

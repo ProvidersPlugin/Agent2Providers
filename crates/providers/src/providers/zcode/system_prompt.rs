@@ -161,23 +161,36 @@ fn stable_joined(data: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// 拼装动态段。
+///
+/// 2026-11-07 起 `zcode_system.json` 换成了 **ZCode Desktop 3.16.3 抓包原文**
+/// （10701 字符三段），`# Environment` 段已经整段写进 `dynamicBehavior` 并用
+/// `{cwd}` 等占位符标记可变行 —— 模板里的 `environment` 对象只保留 `gitYes`
+/// / `gitNo` 供 [`template_values`] 取值，不再由代码渲染成段。
+///
+/// 为什么必须整段内嵌：上游对套餐池 `system` 做**正文指纹**校验，旧的
+/// 3.17.x 版模板（`# Environment` 由代码拼出、行首是 ` - `）实测一律
+/// 回 `405 {"code":3012}`；换成这份抓包原文后同账号同请求头立即 200。
 fn dynamic_template(data: &Value, has_skill: bool) -> String {
     let mut sections = vec![text_of(data, "dynamicBehavior")];
     if has_skill {
         sections.push(text_of(data, "sessionGuidance"));
     }
-    sections.extend([
-        environment_template(data),
-        text_of(data, "poweredBy"),
-        text_of(data, "contextManagement"),
-    ]);
+    sections.extend([text_of(data, "poweredBy"), text_of(data, "contextManagement")]);
     sections.into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n")
 }
 
 fn template_values(data: &Value, model: &str, region: Region) -> Vec<(&'static str, String)> {
     let cwd = working_dir();
-    let git_key = if std::path::Path::new(&cwd).join(".git").exists() { "gitYes" } else { "gitNo" };
-    let git = data.get("environment").map(|env| text_of(env, git_key)).unwrap_or_default();
+    let has_git = std::path::Path::new(&cwd).join(".git").exists();
+    let git_key = if has_git { "gitYes" } else { "gitNo" };
+    // 模板换成抓包原文后 `environment` 只带 gitYes/gitNo；两者都缺时按实际
+    // 目录兜底，避免 `{git}` 被替换成空串（那会让 Environment 段少一个值）。
+    let git = data
+        .get("environment")
+        .map(|env| text_of(env, git_key))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| if has_git { "yes" } else { "no" }.to_string());
     vec![
         ("{cwd}", cwd),
         ("{git}", git),
@@ -239,20 +252,6 @@ fn text_block(text: String, cache_control: Option<Value>) -> Value {
         block["cache_control"] = cache;
     }
     block
-}
-
-fn environment_template(data: &Value) -> String {
-    let env = data.get("environment").unwrap_or(&Value::Null);
-    [
-        text_of(env, "heading"),
-        text_of(env, "invokedLine"),
-        format!(" - {}: {{cwd}}", text_of(env, "cwdLabel")),
-        format!(" - {}: {{git}}", text_of(env, "gitLabel")),
-        format!(" - {}: {{platform}}", text_of(env, "platformLabel")),
-        format!(" - {}: {{shell}}", text_of(env, "shellLabel")),
-        format!(" - {}: {{os_version}}", text_of(env, "osVersionLabel")),
-        format!(" - {}", text_of(env, "untrustedNote")),
-    ].into_iter().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 fn os_platform() -> &'static str {

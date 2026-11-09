@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 use super::client::decorate;
 use super::endpoints;
 use crate::http;
+use crate::http::AccountRequest;
 
 /// 账号服务根（生产环境，与余额、签到共用）。
 pub const AUTH_BASE: &str = endpoints::STUDIO_API_BASE;
@@ -135,6 +136,7 @@ async fn get_value(
         request = request.header("Cookie", cookie);
     }
     let response = decorate(request)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| format!("{operation}网络失败：{}", http::describe(&error)))?;
@@ -171,6 +173,7 @@ async fn post_form(
         request = request.header("Cookie", cookie);
     }
     let response = decorate(request)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| format!("{operation}网络失败：{}", http::describe(&error)))?;
@@ -203,6 +206,7 @@ async fn post_empty(
         .header("Cookie", cookie)
         .timeout(std::time::Duration::from_secs(20));
     let response = decorate(request)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| format!("{operation}网络失败：{}", http::describe(&error)))?;

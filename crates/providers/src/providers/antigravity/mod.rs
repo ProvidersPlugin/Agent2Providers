@@ -94,6 +94,7 @@ pub mod credentials;
 pub mod endpoints;
 mod image_generation;
 pub mod login;
+mod login_methods;
 pub mod models;
 pub mod oauth;
 pub mod project;

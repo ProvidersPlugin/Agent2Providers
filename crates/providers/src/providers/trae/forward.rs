@@ -49,6 +49,7 @@ use serde_json::{json, Value};
 
 use crate::errors::GatewayError;
 use crate::http as egress;
+use crate::http::AccountRequest;
 use crate::logging;
 use crate::stall;
 use crate::telemetry::RequestTelemetry;
@@ -139,7 +140,7 @@ async fn send(
     for (name, value) in &plan.headers {
         request = request.header(name.as_str(), value.clone());
     }
-    let response = request.json(&plan.body).send().await.map_err(|error| {
+    let response = request.json(&plan.body).with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("Trae 请求发不出去：{}", egress::describe_chain(&error)),

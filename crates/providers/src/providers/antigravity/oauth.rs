@@ -82,6 +82,7 @@ use agent2api_provider_sdk::PluginCtx;
 use crate::errors::GatewayError;
 use crate::flight::{self, Join, Table};
 use crate::http as egress;
+use crate::http::AccountRequest;
 use crate::logging;
 use crate::proxy_util::{resolve_account_proxy, ProxyResolution};
 
@@ -316,7 +317,7 @@ pub async fn refresh_access_token(
             ("refresh_token", refresh_token),
             ("grant_type", endpoints::GRANT_TYPE_REFRESH),
         ])
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| {
             // 连接类失败（连不上 / 超时）在 Google 上游几乎都指向「出网路径不通」：
@@ -409,7 +410,7 @@ async fn fetch_email(access_token: &str, proxy: Option<&ResolvedProxy>) -> Optio
             .header("Accept", "application/json")
             .header(auth_key.clone(), auth_value.clone())
             .timeout(Duration::from_millis(USERINFO_TIMEOUT_MS))
-            .send()
+            .with_account_user_agent().send()
             .await;
         let Ok(response) = response else { continue };
         if !response.status().is_success() {
@@ -499,7 +500,7 @@ pub async fn exchange_code(
             ("redirect_uri", redirect_uri),
             ("grant_type", endpoints::GRANT_TYPE_AUTHORIZATION_CODE),
         ])
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| {
             // 与刷新同款：连接类失败带上代理提示（用户报过 os error 10060 ——

@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use super::credentials::{now_ms, Credentials};
 use super::{endpoints, local, PROVIDER_ID};
 use crate::{flight, http, logging};
+use crate::http::AccountRequest;
 
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 
@@ -48,7 +49,7 @@ async fn post_json(
         request = request.header(name, value);
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("刷新 Kiro 登录态时网络失败：{}", http::describe(&error)))?;
     let status = response.status().as_u16();
@@ -126,7 +127,7 @@ async fn refresh_once(
                 .post(&credentials.token_url)
                 .form(&form)
                 .timeout(std::time::Duration::from_millis(REQUEST_TIMEOUT_MS))
-                .send()
+                .with_account_user_agent().send()
                 .await
                 .map_err(|error| {
                     format!("刷新 Kiro 登录态时网络失败：{}", http::describe(&error))
@@ -182,7 +183,8 @@ async fn refresh_credentials(
     if credentials.is_api_key() {
         return Err("Kiro 拒绝了保存的 API key，请重新填写".to_string());
     }
-    if credentials.db_key.starts_with("kirocli:") {
+    // 本机 CLI 无法接收账号 UA；显式设置后由插件负责续期。
+    if credentials.db_key.starts_with("kirocli:") && agent2api_provider_sdk::egress::user_agent().is_empty() {
         if let Some(next) = local::refresh_with_cli().await {
             if next.access != credentials.access
                 && next.db_key == credentials.db_key
@@ -376,7 +378,7 @@ pub async fn lookup_profile(
         if let Some(kind) = credentials.token_type() {
             request = request.header("tokentype", kind);
         }
-        let response = match request.send().await {
+        let response = match request.with_account_user_agent().send().await {
             Ok(response) => response,
             Err(error) => {
                 last = Some(http::describe(&error));

@@ -32,6 +32,25 @@ pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 // 计费接口在缺少 User-Agent 时会返回 403 / code=10085；请求级头可覆盖此默认值。
 const DEFAULT_USER_AGENT: &str = "undici";
 
+pub trait AccountRequest: Sized {
+    fn with_account_user_agent(self) -> Self;
+}
+
+impl AccountRequest for reqwest::RequestBuilder {
+    fn with_account_user_agent(self) -> Self {
+        let value = agent2api_provider_sdk::egress::user_agent();
+        if value.is_empty() { return self; }
+        match reqwest::header::HeaderValue::from_str(&value) {
+            Ok(value) => {
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::USER_AGENT, value);
+                self.headers(headers)
+            }
+            Err(_) => self.header(reqwest::header::USER_AGENT, value),
+        }
+    }
+}
+
 type ClientKey = (String, Option<crate::timeouts::Timeouts>);
 
 fn cache() -> &'static Mutex<HashMap<ClientKey, reqwest::Client>> {
@@ -168,7 +187,7 @@ pub async fn get_json(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     let text = response.text().await.map_err(|error| describe(&error))?;
     Ok((status, parse_json(&text)))
@@ -189,7 +208,7 @@ pub async fn post_json(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     let text = response.text().await.map_err(|error| describe(&error))?;
     Ok((status, parse_json(&text)))
@@ -219,7 +238,7 @@ pub async fn post_stream(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         let text = response.text().await.unwrap_or_default();
@@ -307,7 +326,7 @@ pub async fn send_raw(
     if let Some(timeout) = timeout_ms {
         builder = builder.timeout(Duration::from_millis(timeout));
     }
-    let response = builder.send().await?;
+    let response = builder.with_account_user_agent().send().await?;
     let status = response.status().as_u16();
     let ok = response.status().is_success();
     let text = response.text().await?;

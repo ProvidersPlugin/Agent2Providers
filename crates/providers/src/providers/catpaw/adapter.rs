@@ -26,8 +26,8 @@
 //! **原项目没有多账号轮换**：`catpaw-local-proxy` 全仓没有任何 429 判定，
 //! 账号选择是「用户在账号页选中的那一个」，切换账号只做一件事
 //! —— 作废旧 conversation（见 `registry` 的 `clear_account`）。
-//! 因此本适配器对上游错误**一律 Fatal 透传**（有状态路径连它都不会被调用：
-//! `run_conversation` 内部已经把手上的 HTTP 状态与上游文案归一到 `GatewayError`）。
+//! 上游错误按 Fatal 保留状态码与文案；本地参数错误另带固定标记，
+//! 宿主据此停止无效换号，不把上游拒绝或凭证问题混作本地格式错误。
 //!
 //! ── 与网关那份的差别（迁移时改的）───────────────────────────
 //! | 网关 | 插件 |
@@ -43,7 +43,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：零 unwrap/expect/panic；本文件不持任何锁。
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
@@ -173,7 +173,9 @@ impl Provider for CatPawProvider {
         Box::pin(async move {
             let mut sink = sink;
             let account_id = req.account.clone();
-            let credentials = resolve_credentials(ctx, &account_id).await?;
+            let credentials = resolve_credentials(ctx, &account_id)
+                .await
+                .map_err(GatewayError::into_control_message)?;
             // ── 账号身份对账（转发选路时）───────────────────────────
             // 必须在这里做，而不是只在导入/添加账号时：桌面端实时登录态
             // （`~/.meituan-catpaw/auth.json`）由 CatPaw 客户端自己维护，用户可以在
@@ -198,13 +200,11 @@ impl Provider for CatPawProvider {
             request.telemetry = Some(std::sync::Arc::new(RequestTelemetry::new()));
             run_conversation(request, &mut sink)
                 .await
-                .map_err(GatewayError::into_message)
+                .map_err(GatewayError::into_control_message)
         })
     }
 
-    /// 一律 Fatal（模块头的核对结论）：原项目没有多账号轮换，也没有可解析的
-    /// 限额码 —— 上游错误在 `run_conversation` 内部已经归一到 `GatewayError`
-    /// （状态码与文案都按原实现的口径映射好），本方法在正常路径上走不到。
+    /// 状态码由协议层归一化后透传，不凭 HTTP 状态推断账号限额。
     fn classify(&self, status: u16, error_body: &Value) -> proto::ErrorClass {
         let message = error_body
             .get("message")
@@ -217,6 +217,18 @@ impl Provider for CatPawProvider {
             message,
             upstream_code: None,
         }
+    }
+
+    fn error_policy(&self, status: u16, body: &Value) -> Value {
+        if status == 400
+            && body.get("code").and_then(Value::as_str) == Some(conversation::INVALID_REQUEST_CODE)
+        {
+            return json!({
+                "stop": true,
+                "reason": "CatPaw 请求参数或消息格式不符合要求，换账号无法解决，已停止重试",
+            });
+        }
+        Value::Null
     }
 
     /// 思考等级绑定 → `reasoning_effort`（本家是**唯一需要归并档位**的一家）。

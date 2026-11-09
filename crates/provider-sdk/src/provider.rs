@@ -293,6 +293,15 @@ pub trait Provider: Send + Sync + 'static {
     /// 这个 provider 的静态描述。
     fn meta(&self) -> ProviderMeta;
 
+    /// 用户选项随插件声明，主程序只保存覆盖值；默认值不得写回用户配置。
+    fn settings_schema(&self) -> Option<crate::settings::Schema> { None }
+
+    /// 可选的分组显示名；共用 storage_provider 的设置必须使用相同的分组声明。
+    fn settings_group(&self) -> Option<crate::settings::Group> { None }
+
+    /// 只返回已声明的非敏感字段，形如 {key: {source, value}}。
+    fn settings_overrides(&self) -> Value { serde_json::json!({}) }
+
     /// provider id（与 `meta().id` 相同；单独一个方法是为了让路由表能
     /// 在建表时不必构造整个 `ProviderMeta`）。
     fn provider_id(&self) -> String {
@@ -609,6 +618,15 @@ pub trait Provider: Send + Sync + 'static {
         })
     }
 
+    fn native_helpers(&self) -> Vec<Value> { Vec::new() }
+
+    fn native_call<'a>(
+        &'a self, _ctx: &'a crate::ctx::PluginCtx, _caller: &'a str,
+        _helper: &'a str, _operation: &'a str, _payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async { Err(unsupported("该插件没有实现原生辅助能力")) })
+    }
+
     // ── 账号 ──────────────────────────────────────────────────
 
     /// 规范化一条账号（手填 / 文件 / 桌面端导入）。
@@ -658,6 +676,15 @@ pub trait Provider: Send + Sync + 'static {
         _callback: proto::LoginCallback,
     ) -> SendFuture<'a, proto::LoginPoll> {
         Box::pin(async { Err("该提供商没有实现登录回调".to_string()) })
+    }
+
+    /// 回填结果可带下一步授权地址；旧实现仍按 LoginPoll 返回。
+    fn login_callback_result<'a>(
+        &'a self,
+        ctx: &'a crate::ctx::PluginCtx,
+        callback: proto::LoginCallback,
+    ) -> SendFuture<'a, crate::LoginCallbackResult> {
+        Box::pin(async move { self.login_callback(ctx, callback).await.map(Into::into) })
     }
 
     /// 取消一次登录流程。

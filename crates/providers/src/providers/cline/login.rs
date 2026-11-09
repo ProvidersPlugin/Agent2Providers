@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use agent2api_provider_protocol as proto;
 
 use crate::errors::GatewayError;
-use crate::http::{describe_chain, send_raw};
+use crate::http::{describe_chain, send_raw, AccountRequest};
 use crate::json::truncate_text;
 
 use super::credentials::{self, WORKOS_BASE_URL, WORKOS_CLIENT_ID};
@@ -267,7 +267,7 @@ async fn form_post(
     for (key, value) in extra_headers {
         request = request.header(key.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(502, format!("Cline 登录请求失败: {}", describe_chain(&error)))
     })?;
     let status = response.status().as_u16();

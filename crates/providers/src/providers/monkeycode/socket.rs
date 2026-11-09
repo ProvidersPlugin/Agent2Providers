@@ -5,6 +5,7 @@ use tokio_tungstenite::tungstenite::{handshake, protocol::Role};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 pub(super) type TaskSocket = WebSocketStream<reqwest::Upgraded>;
 
@@ -37,7 +38,7 @@ pub(super) async fn connect(
     }
     let client = builder.build().map_err(|_| failed("无法创建任务流连接"))?;
     let response = client.get(url).headers(request.headers().clone())
-        .send().await.map_err(|_| failed("任务流连接失败，请检查账号代理和网络"))?;
+        .with_account_user_agent().send().await.map_err(|_| failed("任务流连接失败，请检查账号代理和网络"))?;
     let status = response.status().as_u16();
     if status != 101 {
         return Err(GatewayError::with_status(

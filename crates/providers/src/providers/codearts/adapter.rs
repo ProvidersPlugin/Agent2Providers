@@ -29,6 +29,7 @@ use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use agent2api_provider_sdk::{ConversationSink, PluginCtx, Provider, ProviderMeta, SendFuture};
 
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 use crate::logging;
 use crate::proxy_util::{resolve_account_proxy, ProxyResolution};
 
@@ -380,7 +381,7 @@ impl Provider for CodeArtsProvider {
             }
             // 真实发出量：只有这里知道（上游那道墙按它判）
             let wire_bytes = payload.len() as i64;
-            let response = match request.body(payload).send().await {
+            let response = match request.body(payload).with_account_user_agent().send().await {
                 Ok(response) => response,
                 Err(error) => {
                     session.stop().await;

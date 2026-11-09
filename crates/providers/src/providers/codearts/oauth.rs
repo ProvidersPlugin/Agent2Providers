@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::logging;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 use super::chat;
 use super::credentials::{Credential, OAuthContext, PkcePair};
@@ -144,6 +145,7 @@ async fn token_request(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(body)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {
@@ -292,7 +294,7 @@ async fn fetch_identity(
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("CodeArts 身份查询失败：{}", crate::http::describe_chain(&error)),
@@ -632,7 +634,7 @@ pub async fn poll_ticket(base: &str, pending: &PendingLogin, proxy: Option<&Reso
     for (name, value) in headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             // 传输错误的文本里带着**完整 URL**，而这条 URL 的查询串就是 ticket_id + secret

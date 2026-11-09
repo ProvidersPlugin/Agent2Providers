@@ -48,6 +48,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
@@ -194,6 +195,7 @@ pub async fn create_task(
     let response = builder
         .json(&body)
         .timeout(Duration::from_millis(CREATE_TIMEOUT_MS))
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| transport_error("MonkeyCode 建任务请求", error))?;

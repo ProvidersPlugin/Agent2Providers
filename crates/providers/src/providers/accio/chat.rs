@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use agent2api_provider_sdk::{ConversationSink, PluginCtx};
 use crate::telemetry::RequestTelemetry;
@@ -168,7 +169,7 @@ pub async fn send(
     let budget = std::time::Duration::from_millis(
         crate::timeouts::current().headers_ms(),
     );
-    match tokio::time::timeout(budget, builder.send()).await {
+    match tokio::time::timeout(budget, builder.with_account_user_agent().send()).await {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(error)) if error.is_timeout() => Err(GatewayError::with_status(
             502,

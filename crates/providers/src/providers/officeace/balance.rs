@@ -10,12 +10,11 @@ use agent2api_provider_sdk::PluginCtx;
 
 use crate::errors::GatewayError;
 
-use super::{credentials, subscription};
+use super::{control, subscription};
 
 /// 查询某 OfficeAce 账号的可领余额 / 积分。
 pub async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
-    let record = super::record_of(ctx, account_id).await?;
-    let credential = credentials::from_record(Some(&record))?;
-    let subscription = subscription::fetch_subscription(&credential).await?;
+    let mut credential = control::credential_of(ctx, account_id).await?;
+    let subscription = control::subscription_of(ctx, &mut credential).await?;
     Ok(subscription::summarize(&subscription))
 }

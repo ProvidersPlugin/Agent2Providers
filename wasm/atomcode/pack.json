@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-atomcode",
+  "name": "AtomCode · Wasm",
+  "description": "独立的 AtomCode 提供商，支持网页登录、凭证续期、对话、模型目录、额度查询和按需领取套餐。",
+  "version": "0.1.0",
+  "protocol": 1,
+  "providers": [
+    { "id": "atomcode", "label": "AtomCode", "order": 14, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "atomcode.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

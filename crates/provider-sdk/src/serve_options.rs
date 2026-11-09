@@ -6,6 +6,8 @@ use crate::provider::BoxProvider;
 pub struct ServeOptions {
     /// 在握手应答前初始化机器级资源；失败时拒绝握手。
     pub on_init: Option<fn(&proto::HostEnv) -> std::io::Result<()>>,
+    /// 仅申报已在所有出站请求中应用账号 UA 的提供商。
+    pub account_user_agent: Option<fn(&str) -> bool>,
 }
 
 pub fn serve_blocking(providers: Vec<BoxProvider>) {

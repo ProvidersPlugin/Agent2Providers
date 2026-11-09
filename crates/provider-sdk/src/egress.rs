@@ -27,6 +27,7 @@ pub struct AccountRoute {
     provider: String,
     account: String,
     route: Option<Route>,
+    user_agent: String,
 }
 
 tokio::task_local! {
@@ -40,6 +41,11 @@ pub fn current() -> Option<Route> {
 
 pub fn capture() -> Option<AccountRoute> {
     CURRENT.try_with(Clone::clone).ok().flatten()
+}
+
+pub fn user_agent() -> String {
+    CURRENT.try_with(|current| current.as_ref().map(|value| value.user_agent.clone()).unwrap_or_default())
+        .unwrap_or_default()
 }
 
 pub async fn scope<F: Future>(route: Option<AccountRoute>, work: F) -> F::Output {
@@ -73,6 +79,7 @@ pub fn from_account(account: &StoreAccount) -> Result<AccountRoute, String> {
         provider: account.provider.clone(),
         account: account.id.clone(),
         route,
+        user_agent: account.public.get("userAgent").and_then(Value::as_str).unwrap_or("").trim().to_string(),
     })
 }
 
@@ -109,16 +116,19 @@ pub(crate) async fn for_request(
     } else {
         parse_config(params.get("proxy").unwrap_or(&Value::Null))?
     };
-    if let Some(route) = explicit {
-        return Ok(Some(AccountRoute {
-            provider: provider.to_string(),
-            account: account.to_string(),
-            route: Some(route),
-        }));
-    }
     match ctx.store_get(provider, account).await {
-        Ok(stored) => from_account(&stored).map(Some),
-        Err(StoreError::NotFound) if account.is_empty() => Ok(None),
+        Ok(stored) => {
+            let resolved = if let Some(route) = explicit {
+                AccountRoute {
+                    provider: stored.provider.clone(), account: stored.id.clone(), route: Some(route),
+                    user_agent: stored.public.get("userAgent").and_then(Value::as_str).unwrap_or("").trim().to_string(),
+                }
+            } else { from_account(&stored)? };
+            Ok(Some(resolved))
+        }
+        Err(StoreError::NotFound) if account.is_empty() => Ok(explicit.map(|route| AccountRoute {
+            provider: provider.to_string(), account: String::new(), route: Some(route), user_agent: String::new(),
+        })),
         Err(error) => Err(error.to_string()),
     }
 }

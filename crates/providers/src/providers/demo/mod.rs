@@ -19,6 +19,7 @@
 //!   4. 错误返回 `Err(String)`，不要 panic（crate 已 deny unwrap/expect）。
 
 use std::collections::BTreeMap;
+use crate::http::AccountRequest;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{
@@ -164,6 +165,7 @@ impl Provider for DemoProvider {
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer demo-{account_hint}"))
                 .json(&req.body)
+                .with_account_user_agent()
                 .send()
                 .await
                 .map_err(|e| format!("上游请求失败: {e}"))?;

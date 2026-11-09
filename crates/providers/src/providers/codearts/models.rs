@@ -27,6 +27,7 @@
 //! 插件进程重启后由 `adapter` 的目录准备读回来。本模块其余部分只管解析与合并。
 
 use std::time::Duration;
+use crate::http::AccountRequest;
 
 use serde_json::Value;
 
@@ -519,7 +520,7 @@ async fn fetch_signed(
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         format!("请求失败：{}", crate::http::describe_chain(&error))
     })?;
     let status = response.status().as_u16();

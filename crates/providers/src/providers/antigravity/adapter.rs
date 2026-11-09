@@ -579,6 +579,21 @@ impl Provider for AntigravityProvider {
         Ok(accounts::identity_of(secret))
     }
 
+    fn admin_action<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        _account: &'a str,
+        action: &'a str,
+        _payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            match action {
+                "auth.methods" => Ok(super::login_methods::methods()),
+                _ => Err(agent2api_provider_sdk::unsupported("Antigravity 未提供此管理操作")),
+            }
+        })
+    }
+
     // ── 登录 ──────────────────────────────────────────────────
 
     fn login_start<'a>(

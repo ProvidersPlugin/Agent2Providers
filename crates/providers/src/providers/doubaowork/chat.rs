@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use super::{api, catalog, prompt, stream, upload};
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 fn chunk(id: &str, model: &str, delta: Value, reason: Value) -> Vec<u8> {
     format!("data: {}\n\n",json!({"id":id,"object":"chat.completion.chunk","created":chrono::Utc::now().timestamp(),"model":model,"choices":[{"index":0,"delta":delta,"finish_reason":reason}]})).into_bytes()
@@ -78,7 +79,7 @@ async fn forward(
         Duration::from_millis(crate::timeouts::current().headers_ms()),
         api::request(&client, &credentials, "/chat/completion")?
             .json(&payload)
-            .send(),
+            .with_account_user_agent().send(),
     )
     .await
     .map_err(|_| GatewayError::with_status(504, "等待豆包工作响应头超时"))?

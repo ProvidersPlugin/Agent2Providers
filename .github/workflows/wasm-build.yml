@@ -1,0 +1,85 @@
+name: release-wasm
+
+on:
+  push:
+    tags:
+      - 'wasm-*-v*'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'wasm/ 下的提供商目录'
+        required: true
+        default: atomcode
+        type: string
+      version:
+        description: '插件版本号；对应的 wasm-<provider>-v<version> tag 必须已存在'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-dispatch-${{ github.ref }}-${{ inputs.provider }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 解析独立插件版本
+        id: meta
+        shell: bash
+        env:
+          INPUT_PROVIDER: ${{ inputs.provider }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF="$GITHUB_REF_NAME"
+          else
+            REF="wasm-$INPUT_PROVIDER-v$INPUT_VERSION"
+          fi
+          if [[ ! "$REF" =~ ^wasm-([a-z][a-z0-9-]*)-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$ ]]; then
+            printf '%s\n' '::error::WASM tag 必须为 wasm-<provider>-v<version>'
+            exit 1
+          fi
+          PROVIDER="${BASH_REMATCH[1]}"
+          VERSION="${BASH_REMATCH[2]}"
+          printf 'ref=%s\nprovider=%s\nversion=%s\n' "$REF" "$PROVIDER" "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.meta.outputs.ref }}
+          persist-credentials: false
+
+      - name: 核对包版本并固定源码提交
+        id: source
+        shell: python
+        env:
+          PROVIDER: ${{ steps.meta.outputs.provider }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          import json, os, pathlib, subprocess, tomllib
+          folder = pathlib.Path('wasm') / os.environ['PROVIDER']
+          manifest = json.loads((folder / 'pack.json').read_text(encoding='utf-8'))
+          package = tomllib.loads((folder / 'Cargo.toml').read_text(encoding='utf-8'))['package']
+          expected_id = f"agent2api-wasm-{os.environ['PROVIDER']}"
+          if manifest['id'] != expected_id or package['name'] != expected_id:
+              raise ValueError('WASM 包标识与提供商目录不一致')
+          if manifest['version'] != os.environ['VERSION'] or package['version'] != manifest['version']:
+              raise ValueError('源码 tag、pack.json 和 Cargo.toml 的版本号必须一致')
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'sha={revision}\n')
+
+      - name: 派发 WASM 构建
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.BUILDER_DISPATCH_TOKEN }}
+          repository: Agent2Builder/agent2api-providers-releases
+          event-type: wasm-release
+          client-payload: '{"ref":"${{ steps.meta.outputs.ref }}","sha":"${{ steps.source.outputs.sha }}","provider":"${{ steps.meta.outputs.provider }}","version":"${{ steps.meta.outputs.version }}"}'
+
+      - name: 构建位置
+        run: printf '%s\n' 'https://github.com/Agent2Builder/agent2api-providers-releases/actions/workflows/wasm-release.yml'

@@ -1,5 +1,7 @@
 # 编译产物
 /target/
+/wasm/target/
+/wasm/dist/
 
 # 打包产物（scripts/pack.mjs 产出的 zip）
 /dist/

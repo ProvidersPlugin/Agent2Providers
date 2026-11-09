@@ -345,6 +345,8 @@ fn sign_material(request: &SignRequest<'_>) -> Result<Material, String> {
     for (name, value) in request.headers {
         out.set(name, value);
     }
+    let user_agent = agent2api_provider_sdk::egress::user_agent();
+    if !user_agent.is_empty() && out.contains("User-Agent") { out.set("User-Agent", &user_agent); }
     if !request.credential.security_token.is_empty() {
         out.set(HEADER_SECURITY_TOKEN, &request.credential.security_token);
     }

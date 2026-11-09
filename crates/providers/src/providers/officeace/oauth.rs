@@ -44,7 +44,7 @@ use serde_json::{json, Value};
 
 use crate::dpop::DpopKey;
 use crate::errors::GatewayError;
-use crate::http::describe_chain;
+use crate::http::{describe_chain, AccountRequest};
 use crate::logging;
 
 use super::signer::{self, Algorithm, Credential as SigningCredential};
@@ -132,7 +132,7 @@ async fn fetch_state() -> Result<String, String> {
         .header("Accept", "application/json")
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body("{}")
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("向云端申请 state 失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -198,7 +198,7 @@ async fn poll_code(state: &str) -> Result<Option<String>, String> {
         .get(&url)
         .header("Accept", "application/json")
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("轮询授权码失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -414,7 +414,7 @@ pub async fn refresh(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(form)
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("续期请求失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -493,7 +493,7 @@ async fn exchange_code(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(form)
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("换取临时凭据失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -564,7 +564,7 @@ pub(super) async fn fetch_permission(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("权限校验失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -615,7 +615,7 @@ async fn resolve_project_id(credential: &SigningCredential, region: &str) -> Opt
     for (name, value) in &headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.ok()?;
+    let response = request.with_account_user_agent().send().await.ok()?;
     if !(200..300).contains(&response.status().as_u16()) {
         return None;
     }
@@ -683,7 +683,7 @@ pub(super) async fn subscribe(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| GatewayError::with_status(
             502, format!("开通请求结果待确认：{}", describe_chain(&error)),

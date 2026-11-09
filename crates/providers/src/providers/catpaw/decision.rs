@@ -35,7 +35,7 @@ use crate::logging;
 
 use super::conversation::{registry, short_id, ConversationRequest};
 use super::fingerprint::{locate_increment, ChainPosition};
-use super::messages::normalize_continuation_messages;
+use super::messages::{is_directive, normalize_continuation_messages};
 use super::models::CatPawError;
 use super::prepare::Prepared;
 use super::registry::{InvalidationReason, SessionRecord, SessionResolution};
@@ -199,7 +199,7 @@ pub(super) fn decide(
 /// （原实现 `findPendingToolCallStart`）。
 ///
 /// 从后往前走，找最近一条「带非空 tool_calls 的 assistant」，再要求它之后的消息
-/// **全是 tool 且把每个 tool_call_id 都覆盖到**：
+/// **除已抽离的 system/developer 外全是 tool，且把每个 tool_call_id 都覆盖到**：
 ///   - 覆盖完整 → 这就是待响应集合（返回它的下标）；
 ///   - 全是 tool 但没覆盖完 → 本轮不是工具续接（原实现 `return -1`）；
 ///   - 中间混了别的角色 → 继续往前找（原实现内层 break 后继续外层循环）。
@@ -225,6 +225,9 @@ fn pending_tool_call_start(messages: &[Value]) -> Option<usize> {
             .collect();
         let mut valid = true;
         for item in &messages[index + 1..] {
+            if is_directive(item) {
+                continue;
+            }
             if item.get("role").and_then(Value::as_str) != Some("tool") {
                 valid = false;
                 break;

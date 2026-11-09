@@ -43,6 +43,7 @@ use agent2api_provider_sdk::PluginCtx;
 use serde_json::{Value, json};
 
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 use crate::logging;
 
 use super::{balance, chat, credentials::Credential, redact, signer};
@@ -232,7 +233,7 @@ async fn welfare_request(
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("CodeArts 活动请求失败：{}", crate::http::describe_chain(&error)),

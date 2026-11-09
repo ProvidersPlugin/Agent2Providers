@@ -16,6 +16,7 @@
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
 use serde_json::{Value, json};
+use crate::http::AccountRequest;
 
 use super::{GrowthAccount, bill_call, chat_call};
 
@@ -384,6 +385,7 @@ async fn fetch_cos_experts() -> Option<Vec<Value>> {
     let response = crate::http::control_client(None, "direct")
         .get(COS_EXPERT_URL)
         .timeout(std::time::Duration::from_secs(20))
+        .with_account_user_agent()
         .send()
         .await
         .ok()?;
@@ -437,6 +439,7 @@ async fn fetch_playbook_cases() -> Vec<ObjectId> {
     let response = crate::http::control_client(None, "direct")
         .get(&url)
         .timeout(std::time::Duration::from_secs(20))
+        .with_account_user_agent()
         .send()
         .await;
     let mut out: Vec<ObjectId> = Vec::new();

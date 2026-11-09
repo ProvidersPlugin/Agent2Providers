@@ -13,6 +13,7 @@
 //! 不重置、只做展示，不该让「本月已用完」被判成账号没额度。
 
 use agent2api_provider_sdk::PluginCtx;
+use crate::http::AccountRequest;
 use serde_json::{json, Value};
 
 use super::credentials::Credentials;
@@ -287,7 +288,7 @@ pub async fn fetch_usage_limits(
             .header("tokentype", "API_KEY")
             .timeout(std::time::Duration::from_millis(20_000))
             .json(&json!({ "origin": "KIRO_CLI" }))
-            .send()
+            .with_account_user_agent().send()
             .await
             .map_err(|error| format!("查询 Kiro 额度失败：{}", crate::http::describe(&error)))?;
         let status = response.status().as_u16();
@@ -315,7 +316,7 @@ pub async fn fetch_usage_limits(
         request = request.header("tokentype", kind);
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("查询 Kiro 额度失败：{}", crate::http::describe(&error)))?;
     let status = response.status().as_u16();

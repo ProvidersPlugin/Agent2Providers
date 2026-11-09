@@ -68,6 +68,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
 use super::endpoints;
@@ -659,6 +660,7 @@ pub(super) async fn send_json(
     }
     let response = builder
         .body(body.to_string())
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| egress::describe_chain(&error))?;

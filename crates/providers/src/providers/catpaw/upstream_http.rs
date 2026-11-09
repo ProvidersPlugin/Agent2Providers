@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::http as egress;
+use crate::http::AccountRequest;
 use crate::logging;
 
 use super::conversation::{short_id, CatPawCredentials, ConversationRequest};
@@ -115,7 +116,7 @@ pub(super) async fn post_json(
     if let Some(capture) = capture {
         capture.reset_request(&url, "catpaw", &headers, body);
     }
-    let response = builder.send().await.map_err(|error| {
+    let response = builder.with_account_user_agent().send().await.map_err(|error| {
         CatPawError::upstream(format!(
             "上游请求失败（{}）: {}",
             describe_proxy(proxy),
@@ -268,7 +269,7 @@ pub(super) async fn turn_request(
     for (key, value) in request_headers(&ctx.credentials, "text/event-stream") {
         builder = builder.header(key, value);
     }
-    let response = builder.send().await.map_err(|error| {
+    let response = builder.with_account_user_agent().send().await.map_err(|error| {
         CatPawError::upstream(format!(
             "上游请求失败（{}）: {}",
             describe_proxy(request.proxy.as_ref()),

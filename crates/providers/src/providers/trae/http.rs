@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 use crate::errors::GatewayError;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
@@ -50,6 +51,7 @@ pub async fn post_json(
     }
     let response = request
         .json(body)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| GatewayError::with_status(502, format!("Trae 请求发不出去：{}", egress::describe_chain(&error))))?;

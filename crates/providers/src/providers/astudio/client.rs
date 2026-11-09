@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use super::accounts::Credentials;
 use super::endpoints;
 use crate::http;
+use crate::http::AccountRequest;
 
 /// 桌面端版本（安装包 `package.json` 的 version，用于 `studioVersion` 头）。
 const STUDIO_VERSION: &str = "3.5.1";
@@ -89,6 +90,7 @@ async fn studio_request(
         .header("Cookie", credentials.cookie_header())
         .timeout(std::time::Duration::from_secs(20));
     let response = decorate(request)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {
@@ -151,6 +153,7 @@ pub async fn fetch_catalog(key: &str) -> Result<Value, CatalogError> {
         .get(endpoints::MODEL_MANAGER_URL)
         .header("Authorization", format!("Bearer {key}"))
         .header("Accept", "application/json")
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| CatalogError::Failed(http::describe(&error)))?;
@@ -187,6 +190,7 @@ pub async fn responses(
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
         .json(body)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {

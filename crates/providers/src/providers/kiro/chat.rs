@@ -22,6 +22,7 @@ use super::credentials::Credentials;
 use super::events::{Decoder, Event, Usage};
 use super::{endpoints, errors, models, refresh, request, PROVIDER_ID};
 use crate::{http, ids, logging};
+use crate::http::AccountRequest;
 
 fn sse(payload: &Value) -> Vec<u8> {
     format!("data: {payload}\n\n").into_bytes()
@@ -116,6 +117,7 @@ async fn ask(
         request_builder = request_builder.header("tokentype", kind);
     }
     let response = request_builder
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| (502, format!("请求 Kiro 失败：{}", http::describe(&error))))?;

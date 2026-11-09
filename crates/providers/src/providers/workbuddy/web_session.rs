@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use super::{catalog_access, contract, region::Region};
 use crate::{
     errors::GatewayError,
+    http::AccountRequest,
     flight::{Join, Table},
     store,
 };
@@ -137,7 +138,7 @@ async fn acquire(
         request = request.header("X-Refresh-Token", token);
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| transport_error("获取网页登录码", error))?;
     let status = response.status().as_u16();
@@ -190,7 +191,7 @@ async fn acquire(
         if let Some(cookie) = &cookie {
             request = request.header("Cookie", cookie);
         }
-        let response = match request.send().await {
+        let response = match request.with_account_user_agent().send().await {
             Ok(response) => response,
             Err(error) if cookie.is_some() => {
                 let _ = error;
@@ -303,7 +304,7 @@ pub(super) async fn request(
             request = request.json(body);
         }
         let response = request
-            .send()
+            .with_account_user_agent().send()
             .await
             .map_err(|error| transport_error("网页接口", error))?;
         let status = response.status().as_u16();

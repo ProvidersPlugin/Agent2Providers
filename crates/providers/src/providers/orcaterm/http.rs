@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use super::USER_AGENT;
 use crate::http;
+use crate::http::AccountRequest;
 
 /// JSON 请求的默认超时（建会话 / 续期 / 余额这类管理接口）。
 const REQUEST_TIMEOUT_MS: u64 = 20_000;
@@ -41,7 +42,7 @@ pub async fn post_json(
     for (name, value) in headers {
         request = request.header(name.as_str(), value);
     }
-    let response = request.send().await.map_err(|error| HttpFailure {
+    let response = request.with_account_user_agent().send().await.map_err(|error| HttpFailure {
         status: if error.is_timeout() { 504 } else { 502 },
         message: http::describe(&error),
     })?;

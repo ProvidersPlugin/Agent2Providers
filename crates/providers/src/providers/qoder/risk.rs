@@ -45,6 +45,7 @@ use base64::Engine;
 use sha2::Digest;
 
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 use crate::logging;
 
 use super::endpoints::Site;
@@ -656,6 +657,7 @@ async fn http_get(url: &str, timeout_ms: u64) -> Result<Vec<u8>, String> {
     let response = client
         .get(url)
         .timeout(Duration::from_millis(timeout_ms))
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| crate::http::describe_chain(&error))?;

@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::{errors::GatewayError, native_search};
+use crate::http::AccountRequest;
 use super::{chat_headers, errors, session_endpoint_of, session_of_record, WorkBuddyProvider};
 
 const MAX_QUERY_CHARS: usize = 4000;
@@ -61,7 +62,7 @@ async fn search_once(
     for (name, value) in chat_headers(&session, provider.region, Some("application/json")) {
         request = request.header(name, value);
     }
-    let response = request.send().await.map_err(native_search::transport)?;
+    let response = request.with_account_user_agent().send().await.map_err(native_search::transport)?;
     let (status, value) = native_search::read_response(response).await?;
     let code = value.get("code").and_then(|value| value.as_i64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok())));

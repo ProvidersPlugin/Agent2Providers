@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::{errors::GatewayError, native_search};
+use crate::http::AccountRequest;
 use super::{credentials::Credentials, endpoints, refresh, PROVIDER_ID};
 
 const MAX_QUERY_CHARS: usize = 200;
@@ -78,7 +79,7 @@ async fn search_once(
     if !credentials.is_api_key() {
         request = request.header("x-amzn-kiro-profile-arn", &credentials.profile);
     }
-    let response = request.send().await.map_err(native_search::transport)?;
+    let response = request.with_account_user_agent().send().await.map_err(native_search::transport)?;
     let (status, value) = native_search::read_response(response).await?;
     if !(200..300).contains(&status) {
         // 只有明确的登录失效才续期；普通 403（无权限）不能当成令牌过期反复打。

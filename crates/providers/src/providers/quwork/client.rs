@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use super::endpoints;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 #[derive(Clone)]
 pub struct Reply {
@@ -34,7 +35,7 @@ pub async fn request(
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request.send().await.map_err(network_error)?;
+    let response = request.with_account_user_agent().send().await.map_err(network_error)?;
     read_reply(response, &[token]).await
 }
 
@@ -43,7 +44,7 @@ pub async fn public_config(client: &Client) -> Result<Value, GatewayError> {
         .get(endpoints::CATALOG_URL)
         .header("Accept", "application/json")
         .header("Cache-Control", "no-cache")
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(network_error)?;
     let reply = read_reply(response, &[]).await?;

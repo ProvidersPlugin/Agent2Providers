@@ -107,41 +107,34 @@ pub fn region_of(profile: &str, signed_in: &str) -> String {
 
 /// 一个合法的 AWS 地区名（只按形态判：它要拼进 AWS 的主机名）。
 pub fn is_aws_region(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() < 9 || bytes.len() > 32 {
+    if !(9..=32).contains(&value.len()) {
         return false;
     }
-    let mut parts = value.split('-');
-    let (Some(first), Some(second)) = (parts.next(), parts.next()) else {
+    let parts: Vec<&str> = value.split('-').collect();
+    let Some((number, words)) = parts.split_last() else {
         return false;
     };
-    if first.len() != 2 || !first.chars().all(|ch| ch.is_ascii_lowercase()) {
-        return false;
-    }
-    if second.is_empty() || !second.chars().all(|ch| ch.is_ascii_lowercase()) {
-        return false;
-    }
-    let rest: Vec<&str> = parts.collect();
-    if rest.len() != 2 {
-        return false;
-    }
-    !rest[0].is_empty()
-        && rest[0].chars().all(|ch| ch.is_ascii_lowercase())
-        && !rest[1].is_empty()
-        && rest[1].chars().all(|ch| ch.is_ascii_digit())
+    words.len() >= 2
+        && words[0].len() == 2
+        && words
+            .iter()
+            .all(|word| !word.is_empty() && word.bytes().all(|ch| ch.is_ascii_lowercase()))
+        && (1..=2).contains(&number.len())
+        && number.bytes().all(|ch| ch.is_ascii_digit())
 }
 
 /// 是 https 且不带用户名的地址（AWS Start URL 的形态检查）。
 pub fn is_https_url(value: &str) -> bool {
-    let trimmed = value.trim();
-    let Some(rest) = trimmed.strip_prefix("https://") else {
-        return false;
-    };
-    if rest.is_empty() || rest.starts_with('/') {
+    if value.bytes().any(|ch| ch <= b' ' || ch == 0x7f) {
         return false;
     }
-    let authority = rest.split('/').next().unwrap_or("");
-    !authority.is_empty() && !authority.contains('@')
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 /// AWS JSON 1.0 的 `x-amz-target`（控制面操作名）。

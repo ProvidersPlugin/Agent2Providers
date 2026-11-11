@@ -282,9 +282,9 @@ pub(super) fn apply_to_anthropic(
 /// 也留得住正文，所以这里对「短输出且客户端没点名」的情形注 `low`。
 ///
 /// 体里点名了就用它的档位（客户端显式传的、或映射上绑的默认档 —— 两者走到
-/// 这里都已经是同一个 [`EFFORT_FIELD`] 键）；没点名又不像短输出则**不注入**
-/// （保持上游默认，实测约 100 个思考 token，属于正常量级）——与 Anthropic
-/// 那条通道不同，那边「不注入」会让上游按自己的默认想到把额度吃光，这边不会。
+/// 这里都已经是同一个 [`EFFORT_FIELD`] 键）；没点名又不像短输出则**注入
+/// 官方默认档 max**（2026-11-07 起；此前是不注入、保持上游默认 ≈100 个思考
+/// token，与官方客户端 defaultLevel=max 不符）。
 ///
 /// ── 5.2 与 5.3 的两点差别 ────────────────────────────────────
 ///   · 归一表不同：5.2 走 [`normalize_glm52`]（可关思考，`none` / `minimal`
@@ -315,7 +315,11 @@ pub(super) fn apply_to_chat(body: &mut Value, model: &str) {
             None if client_max.is_some_and(|value| value < SHORT_OUTPUT_TOKENS) => {
                 Some(Level::Low.as_str().to_string())
             }
-            None => None,
+            // 2026-11-07：没点名时也按官方默认档 max 注入（此前这里是
+            // `None`，保持上游默认 ≈100 个思考 token）。官方客户端在没被
+            // 点名时用的就是目录的 defaultLevel=max；对齐后这条通道的
+            // 思考深度与套餐池（anthropic 通道）一致。
+            None => Some(Level::Max.as_str().to_string()),
         }
     } else {
         // 没点名（读不到值）时保持上游默认，不注入

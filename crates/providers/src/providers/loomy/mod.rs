@@ -141,7 +141,18 @@ impl Provider for LoomyProvider {
                 let client = crate::http::control_client(req.proxy.as_ref(), &ctx.env.proxy);
                 let refreshed = models::refresh(&client, &credentials.session, false).await;
                 if let Some(message) = refreshed.message {
-                    return Err(message);
+                    // 目录查不到通常不是「这份请求坏了」，而是「这个账号发不出去」
+                    // （上游对该账号判停用：业务码 100003；或会话失效：020002 / 100002）。
+                    //
+                    // 直接 `Err(message)` 会被 SDK 包成 `WireError{code:"internal"}`，网关
+                    // 据此判成**构造期**的默认 502；而网关在构造期只对 556（本地前置条件）
+                    // 与 `account_model_unavailable` / `account_model_permissions_unknown`
+                    // 走「按队列顺延下一个账号」，其余构造期错误一律直接返回 —— 一次刷新
+                    // 失败就会把整轮对话判死，队列里的其它可用账号也没有机会被尝试。
+                    //
+                    // 改报 `local_precondition`（网关映射成 556）：这一家发不出去就顺着
+                    // 队列换下一个账号继续试，换满预算才把最后的原因交给客户端。
+                    return Err(agent2api_provider_sdk::local_precondition(message));
                 }
                 protocol = models::protocol(&model);
             }

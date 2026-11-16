@@ -215,6 +215,12 @@
       "label": "QuWork",
       "order": 33,
       "default_enabled": true
+    },
+    {
+      "id": "jev-ai",
+      "label": "Jev AI（判决模型 · 签到）",
+      "order": 34,
+      "default_enabled": true
     }
   ],
   "icons": "assets",

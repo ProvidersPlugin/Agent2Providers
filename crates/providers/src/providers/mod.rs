@@ -66,6 +66,8 @@ pub mod kiro;
 pub mod astudio;
 #[cfg(feature = "quwork")]
 pub mod quwork;
+#[cfg(feature = "jevai")]
+pub mod jevai;
 
 use agent2api_provider_sdk::BoxProvider;
 
@@ -190,6 +192,10 @@ pub fn registry() -> Vec<BoxProvider> {
 
     #[cfg(feature = "quwork")]
     list.push(Box::new(quwork::QuWorkProvider));
+
+    // Jev AI（jev-ai.pro）：上游没有对话接口，只有签到与余额 —— 见 `jevai` 的模块头。
+    #[cfg(feature = "jevai")]
+    list.push(Box::new(jevai::JevAiProvider));
 
     list
 }

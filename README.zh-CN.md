@@ -36,6 +36,7 @@
 | Antigravity（Google，Gemini / Claude / GPT-OSS） | ✓（对话 / 生图 / 参考图编辑） | ✓ | ✓ | — | — | — |
 | OfficeAce（华为云果办 / OfficeClaw） | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | OrcaTerm（腾讯云遨驰终端） | ✓ | ✓ | ✓ | ✓ | — | — |
+| Jev AI（jev-ai.pro，判决模型） | — | — | — | ✓ | ✓ | — |
 | ModelScope（魔搭，国内版 / 国际版） | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode（AtomGit / GitCode） | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI（网易有道「有道龙虾」） | ✓ | ✓ | ✓ | ✓ | ✓ | — |

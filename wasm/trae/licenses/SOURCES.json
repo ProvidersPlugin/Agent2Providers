@@ -1,0 +1,11 @@
+{
+  "provider": "trae",
+  "source": "Agent2Providers/crates/providers/src/providers/trae",
+  "license": "Agent2Providers-AGPL-3.0.txt",
+  "references": [
+    { "repository": "https://github.com/lg996/cpa-multi-plugins", "revision": "25ef77ba9d94dcc5f53d322727443153519b8afd", "path": "plugins/trae", "license": "cpa-multi-plugins-MIT.txt", "scope": "Native Trae OAuth, credentials, SSE, usage and check-in protocol reference" },
+    { "repository": "https://github.com/yetone/magpie", "license": "magpie-MIT.txt", "scope": "Native Trae model catalogue and account capability reference" },
+    { "repository": "https://github.com/magpie-community/plugins", "revision": "7ea611975a40675a6b8e70cb26bba2b4525304d0", "path": "packages/trae", "license": "magpie-community-MIT.txt", "scope": "Device-proof renewal for saved device keys, original-device check-in, native tool snapshots and token-usage protocol comparison; no native credential reader copied" }
+  ],
+  "icon": { "source": "Agent2API/desktop-tauri/ui/assets/providers/trae.png", "scope": "Existing Trae provider identification asset; no ownership of Trae trademarks asserted" }
+}

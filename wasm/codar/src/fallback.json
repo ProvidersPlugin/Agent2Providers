@@ -1,0 +1,19 @@
+[
+  {"id":"auto","context":1000000,"output":393216,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"claude-opus-5-5","context":1000000,"output":128000,"protocol":"anthropic","images":true,"authentication":"x-api-key"},
+  {"id":"claude-opus-5-5-kiro","context":1000000,"output":128000,"protocol":"anthropic","images":true,"authentication":"x-api-key"},
+  {"id":"claude-sonnet-5-5","context":1000000,"output":128000,"protocol":"anthropic","images":true,"authentication":"x-api-key"},
+  {"id":"claude-sonnet-5-5-kiro","context":1000000,"output":128000,"protocol":"anthropic","images":true,"authentication":"x-api-key"},
+  {"id":"deepseek-v4.1-flash","context":1000000,"output":393216,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"deepseek-v4.1-flash-economy","context":1000000,"output":393216,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"gemini-4-argon","context":1048576,"output":65536,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"gpt-5.6-sol","context":1050000,"output":128000,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"gpt-6-astra","context":1050000,"output":128000,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"gpt-6.1-sol","context":1050000,"output":128000,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"deepseek-v4-pro","context":1000000,"output":393216,"protocol":"chat","images":false,"authentication":"bearer"},
+  {"id":"deepseek-v4-flash","context":1000000,"output":393216,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"glm-5.2","context":1000000,"output":131072,"protocol":"chat","images":false,"authentication":"bearer"},
+  {"id":"glm-5.3","context":1000000,"output":131072,"protocol":"chat","images":false,"authentication":"bearer"},
+  {"id":"gpt-6-sol","context":1050000,"output":128000,"protocol":"chat","images":true,"authentication":"bearer"},
+  {"id":"glm-5.3-flash","context":1000000,"output":131072,"protocol":"chat","images":true,"authentication":"bearer"}
+]

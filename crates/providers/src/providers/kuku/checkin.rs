@@ -27,7 +27,9 @@
 //! GET  /act/v2/kukuai30/homepage?tid=…
 //!      → {signed_today, continuous_days, total_days, …}
 //! GET  /operation/activitys/api/getJsToken
-//!      → {jsToken: "function fn(a){…};fn(\"HEX\")"}（URL 编码）
+//!      → {jsToken: "function fn(a){…};fn(\"HEX\")"}（URL 编码；也可能返回 null）
+//! GET  /operation/activitys/kukuPcSignAct/main
+//!      → 接口未给凭证时，从活动页的内联脚本读取同一凭证，不执行脚本
 //! POST /act/v2/kukuai30/signin?tid=…&jsToken=…&aid=15459
 //!      → {continuous, signed_today:true}；已签返回 errno=10152
 //! ```
@@ -51,6 +53,8 @@ use crate::logging;
 use super::credentials;
 use super::http;
 use super::{BASE_URL, USER_AGENT, WEB_QUERY};
+
+mod token;
 
 /// 每日可自助完成的任务（类型，展示名）。展示名用于结果文案。
 const DAILY_TASKS: [(&str, &str); 2] = [("LOGIN", "每日登录"), ("CHAT", "完成一次对话")];
@@ -146,20 +150,9 @@ async fn signin_thirty_days(credentials: &credentials::KukuCredentials) -> Thirt
         return ThirtyDaySignin::Already { continuous, total };
     }
 
-    let token_url = format!("{BASE_URL}/operation/activitys/api/getJsToken");
-    let token_value = match http::get_json_value(&token_url, &headers, None, Some(30_000)).await {
-        Ok(value) => value,
-        Err(error) => {
-            return ThirtyDaySignin::Failed(format!("签到凭证获取失败：{}", error.message))
-        }
-    };
-    let Some(token) = token_value
-        .get("data")
-        .and_then(|data| data.get("jsToken"))
-        .and_then(Value::as_str)
-        .and_then(extract_js_token)
-    else {
-        return ThirtyDaySignin::Failed("签到凭证为空（jsToken 解析失败）".to_string());
+    let token = match token::fetch(&headers).await {
+        Ok(token) => token,
+        Err(message) => return ThirtyDaySignin::Failed(message),
     };
 
     let sign_url =
@@ -175,7 +168,12 @@ async fn signin_thirty_days(credentials: &credentials::KukuCredentials) -> Thirt
             .get("continuous")
             .and_then(Value::as_u64)
             .unwrap_or(continuous as u64) as u32;
-        let total = total.max(continuous);
+        let total = data
+            .get("total_days")
+            .and_then(Value::as_u64)
+            .map(|value| value as u32)
+            .unwrap_or_else(|| total.saturating_add(1))
+            .max(continuous);
         if data
             .get("signed_today")
             .and_then(Value::as_bool)
@@ -235,46 +233,6 @@ fn activity_config(value: &Value) -> Option<(String, u32)> {
         return Some((tid, point));
     }
     None
-}
-
-/// 风控 token 是 URL 编码的 JS 片段：`function fn(a){...};fn("HEX")`。
-/// 取最后一对引号里的值即可，不执行任何 JS。
-fn extract_js_token(raw: &str) -> Option<String> {
-    let decoded = percent_decode(raw);
-    let end = decoded.rfind('"')?;
-    let start = decoded[..end].rfind('"')?;
-    let token = &decoded[start + 1..end];
-    (!token.is_empty()).then(|| token.to_string())
-}
-
-/// 只解码 `%XX`（风控 token 片段只用到这一层编码）。
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) =
-                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-            {
-                out.push(high * 16 + low);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// KukuAI 账号的每日签到（自动签到框架的 claim）。

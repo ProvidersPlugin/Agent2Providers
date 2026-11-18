@@ -40,6 +40,7 @@ pub mod models;
 pub mod onboarding;
 mod request_headers;
 pub mod sign;
+mod sms;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture};
@@ -382,7 +383,7 @@ impl Provider for LoomyProvider {
         ctx: &'a PluginCtx,
         input: proto::NormalizeInput,
     ) -> SendFuture<'a, proto::NormalizedAccount> {
-        Box::pin(credentials::normalize(ctx, input))
+        Box::pin(async move { credentials::normalize(ctx, sms::account_input(input)?).await })
     }
 
     fn account_view(&self, secret: &Value) -> Result<proto::AccountView, String> {
@@ -418,6 +419,9 @@ impl Provider for LoomyProvider {
     ) -> SendFuture<'a, Value> {
         Box::pin(async move {
             match action {
+                "auth.methods" => Ok(sms::methods()),
+                "login.sms.send" => sms::send(ctx, payload).await,
+                "login.sms.verify" => sms::verify(ctx, payload).await,
                 "login.sms-send" => {
                     let phone = payload
                         .get("phone")

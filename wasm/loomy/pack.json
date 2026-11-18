@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-loomy",
+  "name": "Loomy",
+  "description": "独立的 Loomy 提供商，支持短信、密码与本机登录快照导入、Chat 与 Messages 对话、账号模型目录、双钱包积分、每日登录积分、新手任务及图片生成和参考图编辑。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "loomy", "label": "Loomy", "order": 5, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "loomy.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

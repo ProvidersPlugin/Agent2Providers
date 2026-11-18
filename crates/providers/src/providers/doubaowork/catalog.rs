@@ -22,6 +22,12 @@ pub struct Model {
     pub mode_id: Option<String>,
     pub mode_name: Option<String>,
     pub deep_think: i64,
+    #[serde(default)]
+    pub reasoning_default: Option<u64>,
+    #[serde(default)]
+    pub reasoning_levels: Vec<u64>,
+    #[serde(default)]
+    pub conversation_mode: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -70,6 +76,13 @@ fn model_row(row: &Value, mode: Option<&Value>) -> Option<Model> {
     if mode_id.as_deref() == Some("2") && deep_think == 4 {
         deep_think = 3;
     }
+    let reasoning = &row["reasoning_effort_config"];
+    let reasoning_levels: Vec<_> = reasoning["option_list"].as_array().into_iter().flatten()
+        .filter_map(|option| api::number(&option["level"]))
+        .filter(|level| (1..=65535).contains(level)).collect();
+    let reasoning_default = api::number(&reasoning["default_level"])
+        .filter(|level| reasoning_levels.contains(level));
+    let conversation_mode = mode.and_then(|mode| api::identifier(&mode["default_conversation_mode"]));
     Some(Model {
         id,
         name,
@@ -78,6 +91,9 @@ fn model_row(row: &Value, mode: Option<&Value>) -> Option<Model> {
         mode_id,
         mode_name,
         deep_think,
+        reasoning_default,
+        reasoning_levels,
+        conversation_mode,
     })
 }
 
@@ -110,6 +126,12 @@ fn directory(value: &Value) -> BTreeMap<String, Model> {
         if let Some(previous) = variants.iter_mut().find(|previous| {
             previous.mode_id == model.mode_id && previous.agent_mode == model.agent_mode
         }) {
+            let mut model = model;
+            if model.reasoning_levels.is_empty() {
+                model.reasoning_levels = previous.reasoning_levels.clone();
+                model.reasoning_default = previous.reasoning_default;
+            }
+            if model.conversation_mode.is_none() { model.conversation_mode = previous.conversation_mode.clone(); }
             *previous = model;
         } else {
             variants.push(model);
@@ -153,6 +175,7 @@ fn directory(value: &Value) -> BTreeMap<String, Model> {
                         &v2["default_select_mode_map"]["new_chat"]["mode_id"],
                     ))
                 })
+                .or_else(|| find(api::identifier(&v2["default_select_mode_map"]["office"]["mode_id"])))
                 .or_else(|| {
                     modes.iter().find(|mode| {
                         api::number(&mode["agent_mode"]) == Some(2) && mode_permits_model(row, mode)
@@ -221,8 +244,14 @@ fn agent_model(models: &BTreeMap<String, Model>) -> Option<Model> {
 fn model_records(catalog: &Catalog) -> Vec<Value> {
     let mut rows: Vec<Value> = catalog.models.iter().map(|(id, model)| {
         let mut value = json!({"id":id,"name":model.name,"supportsImages":true,"supportsReasoning":model.deep_think != 0 || model.mode_id.is_some(),"supportsToolCall":true,"toolCallEmulated":true});
-        if let Some(context) = model.extra.get("context_window").or_else(||model.extra.get("max_input_tokens")).and_then(Value::as_u64) {
+        if let Some(context) = model.extra.get("context_window").or_else(||model.extra.get("max_input_tokens"))
+            .or_else(|| model.extra.get("total_window_size")).and_then(api::number) {
             value["maxInputTokens"] = json!(context);
+        }
+        if !model.reasoning_levels.is_empty() {
+            value["reasoningEffortLevels"] = json!(model.reasoning_levels.iter().filter_map(|level| {
+                match level { 3 => Some("low"), 4 | 8 => Some("medium"), 5 => Some("high"), 6 => Some("xhigh"), 7 => Some("max"), _ => None }
+            }).collect::<Vec<_>>());
         }
         value
     }).collect();
@@ -278,7 +307,7 @@ async fn fetch(
     force: bool,
 ) -> Result<(Catalog, bool), GatewayError> {
     let cookie = accounts::cookie_header(credentials)?;
-    let fingerprint: String = Sha256::digest(cookie)
+    let fingerprint: String = Sha256::digest(format!("doubaowork-catalog-v2\0{cookie}"))
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();

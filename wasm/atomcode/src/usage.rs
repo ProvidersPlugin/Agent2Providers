@@ -7,17 +7,34 @@ pub fn parse_time(text: &str) -> Option<i64> {
             .map(|time| time.timestamp_millis()))
 }
 
+pub fn plan(status: &Value) -> &Value {
+    status.get("codingplan_free").filter(|value| value.is_object())
+        .or_else(|| status.get("plan").filter(|value| value.is_object())).unwrap_or(&Value::Null)
+}
+
 pub fn active_until(status: &Value) -> Option<i64> {
-    parse_time(status["codingplan_free"]["expires_at"].as_str().unwrap_or(""))
+    parse_time(plan(status)["expires_at"].as_str().unwrap_or(""))
         .filter(|until| *until > sdk::now())
 }
 
 pub fn active(status: &Value) -> bool {
-    let plan = &status["codingplan_free"];
-    match parse_time(plan["expires_at"].as_str().unwrap_or("")) {
+    match parse_time(plan(status)["expires_at"].as_str().unwrap_or("")) {
         Some(until) => until > sdk::now(),
-        None => plan["remaining_days"].as_i64().unwrap_or(0) > 0,
+        None => plan(status)["remaining_days"].as_i64().unwrap_or(0) > 0,
     }
+}
+
+pub fn needs_claim(status: &Value) -> Option<bool> {
+    if active(status) { return Some(false); }
+    let plan = plan(status);
+    if let Some(until) = parse_time(plan["expires_at"].as_str().unwrap_or("")) {
+        return Some(until <= sdk::now());
+    }
+    if let Some(days) = plan["remaining_days"].as_i64() { return Some(days <= 0); }
+    if ["codingplan_free", "plan"].iter().any(|key| status.get(*key).is_some_and(Value::is_null)) {
+        return Some(true);
+    }
+    None
 }
 
 pub fn shape(status: &Value) -> Value {
@@ -34,9 +51,12 @@ pub fn shape(status: &Value) -> Value {
             "resetAt": item["reset_at_display"], "exhausted": item["quota_exhausted"] == true
         }))
     }).collect();
-    let mut subscription = json!({ "status": if active(status) { "active" } else { "inactive" } });
-    if let Some(name) = status["codingplan_free"]["plan_name"].as_str() { subscription["planName"] = json!(name); }
-    if let Some(time) = status["codingplan_free"]["expires_at"].as_str() { subscription["planExpiresAt"] = json!(time); }
+    let plan = plan(status);
+    let mut subscription = json!({ "status": match needs_claim(status) {
+        Some(false) => "active", Some(true) => "inactive", None => "unknown"
+    } });
+    if let Some(name) = plan["plan_name"].as_str() { subscription["planName"] = json!(name); }
+    if let Some(time) = plan["expires_at"].as_str() { subscription["planExpiresAt"] = json!(time); }
     let quota_sources: Vec<Value> = wallets.iter().map(|wallet| {
         let hours = wallet["windowHours"].as_i64().unwrap_or(0);
         let mut source = json!({ "id": format!("calls:{hours}"), "provider": "atomcode",
@@ -46,7 +66,6 @@ pub fn shape(status: &Value) -> Value {
         source
     }).collect();
     let mut result = json!({ "unit": "次", "wallets": wallets, "subscription": subscription, "quotaSources": quota_sources });
-    // 缺字段是未知，不是零余额；只有完整窗口才能参与账号限额判定。
     if let Some(first) = wallets.first() {
         result["available"] = first["remaining"].clone();
         result["subscription"]["remainQuota"] = first["remaining"].clone();

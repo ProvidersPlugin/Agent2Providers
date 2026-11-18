@@ -54,7 +54,7 @@ pub async fn run(
             sink.send(api::error_body(&error).to_string().as_bytes())
                 .await
         }
-        Err(error) => Err(error.message),
+        Err(error) => sink.send(format!("data: {}\n\n", api::error_body(&error)).as_bytes()).await,
     }
 }
 
@@ -96,8 +96,11 @@ async fn forward(
     }
     let mut turn = stream::Turn::new(response);
     let id = crate::ids::random_id("chatcmpl");
+    head(sink, 200, true).await.map_err(GatewayError::from)?;
+    *sent_head = true;
     if bridge.active() {
         while turn.next().await?.is_some() {}
+        if let Some(error) = turn.decoder.restriction() { return Err(error.clone()); }
         // 出图的链接由 `drain_images` 在流末才交出来（见 `stream::Decoder`：
         // 无水印原图比预览晚到），所以这里先取正文、再补图片链接。
         let text = turn.decoder.text.clone();
@@ -125,8 +128,6 @@ async fn forward(
                 call["index"] = json!(index);
             }
         }
-        head(sink, 200, true).await.map_err(GatewayError::from)?;
-        *sent_head = true;
         sink.send(&chunk(&id, &request.wire_model, message, Value::Null))
             .await
             .map_err(GatewayError::from)?;
@@ -140,8 +141,6 @@ async fn forward(
         )
         .await
         .map_err(|_| GatewayError::with_status(504, "豆包工作未在限时内开始回答"))??;
-        head(sink, 200, true).await.map_err(GatewayError::from)?;
-        *sent_head = true;
         // 允许第一帧就是流末（`None`）：生图这一类回答可能**只有图片没有正文**，
         // 图片在流末由 `drain_images` 补发，这里把"没有正文"提前判死会误报。
         let mut next = first;
@@ -150,11 +149,13 @@ async fn forward(
                 stream::Delta::Text(text) => json!({"role":"assistant","content":text}),
                 stream::Delta::Reasoning(reasoning) => json!({"reasoning_content":reasoning}),
             };
+            if let Some(error) = turn.decoder.restriction() { return Err(error.clone()); }
             sink.send(&chunk(&id, &request.wire_model, body, Value::Null))
                 .await
                 .map_err(GatewayError::from)?;
             next = turn.next().await?;
         }
+        if let Some(error) = turn.decoder.restriction() { return Err(error.clone()); }
         if turn.decoder.text.is_empty() && !turn.decoder.has_images() {
             return Err(GatewayError::with_status(
                 502,

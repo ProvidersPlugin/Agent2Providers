@@ -1,0 +1,19 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "locks.v1",
+    "sessions.v1", "state.v1", "catalog.v1", "settings.v1", "chat.stream.v1",
+    "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1",
+    "checkin.rolling.v1", "errors.v1"
+  ],
+  "helpers": ["desktop.credentials.quwork.v1", "desktop.device.quwork.v1"],
+  "origins": [
+    "https://llm.rrzu.com",
+    "https://qurwork-llm.rrzu.com",
+    "https://llm.quwork.cn",
+    "https://img1.rrzuji.cn"
+  ],
+  "memory_mib": 64,
+  "concurrency": 8
+}

@@ -54,7 +54,7 @@ async fn execute(
         let value = rewards::campaign_detail(client, credentials, &attempt.group).await?;
         ensure_day(&ledger.day)?;
         let task = find_pending_task(&value, attempt)?;
-        if task.checked {
+        if task.checked == Some(true) {
             let result = completed(&task, false, None);
             clear(ctx, account, ledger).await;
             return Ok(result);
@@ -96,8 +96,11 @@ async fn execute(
     };
     ensure_day(&ledger.day)?;
     // 每日任务已有明确的布尔标记，不能用 task_status=3 覆盖 checked_in_today=false。
-    if task.checked {
+    if task.checked == Some(true) {
         return Ok(completed(&task, false, None));
+    }
+    if task.checked != Some(false) {
+        return Err(GatewayError::with_status(502, "豆包工作每日签到状态未知，未提交领取"));
     }
     let body = json!({"scene": task.group});
     ensure_day(&ledger.day)?;
@@ -110,6 +113,7 @@ async fn execute(
         submitted_at: crate::http::now_ms(),
         rounds: 1,
         points: task.points,
+        replayed: false,
     });
     // 保存失败就不发写请求，防止重启或并发点击丢掉重复提交保护。
     ledger.save(ctx, account).await?;
@@ -136,12 +140,15 @@ async fn execute(
         }
     }
     if let Ok(value) = response {
-        if let Some(points) = crate::quota::number(value.pointer("/data/reward_amount")) {
-            if let Some(attempt) = ledger.pending.as_mut() {
+        if let Some(attempt) = ledger.pending.as_mut() {
+            attempt.replayed = value["data"]["idempotent"] == true;
+            if let Some(points) = crate::quota::number(value.pointer("/data/reward_amount"))
+                .filter(|points| *points >= 0.0)
+            {
                 attempt.points = Some(points);
             }
-            ledger.save(ctx, account).await?;
         }
+        ledger.save(ctx, account).await?;
     }
     reconcile(ctx, account, credentials, client, ledger, true).await
 }
@@ -155,17 +162,29 @@ fn receipt(value: &Value) -> Result<(), GatewayError> {
             return Err(api::error(200, error));
         }
     }
+    if data.get("idempotent") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
     match data.get("checked_in").and_then(Value::as_bool) {
         Some(true) => Ok(()),
-        Some(false) => Err(GatewayError::with_status(502, "豆包工作未完成签到，稍后查询官方状态")),
-        None => Err(GatewayError::with_status(502, "豆包工作签到回执缺少完成标记，稍后查询官方状态")),
+        Some(false) => Err(GatewayError::with_status(
+            502,
+            "豆包工作未完成签到，稍后查询官方状态",
+        )),
+        None => Err(GatewayError::with_status(
+            502,
+            "豆包工作签到回执缺少完成标记，稍后查询官方状态",
+        )),
     }
 }
 
-fn find_pending_task(value: &Value, attempt: &state::Attempt) -> Result<rewards::Task, GatewayError> {
+fn find_pending_task(
+    value: &Value,
+    attempt: &state::Attempt,
+) -> Result<rewards::Task, GatewayError> {
     rewards::tasks(value, &attempt.group)
         .into_iter()
-        .find(|task| task.daily && task.key == attempt.item && task.group == attempt.group)
+        .find(|task| task.daily && task.checked.is_some() && task.key == attempt.item && task.group == attempt.group)
         .ok_or_else(|| {
             GatewayError::with_status(
                 502,
@@ -229,8 +248,8 @@ async fn reconcile(
         ensure_day(&ledger.day)?;
         let after = find_pending_task(&value, &attempt)?;
         queried = true;
-        if after.checked {
-            let result = completed(&after, submitted_now, attempt.points);
+        if after.checked == Some(true) {
+            let result = completed(&after, submitted_now && !attempt.replayed, attempt.points);
             clear(ctx, account, ledger).await;
             return Ok(result);
         }

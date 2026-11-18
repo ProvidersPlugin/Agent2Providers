@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-dumate",
+  "license": "AGPL-3.0-only",
+  "attributions": [
+    {
+      "project": "dumate2api",
+      "repository": "https://github.com/wearetheone777/dumate2api",
+      "commit": "a0ffae0cf359ccdc7ec0dfbbbf74edcd964fef60",
+      "license": "MIT",
+      "paths": [
+        "src/web-pool.js", "src/dumate-web.js", "src/modelmap.js",
+        "src/model-info.js", "src/qianfan-raw.js", "src/media.js", "src/login-browser.js", "src/auth-import.js"
+      ],
+      "licenseText": "dumate2api-MIT.txt",
+      "scope": "以 Rust / WASM 改写网页 Cookie 换证、云端对话、模型路由、积分查询、每日签到和文生图协议；官方登录窗口与单次固定客户端快照按相同公开格式接入，不包含参考项目的账号池、桌面进程启动、自动任务或抽奖执行。"
+    },
+    {
+      "project": "EchoBird",
+      "repository": "https://github.com/edison7009/EchoBird",
+      "commit": "5a50a1b40f13fd6096de6daa7e9949d19138b84f",
+      "license": "MIT",
+      "paths": ["src-tauri/src/services/dumate_accounts/api.rs", "src-tauri/src/services/dumate_accounts/login.rs", "src-tauri/src/services/dumate_accounts/native.rs"],
+      "licenseText": "EchoBird-MIT.txt",
+      "scope": "参考 BCE 个人账号身份字段、Cookie/CSRF 会话格式、只读额度参数和官方固定客户端 AES-GCM 排布；不包含企业动态服务、客户端修改或进程执行。"
+    }
+  ],
+  "assets": [
+    {
+      "path": "assets/logo.png",
+      "source": "https://now.bdstatic.com/store/v2/d33e0f5/dumate-portal/a6e192b/favicon.png",
+      "owner": "Baidu / DuMate",
+      "license": "Official product mark; used only to identify the provider, not relicensed under AGPL or MIT."
+    }
+  ],
+  "proprietaryClientIncluded": false,
+  "externalExecutableIncluded": false,
+  "liveAccountVerified": false
+}

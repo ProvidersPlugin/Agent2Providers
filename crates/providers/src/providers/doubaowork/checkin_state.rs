@@ -31,6 +31,8 @@ pub(super) struct Attempt {
     pub submitted_at: i64,
     pub rounds: u32,
     pub points: Option<f64>,
+    #[serde(default)]
+    pub replayed: bool,
 }
 
 impl Attempt {

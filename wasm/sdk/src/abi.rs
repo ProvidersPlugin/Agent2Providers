@@ -52,7 +52,18 @@ pub fn host(method: &str, params: Value) -> Result<Value> {
         }
         let result: Value = serde_json::from_slice(&buffer).map_err(|_| Error::new("主程序返回内容无效"))?;
         if let Some(error) = result.get("error") {
-            return Err(serde_json::from_value(error.clone()).unwrap_or_else(|_| Error::new("主程序调用失败")));
+            let mut error: Error = serde_json::from_value(error.clone()).unwrap_or_else(|_| Error::new("主程序调用失败"));
+            if let Some(metadata) = error.code.as_deref().and_then(|code| code.strip_prefix("provider_http:"))
+                .and_then(|payload| serde_json::from_str::<Value>(payload).ok()) {
+                if let Some(status) = metadata["status"].as_u64().and_then(|status| u16::try_from(status).ok()).filter(|status| (400..600).contains(status)) {
+                    error.status = Some(status);
+                    error.code = metadata["code"].as_str().map(str::to_string);
+                    error.upstream_code = metadata["upstreamCode"].as_i64();
+                    error.reset_at = metadata["resetAt"].as_i64();
+                    error.credential_scope = metadata["credentialScope"].as_str().map(str::to_string);
+                }
+            }
+            return Err(error);
         }
         result.get("result").cloned().ok_or_else(|| Error::new("主程序缺少调用结果"))
     }

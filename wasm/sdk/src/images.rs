@@ -5,6 +5,13 @@ pub struct Resource {
 }
 
 impl Resource {
+    /// 下载已授权的公网图片；不发送账号凭据，返回已封存的当前调用资源。
+    pub fn fetch_public(url: &str) -> Result<Self> {
+        let value = host("resource.fetch_public", json!({ "url": url }))?;
+        Ok(Self { id: value["id"].as_str().filter(|id| !id.is_empty())
+            .ok_or_else(|| crate::Error::new("公共图片资源标识缺失"))?.into() })
+    }
+
     pub fn create(mime: &str) -> Result<Self> {
         let value = host("resource.create", json!({ "mime": mime }))?;
         Ok(Self { id: value["id"].as_str().ok_or_else(|| crate::Error::new("资源标识缺失"))?.into() })

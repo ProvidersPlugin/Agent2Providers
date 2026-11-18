@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-astudio",
+  "name": "AStudio",
+  "description": "独立 AStudio 提供商，支持本机登录态导入、短信与密码登录、极验、凭据导入、Responses 对话、账号模型目录、积分和每日登录奖励；本机固定只读，无需额外辅助插件授权，不提供自动续期。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "astudio", "label": "AStudio", "order": 32, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "astudio.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

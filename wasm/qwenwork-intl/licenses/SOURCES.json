@@ -1,0 +1,75 @@
+{
+  "formatVersion": 1,
+  "provider": "qwenwork-intl",
+  "modifiedAt": "2026-11-14",
+  "sources": [
+    {
+      "source": "Agent2Providers/crates/providers/src/providers/qoder",
+      "repositoryHeadAtPort": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+      "scope": "Site::QwenworkIntl only: fixed international origin, device PKCE parameters, account identity, renewal, complete Qwenwork COSY identity, qwork catalog, chat protocol and account context",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Ported into an isolated wasm32-unknown-unknown provider. Network, entropy, time, locks and state use controlled host services. No filesystem, environment, process, native-helper, PAT, job-token, UMID or campaign implementation is included. International wallet requests are deliberately absent because the native baseline has no evidence for them.",
+      "evidence": "The native endpoints module attributes the international origin, client_id and redirect_uri to EchoBird and records device-entry checks with a hyphenated UUID nonce. This is not a verified end-to-end international login or chat result.",
+      "limitations": "International COSY client fields, token lifecycle, catalog and account-context shapes are native baseline inferences from the same product's China implementation, not independently verified international behavior. Native comments cite dumate2api without a pinned revision; no such revision is fabricated."
+    },
+    {
+      "source": "Agent2Providers/wasm/qwenwork/src",
+      "sourceSnapshotSha256": "a08735b29b43afef04d578fe625290420b9f8184c67d32d9126fcc4f497dc90e",
+      "scope": "Locally copied protocol algorithms and reviewed controlled-host account, login, model and chat patterns",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Ordinary local source copies, not path dependencies or cross-directory includes. International provider, origin, PKCE parameters, labels and state namespaces are independent. China wallet code, domestic machine-file suggestions and domestic activity assumptions are not carried into this package."
+    },
+    {
+      "source": "EchoBird qwenwork_accounts, as attributed by the native endpoints.rs",
+      "scope": "International gateway, client_id and redirect_uri protocol facts",
+      "license": "EchoBird-MIT.txt",
+      "limitation": "The native attribution does not record an exact EchoBird revision for these constants. The existing full notice is retained; no new repository revision or source-code import is asserted."
+    },
+    {
+      "repository": "https://github.com/edison7009/EchoBird",
+      "revision": "5a50a1b40f13fd6096de6daa7e9949d19138b84f",
+      "paths": ["src-tauri/src/services/qwenwork_accounts/oauth.rs", "src-tauri/src/services/qwenwork_accounts/api.rs", "src-tauri/src/services/qwenwork_accounts/mod.rs"],
+      "purpose": "Reviewed the independently declared QwenWork International gateway/client/redirect, optional PKCE result echoes, standard expires_in seconds, nested schema-2 user/device credentials, and fixed client/redirect refresh parameters. The existing international gateway and protocol family remain unchanged.",
+      "license": "EchoBird-MIT.txt",
+      "limitations": "No live international account verification. Enterprise target/team handling and local client credential reading are not implemented by this provider; China wallet endpoints and local-file writes were not copied. Unknown renewal results retain a credential-bound persistent guard instead of replaying the old material."
+    },
+    {
+      "repository": "https://github.com/wearetheone777/dumate2api",
+      "revision": "a0ffae0cf359ccdc7ec0dfbbbf74edcd964fef60",
+      "paths": ["src/qwenwork/login.js", "src/qwenwork/chat.js"],
+      "purpose": "Reviewed device-poll pending forms and conditional nonce/challenge validation, direct/nested OpenAI stream envelopes, control heartbeats, final unterminated SSE data and completion without a DONE sentinel. The international package keeps its own endpoint, parameters, account namespaces and model entitlements.",
+      "license": "MIT (review only; no source code copied)",
+      "limitations": "This reference is a China deployment and does not establish international API availability; only shape compatibility and completion safety were reviewed. No provider origins, account pools, machine files or forced system prompt were copied. No source code was copied from this reference."
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "revision": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "path": "packages/qoder",
+      "sourceRecord": "Agent2Providers/licenses/legacy-bun-reference/vendor/qoder/SOURCE.json",
+      "purpose": "Preserve the existing project's Qoder/QwenWork protocol attribution chain",
+      "licenses": ["magpie-community-MIT.txt", "CLIProxyAPI-MIT.txt"],
+      "limitation": "The original CLIProxyAPI import revision was not recorded by the existing source."
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/logo.svg",
+      "source": "Agent2Providers/wasm/qwenwork/assets/logo.svg",
+      "sourceSha256": "0e5c54fb4110279a70a78e31c04ff1d6681f004c970f3cd29ecf9d05aff00dba",
+      "outputSha256": "0e5c54fb4110279a70a78e31c04ff1d6681f004c970f3cd29ecf9d05aff00dba",
+      "upstreamProjectAsset": "Agent2API/desktop-tauri/ui/assets/providers/qwenwork.svg",
+      "sourceRecord": "Agent2API/licenses/ICONS_SOURCE.json",
+      "magpieRepository": "https://github.com/yetone/magpie",
+      "magpieRevision": "88ac42843dbc1c6d4a028a6fd8c7aecb7a781985",
+      "originalIcon": "internal/gui/assets/icons/qwen-color.svg",
+      "lobeIconsRepository": "https://github.com/lobehub/lobe-icons",
+      "lobeLicenseRevisionVerified": "8b7bbc433d38437fa2b0cca58ae896917162b812",
+      "licenses": ["magpie-MIT.txt", "lobe-icons-MIT.txt"],
+      "changes": "Copied unchanged from the local China package; original palette, paths, local gradients, copyright and package-local notice references retained. No trademark ownership or endorsement asserted."
+    }
+  ],
+  "dependencies": {
+    "source": "Cargo.toml",
+    "note": "AES/CBC/RSA use maintained RustCrypto crates with host-seeded ChaCha20, not custom cryptographic primitives, native executables or operating-system entropy. Dependency notices remain subject to the package collector."
+  }
+}

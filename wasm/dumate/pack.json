@@ -1,0 +1,14 @@
+{
+  "id": "agent2api-wasm-dumate",
+  "name": "百度搭子 DuMate",
+  "description": "独立百度搭子提供商：桌面官方窗口登录、Cookie / JSON 和固定客户端快照导入、流式对话、原生工具调用、图片输入、短期模型令牌续期、积分查询、每日签到和文生图。使用参考模型清单，未做真实账号验收；不自动抽奖或代做任务。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "license": "AGPL-3.0-only",
+  "providers": [
+    { "id": "dumate", "label": "百度搭子 DuMate", "order": 34, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "dumate.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

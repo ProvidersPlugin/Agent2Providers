@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-monkeycode",
+  "date": "2026-11-12",
+  "release_status": "not_released_implemented_unverified",
+  "notice": "国内独立 WASM，依据本仓 AGPL 账号/目录契约和固定公开协议改写，补齐工具桥、网页登录、每日签到与显式授权的远端任务。CAP 仅按官方 SHA-256 工作量证明协议新写有界计算，不复制外部组件、不自动发送短信、不批量停止任务。保留原 AGPL 与历史 Apache 归属，不纳入失联历史来源；本地编译打包不等同真实账号验收或发布授权。",
+  "sources": [
+    {
+      "name": "Agent2Providers native MonkeyCode contract",
+      "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+      "checkout_head": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+      "source_root": "crates/providers/src/providers/monkeycode",
+      "license_file": "Agent2Providers-AGPL-3.0.txt",
+      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "use": "沿用国内身份monkeycode、monkeycode-<userId>去重、session别名、GET status及显示ID到UUID映射；改为SDK账号快照/受控HTTP/账号隔离状态。没有继承30天估算、8位尾号、全局缓存、10811任务枚举或Drop停止。",
+      "native_file_sha256": {
+        "accounts.rs": "5a1e38250582ee4f1f10f06f74ac54e1efa9efc258e8ce4ebef4d7fb36498ebc",
+        "credentials.rs": "7726c8baca946d29a48d68b6f55730d7d516c8c73ec94fed407e383525d8eef2",
+        "login.rs": "55465fde67e68e19d86e27ec177530dfd816d9fe51ba383c28115d38bbbed36c",
+        "models.rs": "0f43b65ea3b1251414e04b088efb091bb1de51fda1b90ddaeb88f6075461a1eb",
+        "region.rs": "3ebd94e81fe5b14b1728a7dd50a473e416412d5561df9b0960d4ab5c3efbe1f6"
+      }
+    },
+    {
+      "name": "chaitin/MonkeyCode official protocol evidence",
+      "repository": "https://github.com/chaitin/MonkeyCode",
+      "commit": "ad169c9b946ea04a1fc19a7abff9815d38116a73",
+      "license": "AGPL-3.0",
+      "license_url": "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/LICENSE",
+      "license_blob_sha": "be3f7b28e564e7dd05eaf59d64adba1a4065ac0e",
+      "license_file": "MonkeyCode-AGPL-3.0.txt",
+      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "license_copy": "该固定LICENSE的Git blob与本仓LICENSE完全相同，逐字副本另存，不重新改写许可。",
+      "evidence": [
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/api/Api.ts",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/user/handler/v1/auth.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/domain/model.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/setting/usecase/model.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/data-provider.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/utils/common.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/nav/wallet-dialog.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/subscription/handler/v1/subscription.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/public/handler/http/v1/captcha.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/nav/nav-checkin.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/errcode/errcode.go"
+      ],
+      "use": "依据固定字段新写 Rust 映射和任务消费者；不复制官方 UI、CAP 组件或后端实现。目录白名单移除 api_key/base_url，任务与计算预算固定，图片输入未发现公开任务附件协议，不虚报为可用。",
+      "read_endpoints": {
+        "GET /api/v1/users/status": "data.user或data内id；普通用户Cookie身份必须实际验证。",
+        "GET /api/v1/users/models": "cursor/limit；data.models及page.cursor/has_next_page。只读展示目录，不是catalog.accounts完整权限。",
+        "GET /api/v1/users/wallet": "balance是毫积分；daily_token_balance/daily_token_limit是独立Token读数。",
+        "GET /api/v1/users/wallet/transaction": "page/size/next_token；data.transactions及page；amount/amount_balance/amount_daily、inout_type、kind、remark、created_at。",
+        "GET /api/v1/users/subscription": "plan、expires_at、billing_interval/status、auto_renew、enable_credit_consumption等；不借用开源固定pro值。"
+      },
+      "region_boundary": "本批固定国内monkeycode-ai.com；源码证据不代表线上验收，更不证明国际SaaS相同。"
+    },
+    {
+      "name": "codkeep/MonkeyCodeReverseEngineer historical comparison",
+      "repository": "https://github.com/codkeep/MonkeyCodeReverseEngineer",
+      "commit": "bd1efa1a31206fd70095ec86c559a88be1d221fa",
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/codkeep/MonkeyCodeReverseEngineer/blob/bd1efa1a31206fd70095ec86c559a88be1d221fa/LICENSE",
+      "license_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "license_file": "MonkeyCodeReverseEngineer-Apache-2.0.txt",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "evidence": [
+        "https://github.com/codkeep/MonkeyCodeReverseEngineer/blob/bd1efa1a31206fd70095ec86c559a88be1d221fa/proxy/src/models.ts",
+        "https://github.com/codkeep/MonkeyCodeReverseEngineer/blob/bd1efa1a31206fd70095ec86c559a88be1d221fa/docs/02-auth/03-login-methods.md",
+        "https://github.com/codkeep/MonkeyCodeReverseEngineer/blob/bd1efa1a31206fd70095ec86c559a88be1d221fa/docs/02-auth/04-oauth-baizhi-cloud.md"
+      ],
+      "use": "仅作原生session认证和{provider}/{model}映射的历史对照，保留Apache许可证；未复制自动验证码/短信脚本。历史文档含推断，不用其30天、计费猜测或旧工具字段覆盖当前官方证据。",
+      "unverified_native_reference": "https://github.com/Acankao/MonkeyCodeReverseEngineer",
+      "unverified_native_reference_status": "只读盘点时GitHub返回404；其准确历史版本及许可证未核实，不能由codkeep许可证替代证明。"
+    },
+    {
+      "name": "Existing MonkeyCode provider icon",
+      "repository": "https://github.com/aimod-cc/Agent2API",
+      "checkout_head": "aba58858c7f3ae695c5e71d388d7d0e31c7dd7cf",
+      "source": "desktop-tauri/ui/assets/providers/monkeycode.png",
+      "destination": "assets/logo.png",
+      "sha256": "4ad40125f0e7beab4ddf724a8873d5106ecfcb726d18ae7e665d9875000b6a9c",
+      "rights": "本仓现有品牌图标原样复制；未查得独立图标许可，不主张商标权或官方背书。"
+    }
+  ]
+}

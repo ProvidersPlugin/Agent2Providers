@@ -15,7 +15,24 @@ repository by tag.
 
 ## Supported Providers
 
-Capabilities supplied by Provider Enhancement. The table lists the currently enabled Rust integrations. Static model catalogs, usage and plan information are not equivalent to online catalogs or monetary balances.
+Capabilities supplied by Provider Enhancement. The table describes the existing native integrations, not completion of the WASM development packages. Each WASM package contains one provider identity and is unsigned and unverified; regions and quota pools do not share account access. Static model catalogs, usage and plan information are not equivalent to online catalogs or monetary balances.
+
+WASM-specific status: the former foundation packages now include CodeArts chat, official sign-in, host-managed renewal, daily benefits and the new-user gift; CatPaw tool continuation, image input and authorized live desktop sign-in; Doubao Work chat, asynchronous replies, image upload/generation, browser sign-in, desktop import, check-in and completed-task rewards; and separate MonkeyCode China/International chat tasks, client-tool bridges, sign-in and daily check-in. MonkeyCode tasks and desktop credential reads require explicit permission. Kiro managed sign-in and Cline Free renewal after explicit enrollment remain available. These implementations are not live-account verified; Cline Free ordinary imports and old registrations do not acquire renewal rights automatically.
+
+Raccoon WASM retains manual and proactive renewal for ordinary accounts and restores Refresh sign-in for linked local accounts. Local Kiro IDE / CLI, AutoClaw China / International and Cline Free / Pass accounts can renew and safely write back after separate authorization; without it they remain read-only. Raccoon IAM credentials cannot use the legacy refresh endpoint and still require signing in again. One-time refresh material is durably reserved before sending, compared before saving and read back afterwards. Uncertain results never replay old material, and a memory overlay is not persistent write-back. These paths are implemented but unverified.
+
+WASM migration additions:
+
+- Imported Kiro external identity credentials can renew through a controlled host entry when they retain the refresh token, client ID and official token endpoint. Ordinary network permissions do not authorize arbitrary origins. Social renewal retains the official US and European sources; AWS enterprise authentication uses an exact commercial-region list, separately from the subscription's business region.
+- The host parses legacy JSON-string credentials within the current call while retaining the exact original text for conditional saving, without deleting and recreating accounts. Local renewal and OfficeAce account-server access preserve those checks too. Both QwenWork editions retain enterprise, organization and team fields; derived enterprise credentials cannot use the personal-device renewal path and need a complete enterprise credential update at expiry. They are not consumed or silently downgraded; international compatibility remains unverified.
+- Qoder / QwenWork device IDs and the original QuWork device identity needed for redemption use separately authorized fixed-file readers. Device IDs are never modified. Qoder International check-in and campaigns use a verified official UMID component; missing permission or components are reported rather than bypassing eligibility or per-device limits.
+- Kuku restores user-selected Cookie SQLite database imports. OfficeAce account-server access supports the account proxy while retaining exact official-domain and source checks.
+- AutoClaw International restores the official Zai authorization branch. Raccoon, both AutoClaw editions, CatPaw and both WorkBuddy editions expose explicit legacy environment-credential import; plugins still cannot read environment variables themselves.
+- Existing Cline Free accounts can be updated in account settings with new credentials from a fresh official sign-in, with an explicit automatic-renewal authorization option. Ordinary imports do not acquire renewal rights automatically.
+- WorkBuddy China checks official connectivity before its single chat submission and selects the official backup origin or validated address candidates when needed. It preserves the original proxy and TLS verification and does not replay a submitted chat.
+- Raccoon parses standard streaming responses directly without a redundant protocol-conversion round trip. Tools, reasoning, usage, error detection, real completion markers and bounded streaming are retained. The matching host grants capped compute budgets from actual input and new upstream content, with separate fuel, stack, memory and timeout diagnostics. Implemented but unverified.
+
+All additions are implemented but unverified. Compilation, packaging and signatures do not establish live-account acceptance.
 
 | Platform | LLM requests | Token auto-refresh | Model list | Balance query | Check-in | Claims |
 | --- | :--: | :--: | :--: | :--: | :--: | :--: |
@@ -29,14 +46,14 @@ Capabilities supplied by Provider Enhancement. The table lists the currently ena
 | Cline (Free / Pass) | ✓ | ✓ | ✓ | ✓ | — | — |
 | Accio (international / domestic) | ✓ | ✓ | ✓ | ✓ | — | — |
 | ZCode (domestic / international) | ✓ | ✗ | ✗ | ✓ | — | ✓ |
-| CodeArts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| CodeArts | ✓ | ✓ | ✓ | ✓ | Implemented; unverified (WASM daily benefits) | ✓ |
 | Trae | ✓ | ✓ | ✓ | ✓ | ✓ | Not provided by this plugin |
 | Loomy (iFlytek) | ✓ (chat / image generation / reference editing) | ✗ | ✓ | ✓ | ✓ | — |
 | KukuAI (Baidu Wenku) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
-| MonkeyCode (Chaitin, domestic / international) | ✓ | ✗ | ✓ | — | — | — |
+| MonkeyCode (Chaitin, domestic / international) | ✓ | ✗ | ✓ | Implemented; unverified (WASM; international currency unit unconfirmed) | Implemented; unverified (WASM) | — |
 | Command Code | ✓ | ✗ | ✓ | — | — | — |
-| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | — | — | — |
-| OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | Implemented; unverified (WASM: group & per-model quotas, AI Credits) | — | — |
+| OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | Implemented; unverified (new-user rewards share daily settlement) |
 | OrcaTerm (Tencent Cloud) | ✓ | ✓ | ✓ | ✓ | — | — |
 | ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -45,6 +62,12 @@ Capabilities supplied by Provider Enhancement. The table lists the currently ena
 | Kiro | ✓ (chat / tools / thinking / image input) | ✓ | ✓ | ✓ | ✗ | — |
 | AStudio (iFlytek Astron Studio) | ✓ (chat / tools / thinking / image input) | ✗ | ✓ | ✓ | ✓ (daily sign-in credits) | — |
 | QuWork | Implemented; unverified (chat / tools / reasoning / image input) | Implemented; unverified (account session) | Implemented; public catalog inspected | Implemented; unverified | Implemented; unverified | Implemented; unverified (daily rewards / benefit redemption / monthly gift records) |
+| Baidu DuMate (WASM only) | Implemented; unverified (chat / tools / image input / image generation) | Implemented; unverified (short-lived model token; expired cookies require sign-in) | Reference static list; online catalog unconfirmed | Implemented; unverified (credits and expiring packages) | Implemented; unverified | Implemented; unverified (daily sign-in credits, shared with check-in) |
+| Codar (WASM only) | Implemented; unverified (chat / tools / image input / image generation) | Implemented; unverified (imported accounts; local links read official credentials only) | Implemented; unverified (curated and full online catalogs) | Implemented; unverified (general / Agent / rewrite points) | Implemented; unverified (rolling 24 hours) | Implemented; unverified (free-model activities) |
+
+> The standalone Codar development package is in `wasm/codar`, based on [codar2api](https://github.com/AiXiaoc/codar2api) and [magpie-plugin-codar](https://github.com/MisonL/magpie-plugin-codar). It provides WeChat QR, SMS (including phone binding and new-IP verification), access-token and single-account JSON imports, and explicitly authorized local linking. The host renders the official Alicom4 CAPTCHA. Local links read the current official login without storing token snapshots or modifying client files. Automatic free-model claims are disabled by default. Upstream client restrictions are reported honestly; identity prompts are not rewritten. No live-account validation was performed.
+
+> The standalone DuMate development package is in `wasm/dumate`, based on the web-credential and cloud protocols in [dumate2api](https://github.com/wearetheone777/dumate2api); it is not part of the legacy native bundle. Cookie or single-account JSON imports validate identity online. App models and `qianfan/` mode share the same account and credits; unknown model names are never silently replaced. The host does not yet have a generic Baidu cookie-capture flow, so imports are manual. Check-in queries status before claiming and never replays uncertain results; lotteries and growth tasks are not automated. No live-account tests were run.
 
 Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; other capabilities depend on the service you configure. API account creation skips a second proxy save only for `proxySaved: true`; older gateways retain a compatibility save and verification warning. Failure does not remove an added account or falsely report that its proxy was saved.
 

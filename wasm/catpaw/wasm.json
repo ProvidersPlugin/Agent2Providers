@@ -1,0 +1,38 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1",
+    "http.timeout.v1",
+    "accounts.cas.v1",
+    "accounts.identity.v1",
+    "clock.v1",
+    "random.v1",
+    "catalog.v1",
+    "catalog.accounts.v1",
+    "errors.v1",
+    "login.forms.v1",
+    "state.v1",
+    "login.managed.v1",
+    "login.loopback.v1",
+    "chat.stream.v1",
+    "request.context.v1",
+    "http.catpaw-turn.v1",
+    "desktop.credentials.v1",
+    "native.helpers.v1",
+    "sessions.v1",
+    "credentials.legacy-import.v1"
+  ],
+  "helpers": ["desktop.credentials.catpaw.v1"],
+  "managed_login": {
+    "methods": [0],
+    "loopback_profiles": ["catpaw.passport.v1"],
+    "authorization_origins": ["https://catpaw.meituan.com"]
+  },
+  "origins": [
+    "https://ai.catpaw.meituan.com",
+    "https://catx.nocode.cn"
+  ],
+  "memory_mib": 64,
+  "concurrency": 4
+}

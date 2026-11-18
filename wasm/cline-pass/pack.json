@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-cline-pass",
+  "name": "Cline 订阅池",
+  "description": "独立 Cline 订阅池，包含设备授权、API Key、凭据导入、自动续期、模型目录、对话、credit 和订阅窗口查询；推荐位可能额外消耗 credit。本机引用经独立授权后续期并安全写回，未经真实账号验收。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "cline-pass", "label": "Cline 订阅池", "order": 18, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "cline-pass.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

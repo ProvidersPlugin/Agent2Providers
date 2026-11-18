@@ -1,0 +1,63 @@
+{
+  "formatVersion": 1,
+  "provider": "qwenwork",
+  "modifiedAt": "2026-11-10",
+  "sources": [
+    {
+      "source": "Agent2Providers/crates/providers/src/providers/qoder",
+      "repositoryHeadAtPort": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+      "scope": "Site::QwenworkCn only: identity, device PKCE, token renewal, complete COSY client identity, qwork catalog, chat protocol, account context and personal credit pools",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Ported into an independent wasm32-unknown-unknown provider. Direct networking, OS randomness and storage are replaced by controlled host services. File, environment and process access are removed. Supplied machine IDs are preserved; missing IDs use the original UUID fallback once per flow/account with an explicit unverified-compatibility notice. PAT, job-token, UMID and Qoder campaign implementations are not included.",
+      "limitations": "This port follows the current local native source, not a new runtime verification. Native comments cite dumate2api for Qwenwork protocol facts but do not identify a pinned revision. No external dumate2api implementation was copied in this task and no missing revision is fabricated."
+    },
+    {
+      "source": "Agent2Providers/wasm/qoder-intl/src",
+      "scope": "Pure protocol modules: context, errors, messages, output, reasoning and thinking; reviewed controlled-host patterns adapted locally",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Copies are ordinary local source files, not path dependencies or cross-directory includes. Qwenwork identity, origins, account requests, signed client fields, catalogs and balances are implemented separately."
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "revision": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "path": "packages/qoder",
+      "sourceRecord": "Agent2Providers/licenses/legacy-bun-reference/vendor/qoder/SOURCE.json",
+      "purpose": "Preserve the existing project's Qoder/QwenWork protocol attribution chain",
+      "licenses": ["magpie-community-MIT.txt", "CLIProxyAPI-MIT.txt"],
+      "limitation": "The exact original CLIProxyAPI import revision is not recorded in the existing source."
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/logo.svg",
+      "source": "Agent2API/desktop-tauri/ui/assets/providers/qwenwork.svg",
+      "sourceRecord": "Agent2API/licenses/ICONS_SOURCE.json",
+      "sourceSha256": "e41782c01e515c078a46a08f63701bfcd1dc9ddcf64990741a28c941b9cb2dfc",
+      "outputSha256": "0e5c54fb4110279a70a78e31c04ff1d6681f004c970f3cd29ecf9d05aff00dba",
+      "historicalAssetRecordSha256": "88d21dc4bab6c9a9f729f8e26b712ecb38b9afd914c7380007ff2a527aabba00",
+      "magpieRepository": "https://github.com/yetone/magpie",
+      "magpieRevision": "88ac42843dbc1c6d4a028a6fd8c7aecb7a781985",
+      "originalIcon": "internal/gui/assets/icons/qwen-color.svg",
+      "lobeIconsRepository": "https://github.com/lobehub/lobe-icons",
+      "lobeLicenseRevisionVerified": "8b7bbc433d38437fa2b0cca58ae896917162b812",
+      "licenses": ["magpie-MIT.txt", "lobe-icons-MIT.txt"],
+      "changes": "Copied from the existing project asset with original palette, paths, local gradients and copyright retained. Only the attribution comment's notice paths are updated to this package's local files. No trademark ownership or endorsement asserted."
+    }
+  ],
+  "auditReferences": [
+    {
+      "repository": "https://github.com/harwinvoid/magpie-plugin-qwenwork",
+      "revision": "fdf9894729a856a825d191cbd5128c02a91cc0a0",
+      "scope": "Public device-flow parameters, qwork model scene, account-context response and provider identity; reviewed as protocol evidence, no external source files copied."
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "path": "packages/qoder/index.mjs",
+      "scope": "QwenWork deviceRefreshBody client/redirect and team target, device expiry seconds, original user/machine preservation, heartbeat and thinking/tool history compatibility; cross-checked against the existing local source and EchoBird."
+    }
+  ],
+  "dependencies": {
+    "source": "Cargo.toml",
+    "note": "AES/CBC/RSA use maintained RustCrypto crates with host-seeded ChaCha20, not custom cryptographic primitives, native executables or OS entropy. Dependency notices remain subject to the package collector."
+  }
+}

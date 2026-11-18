@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-doubaowork",
+  "license": "AGPL-3.0-only",
+  "modifiedAt": "2026-11-13",
+  "code": {
+    "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+    "workspaceHead": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+    "baselinePath": "crates/providers/src/providers/doubaowork",
+    "baselineIncludesUncommittedChanges": true,
+    "baselineSha256": {
+      "accounts.rs": "f37e67e65dae25a40b42fcff06ea77afb663eab6a2c9c6bc9436becac2cd28ec",
+      "api.rs": "b3a5447d88d37f3cd64a8631bacf6adf83939b6806bcaaf965874ac9bdc51025",
+      "catalog.rs": "774ac76d05719117928afb001e7f5a8d032868f7bc3718c57c9184b3d4a6bd94",
+      "quota.rs": "fc48ce7f049e12b618bc095f6f88f78f5f3b9f2a1349507dbc0a6e9a680cb7b0",
+      "rewards.rs": "dce5764debe96d8a4e24151a50c7b32a2762ab89795bfebbe067283c038114c4",
+      "mod.rs": "1ec0d268750c97021d30162aa78a5970905dcd5f26070979ced34e07818199ba"
+    },
+    "scope": "本仓 AGPL 原生账号、模式目录、额度和活动协议的 WASM 改写，补齐对话、异步事件、客户端工具桥、图片上传和生成、网页登录及授权本机快照。固定宿主负责出站、原回执取消、每日签到和逐项领奖；保留 EchoBird MIT 来源归属，不包含早期 AGPL EchoBird 或官方客户端二进制。",
+    "licenseText": "Agent2Providers-AGPL-3.0.txt"
+  },
+  "attributions": [
+    {
+      "project": "EchoBird",
+      "repository": "https://github.com/edison7009/EchoBird",
+      "commit": "ed5efffd9bb33d2f21682dd40b7eb9eb0055e1e3",
+      "version": "6.0.6",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/edison7009/EchoBird/blob/ed5efffd9bb33d2f21682dd40b7eb9eb0055e1e3/LICENSE",
+      "noticeUrl": "https://github.com/edison7009/EchoBird/blob/ed5efffd9bb33d2f21682dd40b7eb9eb0055e1e3/NOTICE",
+      "paths": ["src-tauri/src/services/account_proxy/doubao.rs", "src-tauri/src/services/doubao_accounts"],
+      "notice": "保留本仓原生模块已有的 edison7009 / EchoBird MIT 归属；固定参考用于核对协议和 end_time 毫秒口径。当前原生的新修正优先，未以旧参考覆盖。EchoBird v4 及更早 AGPL 材料未使用。",
+      "licenseText": "EchoBird-MIT.txt"
+    },
+    {
+      "project": "buddy-proxy",
+      "repository": "https://github.com/llm011/buddy-proxy",
+      "commit": "4fd9c56edf25014f72e31a80a693ed358b4c9a0c",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/llm011/buddy-proxy/blob/4fd9c56edf25014f72e31a80a693ed358b4c9a0c/LICENSE",
+      "paths": ["src/buddy_proxy/doubao/payloads.py", "src/buddy_proxy/doubao/provider.py"],
+      "notice": "协议对照用于确认 person-* 新模型的 need_deep_think=10001、会话初始化选项及紧凑增量须关联已声明内容块。本包继续使用已授权账号快照和宿主 HTTP，不引入 CDP 运行时、自动客户端登录或断线后重发。默认思考档位来自本次上游目录，不照搬参考的固定默认值。",
+      "licenseText": "buddy-proxy-MIT.txt"
+    }
+  ],
+  "assets": {
+    "source": "Agent2Providers/assets/doubaowork.png",
+    "sourceCommit": "5aa928ff6c0e846554066d76ccdd844822affcff",
+    "sha256": "276bda105caf51466f5069080cec90f092ae29854ae5cac129020750bb206d80",
+    "files": ["assets/doubaowork.png", "assets/logo.png"],
+    "notice": "原样复用工作区既有标识，仅识别提供商。图像和商标权仍归原权利人，不为图标臆造 MIT 授权。"
+  },
+  "proprietaryClientIncluded": false,
+  "externalExecutableIncluded": false,
+  "realAccountVerified": false
+}

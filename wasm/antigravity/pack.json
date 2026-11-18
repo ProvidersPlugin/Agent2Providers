@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-antigravity",
+  "name": "Antigravity",
+  "description": "独立 Antigravity 提供商，保留 Google OAuth、凭据续期、账号模型目录与额度窗口、Gemini 信封对话及图片生成编辑；本地开发包尚未实测，历史参考授权待核验。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "antigravity", "label": "Antigravity", "order": 29, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "antigravity.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

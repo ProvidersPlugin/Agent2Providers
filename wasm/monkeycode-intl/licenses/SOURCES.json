@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-monkeycode-intl",
+  "date": "2026-11-12",
+  "status": "not_released_implemented_unverified",
+  "license": "AGPL-3.0-only",
+  "license_file": "AGPL-3.0.txt",
+  "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+  "modification_notice": "国际独立 WASM：账号、目录、钱包与本地状态按国际 provider 隔离，共享无站点状态的任务消息适配和工具桥。网页登录、每日签到及受控任务已实现，任务固定为国际 profile；CAP 按官方协议新写有界计算，没有复制外部组件。未纳入私有客户端、可执行文件或真实凭据，未做国际真实账号验收，不构成发布授权。",
+  "evidence_boundary": {
+    "international_entry": "官方固定README.monkeycode.md确认https://monkeycode-ai.net/是在线入口",
+    "official_source": "五条只读协议、普通会话Cookie、UUID身份与字段由固定开源源码证实",
+    "current_international_deployment": "未证实。前一只读核对中公开首页返回HTTP403，未取得它引用的静态资源；未绕过，不解释成封号或不支持",
+    "session": "国际同名Cookie及服务端行为仍是兼容推断；手动Cookie头没有来源域或到期属性，不推算30天",
+    "wallet_units": "官方前端有除1000积分换算，但国际单位未确认，本包不采用换算；保留原值，主available保持null",
+    "catalog": "catalog.accounts.v1仅保存并聚合各国际账号目录；插件在原账号快照精确映射唯一UUID，不将分页展示当作任务授权，不沿用国内套餐前缀为国际权限依据",
+    "runtime": "未执行登录、状态、模型、钱包、流水、订阅或任务请求；未运行测试。本地编译打包不构成国际运行验收"
+  },
+  "sources": [
+    {
+      "name": "Agent2Providers local AGPL implementation contracts",
+      "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+      "checkout_head": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+      "license": "AGPL-3.0-only",
+      "use": "原生身份、严格账号快照和字段投影契约；账号、目录、钱包和存储保持国际独立，仅共享无全局状态的任务消息适配。下列工作区哈希为最初读取时的来源快照，不是当前文件摘要或已提交声明。",
+      "working_tree_sha256": {
+        "wasm/monkeycode/src/account.rs": "690a22d64fd6147c374d73b3d00bbea1cfb4d7c54f63fe42860c6ec5661e56b6",
+        "wasm/monkeycode/src/credentials.rs": "d608705c49fc0663c345159713477067fdd30789768c80a29bccf90ad76c7867",
+        "wasm/monkeycode/src/catalog.rs": "7fea4ff7b170ca67badd64b99c8f0aef05f5643b6534f07232ca7e1ff1807458",
+        "wasm/sdk/src/http.rs": "631fd1add9a9fb2195043dab74afb09731a8f3161b3b8fb2b508b2c971b67801"
+      }
+    },
+    {
+      "name": "Agent2API host identity contract confirmed by coordinator and read-only source",
+      "repository": "https://github.com/aimod-cc/Agent2API",
+      "use": "accounts.identity.v1先按provider筛选再唯一匹配旧业务身份；国际同样返回monkeycode-<userId>，旧record.id不改，多个匹配拒绝；host identity可能是旧哈希记录ID。未读取账号库。",
+      "working_tree_sha256": {
+        "desktop-tauri/src-tauri/server/src/server/core/account_store/plugin_contract.rs": "a84d1fa10fd4893c09126318b273d200ced6e094d7ae6d82766ae424c679fa98",
+        "desktop-tauri/src-tauri/server/src/server/core/account_store/account_identity.rs": "0e31a404fe1661ff1720ac7d826c1e8f8b88deea3c5b0f844e10d7df013af66d",
+        "desktop-tauri/src-tauri/server/src/server/core/account_store/plugin_identity.rs": "c027cf725cbebc5147badd684e879313af7829adcc7db685e0dca93b1d9ccf5f"
+      }
+    },
+    {
+      "name": "chaitin/MonkeyCode official fixed source",
+      "repository": "https://github.com/chaitin/MonkeyCode",
+      "commit": "ad169c9b946ea04a1fc19a7abff9815d38116a73",
+      "license": "AGPL-3.0",
+      "license_url": "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/LICENSE",
+      "license_blob_sha": "be3f7b28e564e7dd05eaf59d64adba1a4065ac0e",
+      "license_copy": "固定官方LICENSE与本仓AGPL许可字节一致，使用AGPL-3.0.txt这一份逐字副本",
+      "evidence": [
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/README.monkeycode.md",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/consts/auth.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/pkg/session/session.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/domain/user.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/user/handler/v1/auth.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/api/Api.ts",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/setting/repo/model.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/data-provider.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/nav/wallet-dialog.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/public/handler/http/v1/captcha.go",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/frontend/src/components/console/nav/nav-checkin.tsx",
+        "https://github.com/chaitin/MonkeyCode/blob/ad169c9b946ea04a1fc19a7abff9815d38116a73/backend/biz/subscription/handler/v1/subscription.go"
+      ],
+      "read_endpoints": {
+        "GET /api/v1/users/status": "monkeycode_ai_session；code=0及data.user.id UUID，不启用data.id兼容分支",
+        "GET /api/v1/users/models": "cursor/limit；models[]及page.cursor/has_next_page；完整分页但仅配置展示",
+        "GET /api/v1/users/wallet": "balance原值单位待确认；daily_token_balance/daily_token_limit独立Token读数且国际未验收",
+        "GET /api/v1/users/wallet/transaction": "page/size/next_token单页；amount/amount_balance/amount_daily/inout_type/kind/remark/created_at；资金不换算、不按kind猜方向",
+        "GET /api/v1/users/subscription": "plan/期限/计费/续费标记；缺失null，绝不采用开源固定pro默认值"
+      },
+      "use": "仅依据公开固定协议事实写Rust映射；未复制官方UI、后端实现或CAP组件。国际运行行为、单位及权限均未声称已验证。"
+    },
+    {
+      "name": "Existing MonkeyCode provider icon",
+      "source": "wasm/monkeycode/assets/logo.png",
+      "destination": "assets/logo.png",
+      "sha256": "4ad40125f0e7beab4ddf724a8873d5106ecfcb726d18ae7e665d9875000b6a9c",
+      "rights": "原样复用本仓现有标识；没有发现独立图标许可，不主张商标权或官方背书"
+    }
+  ],
+  "excluded_references": {
+    "Acankao/MonkeyCodeReverseEngineer": "失联来源的准确历史版本及许可未核实，不纳入或臆造权利",
+    "codkeep/MonkeyCodeReverseEngineer": "本批不需要直接参考或复制历史Apache实现；官方协议及本仓AGPL合同已足够"
+  }
+}

@@ -25,11 +25,27 @@ pub(super) async fn detail(
     client: &reqwest::Client,
     credentials: &Value,
 ) -> Result<Option<(String, Value)>, GatewayError> {
-    let launch = api::post(client, credentials, "/alice/user/launch", &json!({})).await?;
-    let Some(group) = text(&launch["data"]["ug_campaign_info"], "campaign_group_code") else {
+    // 新版按 basic/core/im 分域下发启动配置，活动入口位于 basic 域。
+    let launch = match api::post(client, credentials, "/alice/basic/launch", &json!({})).await {
+        Ok(value) => value,
+        Err(error) if matches!(error.status_code, 404 | 405) => {
+            api::post(client, credentials, "/alice/user/launch", &json!({})).await?
+        }
+        Err(error) => return Err(error),
+    };
+    let data = launch["data"].as_object().ok_or_else(|| {
+        GatewayError::with_status(502, "豆包工作未返回有效的活动配置，请稍后重新查询")
+    })?;
+    let Some(group) = data
+        .get("ug_campaign_info")
+        .and_then(|info| text(info, "campaign_group_code"))
+    else {
         return Ok(None);
     };
-    Ok(Some((group.into(), campaign_detail(client, credentials, group).await?)))
+    Ok(Some((
+        group.into(),
+        campaign_detail(client, credentials, group).await?,
+    )))
 }
 
 pub(super) async fn campaign_detail(
@@ -73,7 +89,7 @@ pub(super) struct Task {
     pub group: String,
     pub state: u64,
     pub daily: bool,
-    pub checked: bool,
+    pub checked: Option<bool>,
     pub body: Option<Value>,
     pub points: Option<f64>,
     pub streak: Option<u32>,
@@ -93,8 +109,8 @@ pub(super) fn tasks(value: &Value, group: &str) -> Vec<Task> {
                     continue;
                 };
                 let group = text(row, "campaign_group_code").unwrap_or(group);
-                let daily = row["daily_checkin"]["checked_in_today"].is_boolean();
-                let checked = row["daily_checkin"]["checked_in_today"] == true;
+                let daily = row["daily_checkin"]["checked_in_today"].is_boolean() || row["task_kind"] == "daily_signin";
+                let checked = row["daily_checkin"]["checked_in_today"].as_bool();
                 let state = api::number(&row["task_status"]).unwrap_or(0);
                 let direct = api::number(&row["reward_mode"]) == Some(2) || key == "milestones";
                 let body = if direct {
@@ -156,8 +172,9 @@ pub(super) fn receipt(value: &Value) -> Result<bool, GatewayError> {
         }
     }
     if data.get("success") == Some(&Value::Bool(false)) {
-        return Err(GatewayError::with_status(502, "豆包工作奖励领取被拒绝")
-            .with_code("reward_rejected"));
+        return Err(
+            GatewayError::with_status(502, "豆包工作奖励领取被拒绝").with_code("reward_rejected")
+        );
     }
     Ok(api::number(&value["data"]["task_status"]) == Some(3)
         || value["data"]["checked_in_today"] == true

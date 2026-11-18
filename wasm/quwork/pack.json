@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-quwork",
+  "name": "QuWork",
+  "description": "独立 QuWork 提供商，包含对话、账号会话续期、公开模型目录、积分和奖励兑换。本机登录态经固定只读入口导入；兑换所需的原客户端设备标识须独立授权读取，不修改设备编号，未经真实账号验收。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "quwork", "label": "QuWork", "order": 33, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "quwork.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

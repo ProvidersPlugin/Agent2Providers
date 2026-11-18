@@ -1,0 +1,14 @@
+{
+  "id": "agent2api-wasm-codar",
+  "name": "科搭 Codar",
+  "description": "独立科搭 Codar 提供商：微信扫码、手机验证码、访问令牌和凭据 JSON 导入、经授权的本机登录态关联、在线模型目录、流式对话与工具调用、令牌续期、积分查询、每日签到、免费模型活动和生图。未做真实账号验收；遵守上游客户端限制，不改写身份提示词。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "license": "AGPL-3.0-only",
+  "providers": [
+    { "id": "codar", "label": "科搭 Codar", "order": 35, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "codar.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

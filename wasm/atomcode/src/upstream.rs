@@ -1,35 +1,60 @@
-use agent2api_wasm_sdk::{self as sdk, http, json, Result, Value};
+use agent2api_wasm_sdk::{self as sdk, http, json, Error, Result, Value};
 
-const USER_AGENT: &str = concat!("agent2api-atomcode/", env!("CARGO_PKG_VERSION"));
+use super::{errors, signing};
 
 pub fn base(key: &str) -> String {
     let fallback = match key {
         "brokerBase" => "https://acs.atomgit.com",
         "codingplanBase" => "https://api.gitcode.com/api/v5",
-        _ => "https://api-ai.gitcode.com/v1",
+        _ => "https://llm-api.atomgit.com/v1",
     };
     sdk::host("settings.get", json!({ "key": key })).ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .filter(|value| !value.trim().is_empty()).unwrap_or_else(|| fallback.to_string())
-        .trim_end_matches('/').to_string()
+        .and_then(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| {
+            let Ok(url) = url::Url::parse(value) else { return false; };
+            let Ok(expected) = url::Url::parse(fallback) else { return false; };
+            url.origin() == expected.origin()
+                && url.path().trim_end_matches('/') == expected.path().trim_end_matches('/')
+                && url.query().is_none() && url.fragment().is_none()
+                && url.username().is_empty() && url.password().is_none()
+        })
+        .unwrap_or_else(|| fallback.to_string()).trim_end_matches('/').to_string()
 }
 
 pub fn headers(token: Option<&str>) -> Value {
-    // 如实标识本网关；不能自称官方 atomcode 客户端（会切到其签名协议）。
-    let mut headers = json!({ "accept": "application/json", "content-type": "application/json", "user-agent": USER_AGENT });
+    let mut headers = json!({ "accept": "application/json", "content-type": "application/json",
+        "user-agent": format!("atomcode/{}", signing::CLIENT_VERSION) });
     if let Some(token) = token { headers["authorization"] = json!(format!("Bearer {token}")); }
     headers
 }
 
+pub fn response_json(response: http::Response) -> Result<Value> {
+    let status = response.status;
+    let bytes = response.bytes(1024 * 1024)?;
+    let parsed = serde_json::from_slice::<Value>(&bytes);
+    if !(200..300).contains(&status) {
+        return Err(errors::http_error(status, &parsed.unwrap_or(Value::Null)));
+    }
+    let value = parsed.map_err(|_| Error::http(502, "AtomCode 上游接口未返回有效 JSON"))?;
+    if errors::business_error(&value) {
+        return Err(errors::http_error(errors::status(&value).unwrap_or(502), &value));
+    }
+    Ok(value)
+}
+
 pub fn get(path: &str, token: &str) -> Result<Value> {
-    http::open("GET", &format!("{}{path}", base("codingplanBase")), headers(Some(token)), None)?.json()
+    response_json(http::open_timeout("GET", &format!("{}{path}", base("codingplanBase")),
+        headers(Some(token)), None, 20_000)?)
 }
 
-pub fn post(path: &str, token: &str, body: &Value) -> Result<Value> {
-    http::open("POST", &format!("{}{path}", base("codingplanBase")), headers(Some(token)), Some(body))?.json()
+pub fn status(token: &str) -> Result<Value> {
+    let value = get("/coding-plan/status-v2", token)?;
+    if !value.is_object() || !["codingplan_free", "plan", "plan_type", "rate_limit_windows", "current_usage"]
+        .iter().any(|key| value.get(*key).is_some()) {
+        return Err(Error::http(502, "AtomCode 套餐状态缺少有效字段，未将未知状态当成可领取"));
+    }
+    Ok(value)
 }
-
-pub fn status(token: &str) -> Result<Value> { get("/coding-plan/status-v2", token) }
 
 pub fn query(value: &str) -> String {
     let mut output = String::new();

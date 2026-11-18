@@ -1,0 +1,18 @@
+[package]
+name = "agent2api-wasm-zcode-intl"
+version = "0.1.0-beta.1"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agent2api-wasm-sdk = { path = "../sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+url = "2"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }

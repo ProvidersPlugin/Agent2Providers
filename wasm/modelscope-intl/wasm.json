@@ -1,0 +1,15 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1",
+    "catalog.v1", "catalog.accounts.v1", "chat.stream.v1", "login.forms.v1",
+    "locks.v1", "errors.v1", "images.v1", "resources.v1", "resources.fetch-public.v1"
+  ],
+  "origins": [
+    "https://api-inference.modelscope.ai",
+    "https://www.modelscope.ai"
+  ],
+  "memory_mib": 64,
+  "concurrency": 8
+}

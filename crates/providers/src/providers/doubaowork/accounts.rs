@@ -196,6 +196,8 @@ fn credentials(value: &Value) -> Result<Value, GatewayError> {
         "channel",
         "userAgent",
         "chromiumVersion",
+        "teaUuid",
+        "webTabId",
     ] {
         if let Some(field) = value.get(key) {
             secret[key] = field.clone();

@@ -21,6 +21,8 @@ const POLL_MS: u64 = 5_000;
 struct Client {
     seen_at: Instant,
     ready: bool,
+    provider: String,
+    account: String,
 }
 
 struct Request {
@@ -103,7 +105,8 @@ async fn request(
     {
         let mut broker = broker().lock().map_err(|_| "领取验证服务暂不可用")?;
         prune(&mut broker);
-        if !broker.clients.values().any(|client| client.ready) {
+        if !broker.clients.values().any(|client| client.ready && (client.account.is_empty()
+            || client.account == account && client.provider == region.provider_id())) {
             return Err("没有可用的验证界面，请打开管理面板后重新领取；若界面正忙，请先完成当前验证".to_string());
         }
         if broker.requests.len() >= MAX_PENDING {
@@ -132,23 +135,39 @@ async fn request(
 /// 心跳与领取任务同一个短请求，不查询上游、不读取账号凭证。
 pub(super) fn poll(payload: &Value) -> Result<Value, String> {
     let client_id = text(payload, "clientId");
-    if client_id.is_empty() || client_id.len() > 128 {
+    if client_id.is_empty() || client_id.len() > 128 || client_id.chars().any(char::is_control) {
         return Err("验证界面标识不完整".to_string());
     }
+    let account = text(payload, "accountId");
+    let provider = text(payload, "provider");
+    if account.len() > 512 || account.chars().any(char::is_control)
+        || !account.is_empty() && Region::from_provider_id(provider).is_none()
+        || account.is_empty() && !provider.is_empty() {
+        return Err("领取验证账号或提供商无效".to_string());
+    }
+    let matches_scope = |request: &Request| account.is_empty()
+        || request.account == account && request.provider == provider;
     let ready = payload.get("ready").and_then(Value::as_bool) == Some(true);
     let mut broker = broker().lock().map_err(|_| "领取验证服务暂不可用")?;
     prune(&mut broker);
     if !broker.clients.contains_key(client_id) && broker.clients.len() >= MAX_CLIENTS {
         return Err("连接的验证界面过多，请关闭多余面板".to_string());
     }
-    broker.clients.insert(client_id.to_string(), Client { seen_at: Instant::now(), ready });
-    let owned = broker.requests.iter().find_map(|(id, request)| {
-        (request.client_id.as_deref() == Some(client_id)).then(|| id.clone())
+    broker.clients.insert(client_id.to_string(), Client {
+        seen_at: Instant::now(), ready, provider: provider.to_string(), account: account.to_string(),
     });
-    let active = owned.is_some();
-    let selected = owned.or_else(|| ready.then(|| {
-        broker.requests.iter().find_map(|(id, request)| request.client_id.is_none().then(|| id.clone()))
-    }).flatten());
+    let owned = broker.requests.iter().find_map(|(id, request)| {
+        (request.client_id.as_deref() == Some(client_id)).then(|| (id.clone(), matches_scope(request)))
+    });
+    let selected = match owned {
+        Some((id, true)) => Some(id),
+        Some((_, false)) => None,
+        None if ready => broker.requests.iter().find_map(|(id, request)| {
+            (request.client_id.is_none() && matches_scope(request)).then(|| id.clone())
+        }),
+        None => None,
+    };
+    let active = selected.is_some();
     let mut task = Value::Null;
     if let Some(id) = selected {
         if let Some(request) = broker.requests.get_mut(&id) {
@@ -184,13 +203,14 @@ pub(super) fn complete(payload: &Value) -> Result<Value, String> {
     if request.client_id.as_deref() != Some(text(payload, "clientId"))
         || request.account != text(payload, "accountId")
         || request.plan_id != text(payload, "planId")
+        || !text(payload, "provider").is_empty() && request.provider != text(payload, "provider")
     {
         return Err("验证结果与领取任务不匹配".to_string());
     }
     let result = match text(payload, "status") {
         "verified" => {
             let param = text(payload, "param");
-            if param.is_empty() || param.len() > 16_384 || param.contains(['\r', '\n']) {
+            if param.is_empty() || param.len() > 16_384 || param.contains(['\r', '\n', '\0']) {
                 return Err("领取验证凭据不完整".to_string());
             }
             Ok(Verification { param: param.to_string(), region: request.config.region.clone() })

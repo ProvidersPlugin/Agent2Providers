@@ -1,0 +1,32 @@
+{
+  "formatVersion": 1,
+  "implementation": {
+    "source": "crates/providers/src/providers/kiro/",
+    "kind": "Rust port through the controlled WASM SDK; no native provider crate dependency",
+    "license": "AGPL-3.0-only",
+    "protocolReference": {
+      "repository": "https://github.com/magpie-community/plugins.git",
+      "revision": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "package": "packages/kiro",
+      "version": "0.1.17",
+      "license": "MIT",
+      "notice": "magpie-community-MIT.txt"
+    },
+    "changes": [
+      "Controlled network, clock, randomness, account CAS, locks and per-flow/per-account state",
+      "Strict AWS prelude/message CRC32 and bounded frame/header/payload validation",
+      "Missing token/credit readings remain unknown, not invented estimates or zero",
+      "Managed loopback and local credential helpers are explicitly gated until real host support exists"
+    ],
+    "eventStreamSpecification": "https://smithy.io/2.0/aws/amazon-eventstream.html"
+  },
+  "assets": {
+    "files": ["assets/kiro.svg", "assets/logo.svg"],
+    "copiedFrom": "assets/kiro.svg in the Agent2Providers repository",
+    "sourceSha256": "d4c65445af9d69016636305ecc734725f79d38f5c586f66a082806af8c5156c4",
+    "sha256": "8b406b6bd1798a0dabf440c95c473f04f80e4f516a4882f79b46c64d16225786",
+    "upstream": "Acankao/magpie/internal/gui/assets/icons/kiro-color.svg",
+    "notices": ["magpie-MIT.txt", "lobe-icons-MIT.txt"],
+    "note": "Original paths and palette retained; only notice links were changed to this package's bundled license files. Names and logos remain marks of their respective owners; software licensing does not imply endorsement or grant general trademark rights."
+  }
+}

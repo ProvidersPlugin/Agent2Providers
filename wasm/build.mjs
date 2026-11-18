@@ -38,13 +38,39 @@ function collectIcons(source, directory) {
   return files.sort(([a], [b]) => a.localeCompare(b))
 }
 
-const root = dirname(fileURLToPath(import.meta.url))
+function collectLicenses(source) {
+  const folder = join(source, 'licenses')
+  if (!existsSync(folder)) return []
+  const folderInfo = lstatSync(folder)
+  if (folderInfo.isSymbolicLink() || !folderInfo.isDirectory()) throw new Error('许可目录必须是包内普通目录')
+  const files = []
+  let total = 0
+  for (const item of readdirSync(folder, { withFileTypes: true })) {
+    if (!item.isFile() || item.isSymbolicLink() || /[\\:\0]/.test(item.name)
+      || !['.txt', '.md', '.json'].includes(extname(item.name).toLowerCase())) {
+      throw new Error('许可目录只能包含普通文本许可文件')
+    }
+    const path = join(folder, item.name)
+    const size = lstatSync(path).size
+    total += size
+    if (size === 0 || size > 256 * 1024 || total > 2 * 1024 * 1024 || files.length >= 64) {
+      throw new Error('许可文件为空或超过打包大小限制')
+    }
+    files.push([`licenses/${item.name}`, readFileSync(path)])
+  }
+  return files.sort(([a], [b]) => a.localeCompare(b))
+}
+
+const root = process.env.AGENT2API_WASM_WORKSPACE
+  ? resolve(process.env.AGENT2API_WASM_WORKSPACE)
+  : dirname(fileURLToPath(import.meta.url))
 const provider = process.argv[2] || 'atomcode'
 if (!/^[a-z][a-z0-9-]*$/.test(provider)) throw new Error('提供商目录名称无效')
 const source = join(root, provider)
 const manifest = JSON.parse(readFileSync(join(source, 'pack.json'), 'utf8'))
 const permissions = readFileSync(join(source, 'wasm.json'))
 const icons = collectIcons(source, manifest.icons)
+const licenses = collectLicenses(source)
 const target = 'wasm32-unknown-unknown'
 const entry = manifest.entry?.[target]
 if (!entry || entry.includes('..') || entry.includes(':') || entry.startsWith('/') || entry.includes('\\')) throw new Error('Wasm 入口路径无效')
@@ -74,6 +100,7 @@ const bytes = zip([
   ['wasm.json', permissions],
   [entry, module],
   ...icons,
+  ...licenses,
 ])
 writeFileSync(file, bytes)
 writeFileSync(`${file}.sha256`, `${sha256(bytes)}  ${name}\n`)

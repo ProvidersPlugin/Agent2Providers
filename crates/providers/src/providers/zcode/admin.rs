@@ -6,6 +6,7 @@ use super::{captcha, claim_verification, plan, OFFICIAL_PROMPT_NOTE};
 
 pub(super) fn machine_action(action: &str, payload: &Value) -> Option<Result<Value, String>> {
     let outcome = match action {
+        "claim.verification.capabilities" => return Some(Ok(json!({ "accountScoped": true, "schema": 1 }))),
         "claim.verification.poll" => return Some(claim_verification::poll(payload)),
         "claim.verification.complete" => return Some(claim_verification::complete(payload)),
         "captcha.stats" => captcha::stats(),

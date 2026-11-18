@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-qwenwork",
+  "name": "千问办公 国内版",
+  "description": "独立千问办公国内版，包含设备 PKCE、凭据 JSON、个人账号提前续期、账号模型目录、COSY 对话和积分查询；保留原设备编号，缺失时经授权读固定标识或仅生成一次 UUID。企业衍生登录态到期需更新完整凭据，不静默降级；未经真实账号验收。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "qwenwork", "label": "千问办公 国内版", "order": 24, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "qwenwork.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

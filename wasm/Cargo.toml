@@ -1,6 +1,44 @@
 [workspace]
 resolver = "2"
-members = ["sdk", "atomcode"]
+members = [
+    "sdk",
+    "accio",
+    "accio-cn",
+    "antigravity",
+    "astudio",
+    "atomcode",
+    "autoclaw",
+    "autoclaw-intl",
+    "catpaw",
+    "codearts",
+    "commandcode",
+    "codar",
+    "doubaowork",
+    "dumate",
+    "kiro",
+    "kuku",
+    "modelscope",
+    "modelscope-intl",
+    "monkeycode",
+    "monkeycode-intl",
+    "lobsterai",
+    "orcaterm",
+    "qoder",
+    "qoder-intl",
+    "quwork",
+    "qwenwork",
+    "qwenwork-intl",
+    "raccoon",
+    "trae",
+    "workbuddy",
+    "workbuddy-intl",
+    "loomy",
+    "officeace",
+    "zcode",
+    "zcode-intl",
+    "cline-free",
+    "cline-pass",
+]
 
 [profile.release]
 opt-level = "s"

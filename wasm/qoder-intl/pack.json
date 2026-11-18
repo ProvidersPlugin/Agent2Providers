@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-qoder-intl",
+  "name": "Qoder 国际版",
+  "description": "独立 Qoder 国际版，包含设备授权、PAT 与 JSON 导入、续期、静态及在线目录、COSY 对话、额度、每日签到和活动；设备标识读取与官方 UMID 验证组件需独立授权，不绕过资格或设备限领，未经真实账号验收。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "qoder-intl", "label": "Qoder 国际版", "order": 23, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "qoder-intl.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

@@ -1,6 +1,6 @@
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
 
-use super::{account, errors, models, upstream};
+use super::{account, errors, models, signing, upstream};
 
 #[derive(Default)]
 struct Output {
@@ -10,6 +10,7 @@ struct Output {
     started: bool,
     complete: bool,
     normal_finish: bool,
+    meaningful: bool,
 }
 
 fn candidate(text: &str) -> bool {
@@ -28,13 +29,9 @@ impl Output {
     fn event(&mut self, data: &str) -> Result<()> {
         if self.complete { return Ok(()); }
         if data.trim() == "[DONE]" {
-            if !self.started {
-                if !self.normal_finish {
-                    if let Some(error) = errors::silent(&self.text) { return Err(error); }
-                }
-                if self.text.is_empty() && !self.normal_finish {
-                    return Err(Error::http(502, "AtomCode 未返回有效内容或结束原因"));
-                }
+            if let Some(error) = errors::silent(&self.text) { return Err(error); }
+            if !self.meaningful {
+                return Err(Error::http(502, "AtomCode 未返回有效内容、思考或工具调用"));
             }
             self.start()?;
             sdk::stream_bytes(b"data: [DONE]\n\n")?;
@@ -42,19 +39,16 @@ impl Output {
             return Ok(());
         }
         let value: Value = serde_json::from_str(data).map_err(|_| Error::new("AtomCode 流式事件格式无效"))?;
-        if value.get("error").is_some_and(|value| !value.is_null()) {
-            let status = value["error"]["status"].as_u64()
-                .or_else(|| value["error"]["code"].as_u64())
-                .or_else(|| value["error"]["code"].as_str().and_then(|value| value.parse().ok()))
-                .filter(|status| (400..600).contains(status)).unwrap_or(502);
-            return Err(errors::http_error(status as u16, &value));
+        if errors::business_error(&value) {
+            return Err(errors::http_error(errors::status(&value).unwrap_or(502), &value));
         }
         let choices = value["choices"].as_array().ok_or_else(|| Error::new("AtomCode 流式事件缺少 choices"))?;
         let mut decisive = false;
         for choice in choices {
             let delta = &choice["delta"];
             if let Some(content) = delta["content"].as_str() {
-                if !self.started && self.text.len().saturating_add(content.len()) <= 8192 { self.text.push_str(content); }
+                self.meaningful |= !content.is_empty();
+                if self.text.len().saturating_add(content.len()) <= 8192 { self.text.push_str(content); }
                 else if !content.is_empty() { decisive = true; }
             }
             decisive |= delta["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty())
@@ -67,11 +61,16 @@ impl Output {
                 self.normal_finish = true;
             }
         }
+        self.meaningful |= decisive;
+        if !self.started && self.normal_finish {
+            if let Some(error) = errors::silent(&self.text) { return Err(error); }
+        }
         let bytes = format!("data: {data}\n\n").into_bytes();
         if self.started { sdk::stream_bytes(&bytes)?; return Ok(()); }
         self.pending_size += bytes.len();
         self.pending.push(bytes);
-        if decisive || !self.text.is_empty() && !candidate(&self.text) || self.normal_finish || self.pending_size > 64 * 1024 {
+        if decisive || !self.text.is_empty() && !candidate(&self.text)
+            || self.normal_finish && self.meaningful || self.pending_size > 64 * 1024 {
             self.start()?;
         }
         Ok(())
@@ -81,12 +80,12 @@ impl Output {
         let content_type = response.headers["content-type"].as_str().unwrap_or("").to_ascii_lowercase();
         if content_type.contains("application/json") {
             let value = response.json()?;
-            if value.get("error").is_some_and(|value| !value.is_null()) { return Err(errors::http_error(502, &value)); }
+            if errors::business_error(&value) {
+                return Err(errors::http_error(errors::status(&value).unwrap_or(502), &value));
+            }
             let choices = value["choices"].as_array().ok_or_else(|| Error::new("AtomCode 响应缺少 choices"))?;
             let text = choices.first().and_then(|choice| choice["message"]["content"].as_str()).unwrap_or("");
-            if choices.iter().all(|choice| choice["finish_reason"].is_null()) {
-                if let Some(error) = errors::silent(text) { return Err(error); }
-            }
+            if let Some(error) = errors::silent(text) { return Err(error); }
             let mut chunk = value.clone();
             chunk["object"] = json!("chat.completion.chunk");
             chunk["choices"] = Value::Array(choices.iter().map(|choice| {
@@ -104,20 +103,37 @@ impl Output {
             for event in decoder.push(&bytes)? { self.event(&event)?; }
             if self.complete { return Ok(()); }
         }
+        if !self.started {
+            if let Some(error) = errors::silent(&self.text) { return Err(error); }
+        }
         Err(Error::http(502, "AtomCode 上游流提前中断，未收到完整结束标记"))
     }
 }
 
 pub fn forward(params: &Value) -> Result<()> {
-    let token = account::ensure()?;
+    let _ = account::ensure()?;
     let mut body = params["body"].clone();
     if !body.is_object() { return Err(Error::http(400, "请求体必须是 JSON 对象")); }
     let requested = body["model"].as_str().filter(|name| !name.trim().is_empty())
         .ok_or_else(|| Error::http(400, "请求缺少模型名称"))?;
     body["model"] = json!(models::wire_id(requested, params["account"].as_str().unwrap_or(""))?);
+    if let Some(level) = body["reasoning_effort"].as_str() {
+        let catalog = models::cached()?;
+        if let Some(model) = catalog["models"].as_array().into_iter().flatten().find(|model| model["id"] == body["model"]) {
+            if !model["reasoningEffortLevels"].as_array().into_iter().flatten().any(|value| value == level) {
+                return Err(Error::http(400, "AtomCode 当前模型未声明所选思考档位，请按账号目录选择"));
+            }
+        }
+    }
     body["stream"] = json!(true);
-    if body.get("stream_options").is_none() { body["stream_options"] = json!({ "include_usage": true }); }
-    let response = http::open("POST", &format!("{}/chat/completions", upstream::base("gatewayBase")), upstream::headers(Some(&token)), Some(&body))?;
+    if body.get("stream_options").is_none_or(Value::is_null) {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
+    let url = format!("{}/chat/completions", upstream::base("gatewayBase"));
+    let token = account::signing_session()?;
+    let bytes = serde_json::to_vec(&body).map_err(|_| Error::http(400, "AtomCode 请求体无法编码"))?;
+    let headers = signing::headers(&url, &token, &bytes, upstream::headers(Some(&token)))?;
+    let response = http::open_raw("POST", &url, headers, Some(&bytes))?;
     if !(200..300).contains(&response.status) {
         let status = response.status;
         let bytes = response.bytes(1024 * 1024)?;

@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "provider": "qoder-intl",
+  "modifiedAt": "2026-11-10",
+  "sources": [
+    {
+      "source": "Agent2Providers/crates/providers/src/providers/qoder",
+      "scope": "Site::QoderIntl only: fixed origins, accounts, device PKCE, PAT, refresh, COSY/body codec, 17 fallback models, chat/app catalog, context, messages, SSE, three quota buckets and campaigns",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Ported into an isolated wasm32-unknown-unknown provider. Files, environment, process access, native state and direct networking are replaced by controlled host services. The legacy qoder-user identity prefix is preserved with provider-scoped host identity. Daily campaigns explicitly stop at the unavailable trusted UMID boundary. No component downloader, executable, fictional helper or account-authorization payload is included.",
+      "historicalAttribution": "Native module comments name Qoder-Proxy/src/{cosy,encoding,protocol,models,upstream,chat}.mjs. The exact repository revision was not recorded; none is fabricated here."
+    },
+    {
+      "source": "Agent2Providers/wasm/qoder/src",
+      "scope": "Local pure protocol references: context, errors, messages, output, reasoning and thinking; controlled account/login/HTTP patterns adapted within this package",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Copied modules are local source files, not cross-directory includes or dependencies. International origins, catalogs, identity namespaces and activity rules are independent."
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "revision": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "path": "packages/qoder",
+      "sourceRecord": "Agent2Providers/licenses/legacy-bun-reference/vendor/qoder/SOURCE.json",
+      "purpose": "Preserve the existing repository's documented Qoder protocol attribution chain",
+      "licenses": ["magpie-community-MIT.txt", "CLIProxyAPI-MIT.txt"],
+      "limitation": "The original CLIProxyAPI import revision is not recorded by the existing source."
+    }
+  ],
+  "protocolEvidence": [
+    {
+      "url": "https://docs.qoder.com/events/100credits",
+      "purpose": "International daily credits window at 10:00 UTC+8, individual eligibility, explicit claiming and per-grant validity",
+      "copiedCode": false
+    },
+    {
+      "url": "https://www.npmjs.com/package/creditdaddy/v/0.8.1",
+      "purpose": "Corroborating report of UMID-gated daily campaign discovery and one international account per device per day; no code or components copied",
+      "copiedCode": false
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/logo.png",
+      "source": "Agent2API/desktop-tauri/ui/assets/providers/qoder.png",
+      "change": "Copied unchanged via the existing local Qoder package; no new trademark license asserted."
+    }
+  ],
+  "dependencies": {
+    "source": "Cargo.toml",
+    "note": "Crypto implementations are linked RustCrypto crates and host-seeded ChaCha20 rather than copied source or custom primitives. No WASI or operating-system random source is requested. Dependency notices remain subject to the package collector."
+  }
+}

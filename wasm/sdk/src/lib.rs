@@ -1,12 +1,24 @@
 mod abi;
+pub mod aws_oidc;
 pub mod catalog;
+pub mod client_device;
+pub mod desktop_launch;
+pub mod desktop_refresh;
 pub mod http;
 pub mod images;
 pub mod login;
+pub mod legacy_credentials;
+pub mod protocol;
+pub mod request;
+pub mod refresh_guard;
 pub mod settings;
 pub mod sse;
 pub mod state;
 pub mod tasks;
+pub mod tool_bridge;
+pub mod cookie_login;
+pub mod monkeycode_checkin;
+pub mod verification;
 pub mod websocket;
 
 pub use abi::{allocate, dispatch};
@@ -62,6 +74,11 @@ pub fn native_call(helper: &str, operation: &str, payload: Value) -> Result<Valu
 }
 
 pub fn account() -> Result<Value> { host("account.get", json!({})) }
+
+pub fn account_disabled(record: &Value) -> bool {
+    record["public"]["enabled"] == false
+        && record["usageQueryCall"] != true && record["accountMaintenanceCall"] != true
+}
 
 pub struct AccountLock(String);
 impl AccountLock {

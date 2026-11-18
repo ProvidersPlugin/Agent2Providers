@@ -179,6 +179,9 @@ pub fn payload(
     attachments: Vec<Value>,
     body: &Value,
 ) -> Result<Value, GatewayError> {
+    let deep_think = if model.agent_mode != 0 && model.id.starts_with("person-") && model.deep_think == 0 {
+        10001
+    } else { model.deep_think };
     let id = crate::ids::uuid_v4();
     let now = crate::http::now_ms();
     let mut blocks = Vec::new();
@@ -194,22 +197,28 @@ pub fn payload(
         .take(16)
         .collect();
     let local_id = format!("local_{digits}");
-    let mut result = json!({"client_meta":{"local_conversation_id":local_id,"conversation_id":"","bot_id":bot,"last_section_id":"","last_message_index":null},"messages":[{"local_message_id":id,"content_block":blocks,"message_status":0}],"option":{"create_time_ms":now,"need_create_conversation":true,"conversation_init_option":{"need_ack_conversation":true},"need_deep_think":model.deep_think,"is_audio":false,"answer_with_suggest":false,"tts_switch":false,"is_regen":false,"is_replace":false,"unique_key":crate::ids::uuid_v4(),"start_seq":0,"sse_recv_event_options":{"support_chunk_delta":true},"recovery_option":{"is_recovery":false,"req_create_time_sec":now/1000,"append_sse_event_scene":0},"message_storage_type":0},"user_context":[],"ext":{"use_deep_think":model.deep_think.to_string(),"sub_conv_firstmet_type":"1","commerce_credit_config_enable":"0"}});
+    let mut result = json!({"client_meta":{"local_conversation_id":local_id,"conversation_id":"","bot_id":bot,"last_section_id":"","last_message_index":null},"messages":[{"local_message_id":id,"content_block":blocks,"message_status":0}],"option":{"create_time_ms":now,"need_create_conversation":true,"conversation_init_option":{"need_ack_conversation":true},"need_deep_think":deep_think,"is_audio":false,"answer_with_suggest":false,"tts_switch":false,"is_regen":false,"is_replace":false,"unique_key":crate::ids::uuid_v4(),"start_seq":0,"sse_recv_event_options":{"support_chunk_delta":true},"recovery_option":{"is_recovery":false,"req_create_time_sec":now/1000,"append_sse_event_scene":0},"message_storage_type":0},"user_context":[],"ext":{"use_deep_think":deep_think.to_string(),"sub_conv_firstmet_type":"1","commerce_credit_config_enable":"0"}});
     if model.agent_mode != 0 || model.mode_id.is_some() {
         let effort = match body["reasoning_effort"].as_str() {
-            None => None,
+            None => model.reasoning_default,
             Some("low") => Some(3),
-            Some("medium") => Some(4),
+            Some("medium") => Some(if model.reasoning_levels.contains(&8) && !model.reasoning_levels.contains(&4) { 8 } else { 4 }),
             Some("high") => Some(5),
             Some("xhigh") => Some(6),
             Some("max") => Some(7),
             _ => return Err(unsupported("豆包工作不支持该思考档位")),
         };
+        if effort.is_some_and(|level| !model.reasoning_levels.is_empty() && !model.reasoning_levels.contains(&level)) {
+            return Err(unsupported("此豆包模型的官方目录不支持所选思考档位"));
+        }
         let task = json!({"action":0,"thread_local_message_id":[id],"client_option":{"enable_sandbox":false,"os":std::env::consts::OS,"shared_folder_path":[]},"runtime_type":2,"agent_task_param":{"runtime_type":2},"agent_task_param_change":{"runtime_changed":true,"device_changed":false,"sandbox_auth_type_changed":false},"need_modify_conversation":false,"task_input_json":"{\"project_context\":{}}"});
         result["option"]["agent_mode"] = json!(model.agent_mode);
         result["option"]["model_config"] =
             json!({"model_item_key":model.id,"model_extra_params":model.extra});
         result["option"]["aggregate_params"] = json!({"mode_id":model.mode_id.as_deref().unwrap_or("3"),"model_item_key":model.id,"agent_mode":model.agent_mode.to_string()});
+        if let Some(conversation_mode) = &model.conversation_mode {
+            result["option"]["aggregate_params"]["conversation_mode"] = json!(conversation_mode);
+        }
         if let Some(provider) = model.extra["provider_id"].as_str() {
             result["option"]["aggregate_params"]["provider_id"] = json!(provider);
         }
@@ -226,5 +235,6 @@ pub fn payload(
     } else if !body["reasoning_effort"].is_null() {
         return Err(unsupported("此豆包模式没有思考档位选择器"));
     }
+    result["ext"]["conversation_init_option"] = json!(result["option"]["conversation_init_option"].to_string());
     Ok(result)
 }

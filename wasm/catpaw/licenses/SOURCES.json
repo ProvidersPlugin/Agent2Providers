@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-catpaw",
+  "license": "AGPL-3.0-only",
+  "code": {
+    "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+    "baselineCommit": "b5241335aaa21c9d7aefc70a55ecae9d36a0e3af",
+    "baselinePath": "crates/providers/src/providers/catpaw",
+    "scope": ["accounts.rs", "credentials.rs", "catalog.rs", "models.rs", "balance.rs", "upstream_http.rs", "adapter.rs", "login.rs", "callback_server.rs"],
+    "modifiedAt": "2026-11-13",
+    "notice": "基于本仓原生 CatPaw 逻辑改写账号、账号隔离目录、积分、Passport 托管登录、对话与工具续接，补齐图片输入、有界压缩及明确导入后的本机实时来源；修正本机旧等待入口和公开视图、凭据兼容、空目录、非流式用量与思考绑定；没有复制进程全局工具表、无界回调队列、close_all、token尾号身份兜底或客户端二进制。"
+  },
+  "licenseText": "AGPL-3.0.txt",
+  "assets": {
+    "source": "Agent2API/desktop-tauri/ui/assets/providers/catpaw.png",
+    "files": ["assets/catpaw.png", "assets/logo.png"],
+    "workspaceRevision": "219f9d98ab13b9915156d2d2a2513ff70c9b5c31",
+    "notice": "复用工作区已有 CatPaw 标识，未修改图像；商标及图像权利仍归原权利人，不声称另授商标权。未为该旧 PNG 臆造 MIT 许可或原始作者。"
+  },
+  "externalImplementationCopied": false,
+  "proprietaryClientIncluded": false,
+  "protocolReferences": [
+    {
+      "repository": "https://github.com/Smartloe/dsh-catpaw",
+      "commit": "2e2258c3f8e2085f5c01da701aafcafed899c825",
+      "path": "login.mjs",
+      "readOnly": true,
+      "copied": false,
+      "evidence": "公开源码交叉确认catx.nocode.cn的login-config、state/redirect/sid、poll-token和passport/current-user，X-Auth-Token及userId/userName字段。该实现回调仅按GET、state可缺省并允许任意baseURL，与本仓POST实证不一致；未沿用其解析、端口0兜底、文件/浏览器进程操作。"
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "issue": "https://github.com/magpie-community/plugins/issues/605",
+      "readOnly": true,
+      "copied": false,
+      "evidence": "2026-11-01 的失败报告及 2026-11-11 的用户确认交叉验证 round/turn 需使用 source CatX、mode CATX_APP；本包和固定宿主原已使用该组合，未复制参考实现代码或根据其 CLI 请求头改写本仓实证头。"
+    }
+  ],
+  "excludedReferences": [
+    {
+      "repository": "https://github.com/Smartloe/dsh-catpaw",
+      "commit": "2e2258c3f8e2085f5c01da701aafcafed899c825",
+      "license": "MIT applies to source only; bin/catpaw-cli is proprietary Meituan software and explicitly excluded",
+      "excludedArtifact": "bin/catpaw-cli and other proprietary binaries",
+      "used": false
+    }
+  ]
+}

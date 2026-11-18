@@ -1,0 +1,13 @@
+{
+  "id": "agent2api-wasm-autoclaw-intl",
+  "name": "AutoClaw 国际版",
+  "description": "独立 AutoClaw 国际版，包含 Google / Zai 官方授权、凭据导入与续期、实时模型目录、对话、订阅、积分和签到。本机引用经独立授权后续期并安全写回，另有显式旧环境凭据导入入口，未经真实账号验收。",
+  "version": "0.1.0-beta.1",
+  "protocol": 1,
+  "providers": [
+    { "id": "autoclaw-intl", "label": "AutoClaw 国际版", "order": 11, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "autoclaw-intl.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

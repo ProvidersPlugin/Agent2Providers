@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-codearts",
   "name": "CodeArts",
   "description": "完整对话与会话心跳、官方网页登录和受控自动续期、账号隔离模型目录、余额、每日福利及新手礼。领取结果回读确认，一次性材料结果不明不重发；尚未进行真实账号验收。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

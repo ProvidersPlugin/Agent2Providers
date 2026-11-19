@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-workbuddy-intl",
   "name": "WorkBuddy 国际版",
   "description": "WorkBuddy 国际版独立包：官方授权、登录快照、续期、目录、对话与图片、积分、搜索及每日活跃。保活只使用主程序授权的模型清单，不包含国内成长任务。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [{ "id": "workbuddy-intl", "label": "WorkBuddy 国际版", "order": 16, "default_enabled": true }],
   "entry": { "wasm32-unknown-unknown": "workbuddy-intl.wasm" },

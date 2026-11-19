@@ -61,6 +61,14 @@ pub struct DpopKeyPair {
 /// 长期那一半：续期要用、短期材料可以整块替换的东西。
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct OAuthContext {
+    /// 首登那次授权用的 `client_id`（空 = 走 [`super::oauth::CLIENT_ID`] 默认值）。
+    ///
+    /// ⛔ 续期必须用**同一个**：实测同一枚 refresh token 用 `codearts-agent` 换
+    /// = HTTP 200，用 `vscode-codebot` 换 =
+    /// `STS5.1806 invalid refresh token: 'invalid client id: codearts-agent'`。
+    /// 绑定关系在首登那一刻就定下，续期侧拍一个常量是猜不中的。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     #[serde(default)]
     pub pkce_pair: PkcePair,
     #[serde(default)]

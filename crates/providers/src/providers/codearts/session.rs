@@ -403,7 +403,8 @@ mod tests {
             domain_id: "dom".to_string(),
             user_id: "uid".to_string(),
             oauth_context: Some(OAuthContext {
-                pkce_pair: PkcePair { code_verifier: "v".to_string(), ..PkcePair::default() },
+                                client_id: None,
+pkce_pair: PkcePair { code_verifier: "v".to_string(), ..PkcePair::default() },
                 ..OAuthContext::default()
             }),
             ..Credential::default()

@@ -34,6 +34,21 @@ use super::dpop::DpopKey;
 
 /// 与官方扩展一致的固定 client_id。
 pub const CLIENT_ID: &str = "vscode-codebot";
+
+/// 令牌端点要用的 `client_id`：**优先凭据里记下的首登值**，缺失才退回默认常量。
+///
+/// ⛔ 绑定关系在首登那一刻就定下（见 [`OAuthContext::client_id`]）：实测同一枚
+/// refresh token 换 `codearts-agent` 得 200，换 `vscode-codebot` 得
+/// `STS5.1806 invalid refresh token: 'invalid client id: codearts-agent'`。
+/// 这里拍常量，会让用别的 client 首登的账号**每 2 小时续期失败一次**、STS 到期即转发 401。
+pub fn client_id_of(context: &OAuthContext) -> &str {
+    context
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CLIENT_ID)
+}
 /// 令牌端点与身份端点（两个地区目前共用同一套 STS 主机）。
 pub const TOKEN_URL: &str = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens";
 pub const IDENTITY_URL: &str = "https://sts.cn-north-4.myhuaweicloud.com/v5/caller-identity";
@@ -79,7 +94,7 @@ pub async fn exchange_authorization_code(
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Credential, GatewayError> {
     let form = vec![
-        ("client_id".to_string(), CLIENT_ID.to_string()),
+        ("client_id".to_string(), client_id_of(context).to_string()),
         ("code".to_string(), code.trim().to_string()),
         ("code_verifier".to_string(), verifier(context)?),
         ("grant_type".to_string(), "authorization_code".to_string()),
@@ -105,7 +120,7 @@ pub async fn refresh_credential(
         return Err(GatewayError::with_status(400, "CodeArts 凭据没有 refresh token，请重新登录"));
     }
     let form = vec![
-        ("client_id".to_string(), CLIENT_ID.to_string()),
+        ("client_id".to_string(), client_id_of(context).to_string()),
         ("code_verifier".to_string(), verifier(context)?),
         ("grant_type".to_string(), "refresh_token".to_string()),
         ("refresh_token".to_string(), existing.refresh_token.trim().to_string()),
@@ -392,7 +407,8 @@ pub fn new_login_context() -> Result<OAuthContext, String> {
     let code_verifier = URL_SAFE_NO_PAD.encode(seed);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
     Ok(OAuthContext {
-        pkce_pair: PkcePair {
+                client_id: None,
+pkce_pair: PkcePair {
             code_verifier,
             code_challenge: challenge,
             code_challenge_method: PKCE_METHOD.to_string(),
@@ -819,7 +835,8 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         let context = OAuthContext {
-            pkce_pair: Pkce {
+                        client_id: None,
+pkce_pair: Pkce {
                 code_verifier: "probe-verifier-not-a-real-one".to_string(),
                 code_challenge_method: "SHA-256".to_string(),
                 ..Default::default()

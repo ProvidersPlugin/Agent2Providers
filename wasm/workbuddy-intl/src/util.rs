@@ -47,6 +47,25 @@ pub fn hash(value: &str) -> String {
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+/// 边序列化边摘要：用于需要把一段 JSON 做哈希、但不该在内存里再拼一份副本的场景。
+pub struct Hasher(Sha256);
+impl Hasher {
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
+    pub fn finish(self) -> String {
+        hex(&self.0.finalize())
+    }
+}
+impl std::io::Write for Hasher {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 pub fn random(size: usize) -> Result<Vec<u8>> {
     let encoded = sdk::host("random.bytes", json!({ "length": size }))?;
     let bytes = STANDARD

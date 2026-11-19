@@ -5,20 +5,29 @@ use agent2api_wasm_sdk::{
     self as sdk, json, protocol::Converter, sse::SseDecoder, Error, Result, Value,
 };
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let current = session::ensure(false)?;
     let model = params["body"]["model"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("auto");
-    let declared = catalog::check(&current, model)?;
+        .unwrap_or("auto")
+        .to_string();
+    let declared = catalog::check(&current, &model)?;
     if declared.as_ref().is_some_and(|row| row["kind"] == "image") {
         return Err(Error::http(400, "请通过图片接口使用该模型"));
     }
-    let (mut body, report) = normalize::normalize_outbound(&params["body"], &current.secret);
-    if !body.is_object() {
+    if !params["body"].is_object() {
         return Err(Error::http(400, "WorkBuddy请求体必须为对象"));
     }
+    // 轮次摘要必须取归一化之前的原始入站消息：归一化会改写角色与图片形态，
+    // 也会补系统提示；拿它算摘要会改变同一会话的轮次标识。
+    let chat_headers = headers::conversation(&current.secret, &params, &params["body"])?;
+    // 正文从入站参数里移交出去：整条出站链路只保留这一份，不再复制。
+    let mut body = match params.as_object_mut().and_then(|object| object.remove("body")) {
+        Some(body) => body,
+        None => return Err(Error::http(400, "WorkBuddy请求体必须为对象")),
+    };
+    let report = normalize::normalize_outbound(&mut body, &current.secret);
     body["model"] = json!(model);
     body["stream"] = json!(true);
     let _ = (report.notable(), report.describe());
@@ -39,12 +48,12 @@ pub fn forward(params: &Value) -> Result<()> {
             json!({ "role": "system", "content": "你是一个得力助手" }),
         );
     }
-    let mut response = network::open(
-        "POST",
+    // 正文走分片资源通道：不再生成整份 JSON 字符串与 base64 信封。
+    let mut response = network::open_chat(
         &current.endpoint()?,
         "/v2/chat/completions",
-        headers::conversation(&current.secret, params)?,
-        Some(&body),
+        chat_headers,
+        &body,
     )?;
     if !(200..300).contains(&response.status)
         || response
@@ -59,7 +68,7 @@ pub fn forward(params: &Value) -> Result<()> {
             &current.secrets(),
         ));
     }
-    let mut converter = Converter::new("chat", model)?;
+    let mut converter = Converter::new("chat", &model)?;
     let mut decoder = SseDecoder::default();
     let mut started = false;
     let mut done = false;

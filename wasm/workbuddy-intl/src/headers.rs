@@ -98,7 +98,8 @@ pub fn chat(secret: &Value) -> Result<Value> {
 }
 /// 国际上游按轮次头计费；工具续接保留同一用户发送标识，不把每一步当新对话。
 /// caller 只由宿主原真实对话派生，缺失时保持单次随机标识，不能凭会话字符串跨调用方合并。
-pub fn conversation(secret: &Value, params: &Value) -> Result<Value> {
+/// `body` 由调用方按值持有，这里只借用，不复制整段历史。
+pub fn conversation(secret: &Value, params: &Value, body: &Value) -> Result<Value> {
     let mut headers = chat(secret)?;
     let caller = params["workbuddyIntlCaller"]
         .as_str()
@@ -106,7 +107,7 @@ pub fn conversation(secret: &Value, params: &Value) -> Result<Value> {
     let session = params["session"]
         .as_str()
         .filter(|session| !session.is_empty());
-    let messages = params["body"]["messages"].as_array();
+    let messages = body["messages"].as_array();
     let first =
         messages.and_then(|messages| messages.iter().find(|message| message["role"] == "user"));
     if let Some(caller) = caller.filter(|_| session.is_some() || first.is_some()) {
@@ -124,14 +125,31 @@ pub fn conversation(secret: &Value, params: &Value) -> Result<Value> {
             let end = messages
                 .iter()
                 .rposition(|message| message["role"] == "user");
-            messages[..end.map(|end| end + 1).unwrap_or(messages.len())].to_vec()
+            &messages[..end.map(|end| end + 1).unwrap_or(messages.len())]
         });
-        let turn = &util::hash(&json!({ "salt": salt, "history": history }).to_string())[..32];
+        let turn = &turn_digest(&salt, history)?[..32];
         headers["X-Conversation-ID"] = json!(conversation);
         headers["X-Conversation-Request-ID"] = json!(turn);
         headers["X-Root-Request-ID"] = json!(turn);
     }
     Ok(headers)
+}
+/// 轮次摘要的输入与旧实现逐字节一致：`json!({ "salt": salt, "history": history })`
+/// 序列化时 Map 按 BTreeMap 排序（history 在前）。这里按同一顺序边写边摘要，
+/// 不再把整段历史复制成第二份 Value 与字符串。
+fn turn_digest(salt: &str, history: Option<&[Value]>) -> Result<String> {
+    use std::io::Write;
+    let failed = || Error::new("国际会话轮次摘要失败");
+    let mut hasher = util::Hasher::new();
+    hasher.write_all(b"{\"history\":").map_err(|_| failed())?;
+    match history {
+        Some(history) => serde_json::to_writer(&mut hasher, history).map_err(|_| failed())?,
+        None => hasher.write_all(b"null").map_err(|_| failed())?,
+    }
+    hasher.write_all(b",\"salt\":").map_err(|_| failed())?;
+    serde_json::to_writer(&mut hasher, salt).map_err(|_| failed())?;
+    hasher.write_all(b"}").map_err(|_| failed())?;
+    Ok(hasher.finish())
 }
 fn tracking_salt(key: &str) -> Result<String> {
     const KEY: &str = "intl-chat-tracking";

@@ -44,13 +44,20 @@ pub fn parse(payload: &Value, name: Option<&str>) -> Result<Value> {
             ));
         }
     }
-    for (key, expected) in [("platform", "workbuddy"), ("prefixPath", "/plugin")] {
-        if payload
-            .get(key)
-            .is_some_and(|v| !v.is_null() && v.as_str().is_none_or(|s| s != expected))
-        {
-            return Err(Error::http(400, "国内版凭据的平台或鉴权前缀与官方协议不符"));
-        }
+    // 平台/前缀只做地区识别，不能当协议校验：wb2api 等第三方导出会带自己的
+    // 通道名（如 "CLI"），官方 .info 也不写这两个字段。它们不参与请求，解析后
+    // 统一按国内版规范值写回，所以这里只拦明确属于国际版的标记。
+    if payload
+        .get("platform")
+        .and_then(|value| value.as_str())
+        .is_some_and(|platform| {
+            matches!(
+                platform.trim().to_ascii_lowercase().as_str(),
+                "workbuddy-ai" | "workbuddyai" | "workbuddy.ai"
+            )
+        })
+    {
+        return Err(Error::http(400, "这是WorkBuddy国际版登录态，请使用国际版插件"));
     }
     for key in [
         "accessToken",

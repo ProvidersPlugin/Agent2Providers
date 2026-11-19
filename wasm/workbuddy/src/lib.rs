@@ -84,7 +84,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         }
         "tasks.run" => tasks::run(&params),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "images.capabilities" => Ok(json!({ "generation": true, "editing": true })),

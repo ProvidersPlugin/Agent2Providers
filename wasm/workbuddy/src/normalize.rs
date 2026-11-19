@@ -101,24 +101,24 @@ impl NormalizeReport {
 /// `account` 是与 `build_chat_request` 同源的账号会话对象（用于取 UID 做缓存键
 /// 的账号隔离段，见 `inject_prompt_cache_key`）。
 ///
-/// 返回归一后的新 body 与报告；body 不是 JSON 对象时**原样返回**且报告为空
-/// （坏 body 不在这里二次错误化：上游会给出比我们更准确的解析错误）。
-pub fn normalize_outbound(body: &Value, account: &Value) -> (Value, NormalizeReport) {
-    let Some(object) = body.as_object() else {
-        return (body.clone(), NormalizeReport::default());
+/// 直接改调用方已经持有的那一份 body：对话正文动辄数 MB，`Value` 树的开销是
+/// 原始 JSON 的数倍，再复制一份会明显压缩可用上下文。body 不是 JSON 对象时
+/// 不做任何修改、报告为空（坏 body 不在这里二次错误化：上游会给出更准确的错误）。
+pub fn normalize_outbound(body: &mut Value, account: &Value) -> NormalizeReport {
+    let Some(object) = body.as_object_mut() else {
+        return NormalizeReport::default();
     };
     let mut report = NormalizeReport::default();
-    let mut next = object.clone();
-    normalize_roles(&mut next, &mut report);
-    normalize_tool_choice(&mut next, &mut report);
-    normalize_image_url(&mut next, &mut report);
-    translate_max_completion_tokens(&mut next, &mut report);
-    ensure_stream_options(&mut next);
+    normalize_roles(object, &mut report);
+    normalize_tool_choice(object, &mut report);
+    normalize_image_url(object, &mut report);
+    translate_max_completion_tokens(object, &mut report);
+    ensure_stream_options(object);
     // tool 配对（重排 + 孤儿裁剪）**不在这里**：它已提升为所有上游共用的
     // 转发入口 sanitize（`protocol::history`），跑在本管线之前；两处都做
     // 同一件事只会漂移（本家曾经是唯一实现，见模块头）。
-    inject_prompt_cache_key(&mut next, account, &mut report);
-    (Value::Object(next), report)
+    inject_prompt_cache_key(object, account, &mut report);
+    report
 }
 
 /// 把 `developer` 角色归一为 `system`。

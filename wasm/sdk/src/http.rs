@@ -1,4 +1,5 @@
 use base64::Engine;
+use std::io::{self, Write};
 
 use crate::{host, json, Error, Result, Value};
 
@@ -13,6 +14,54 @@ pub struct Response {
 pub fn open(method: &str, url: &str, headers: Value, body: Option<&Value>) -> Result<Response> {
     open_raw(method, url, headers, body.map(|body| body.to_string()).as_deref().map(str::as_bytes))
 }
+
+/// 大正文的发送通道：先分片写入当前调用资源，再由宿主直接取原字节发出。
+///
+/// 普通 `open` 会把整份正文变成 String，再 base64 成文本塞进外层信封 ——
+/// 发送期间正文至少存在三份（原 Value、字符串、base64 文本与信封字节）。
+/// 对话这类 MB 级正文用这条路径，实例里只多一个 64 KiB 的分片缓冲。
+///
+/// `limit` 是允许的最大正文字节数；超过即返回 413（不提交请求），
+/// 让调用方看到“上下文过大”，而不是实例被内存上限终止。
+pub fn open_json_resource(method: &str, url: &str, headers: Value, body: &Value, limit: usize) -> Result<Response> {
+    let resource = crate::images::Resource::create(RESOURCE_MIME).map_err(|mut error| {
+        error.message = "请求正文资源创建失败，未提交请求".into();
+        error
+    })?;
+    let written = {
+        let mut writer = BodyWriter::new(&resource, limit);
+        let result = serde_json::to_writer(&mut writer, body)
+            .map_err(|_| writer.take("请求正文序列化失败"))
+            .and_then(|()| writer.finish());
+        (result, writer.total)
+    };
+    let (written, total) = written;
+    if let Err(error) = written {
+        let _ = resource.remove();
+        return Err(error);
+    }
+    let sealed = match resource.seal() {
+        Ok(value) => value,
+        Err(mut error) => {
+            let _ = resource.remove();
+            error.message = "请求正文资源封存失败，未提交请求".into();
+            return Err(error);
+        }
+    };
+    if sealed["id"].as_str() != Some(resource.id.as_str())
+        || sealed["size"].as_u64() != u64::try_from(total).ok()
+    {
+        let _ = resource.remove();
+        return Err(Error::new("请求正文资源封存回执不一致，未提交请求"));
+    }
+    let result = open_resource(method, url, headers, &resource.id);
+    // 宿主已把字节交给 HTTP 句柄；这里只释放本次调用里的资源槽。
+    let _ = resource.remove();
+    result
+}
+
+/// 宿主只接受这几种资源类型；正文以二进制承载，类型由请求头表达。
+const RESOURCE_MIME: &str = "application/octet-stream";
 
 /// 需要在 manifest 中声明 http.timeout.v1（依赖 http.v1）。
 pub fn open_timeout(method: &str, url: &str, headers: Value, body: Option<&Value>, timeout_ms: u64) -> Result<Response> {
@@ -133,5 +182,68 @@ impl Response {
 impl Drop for Response {
     fn drop(&mut self) {
         if !self.done { let _ = host("http.close", json!({ "id": self.id })); }
+    }
+}
+
+/// 单次写入资源的分片大小；宿主对单个分片的 base64 长度也有上限。
+const CHUNK: usize = 64 * 1024;
+
+/// 把 JSON 正文按 64 KiB 分片写进资源：内存里只有一个分片缓冲。
+struct BodyWriter<'a> {
+    resource: &'a crate::images::Resource,
+    buffer: Vec<u8>,
+    total: usize,
+    limit: usize,
+    failure: Option<Error>,
+}
+
+impl<'a> BodyWriter<'a> {
+    fn new(resource: &'a crate::images::Resource, limit: usize) -> Self {
+        Self { resource, buffer: Vec::with_capacity(CHUNK), total: 0, limit, failure: None }
+    }
+
+    fn take(&mut self, fallback: &str) -> Error {
+        self.failure.take().unwrap_or_else(|| Error::new(fallback))
+    }
+
+    fn stopped(&mut self, error: Error) -> io::Error {
+        self.failure.get_or_insert(error);
+        io::Error::other("请求正文已停止写入")
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.flush().map_err(|_| self.take("请求正文写入失败"))
+    }
+}
+
+impl Write for BodyWriter<'_> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        if self.failure.is_some() { return Err(io::Error::other("请求正文已停止写入")); }
+        let length = bytes.len();
+        let Some(total) = self.total.checked_add(length).filter(|total| *total <= self.limit) else {
+            // 只在这里拒绝：继续写下去会先把实例内存撑爆，调用方只会看到笼统的资源错误。
+            return Err(self.stopped(Error::coded(
+                format!("请求正文超过 {} MiB 的受控上限，请缩小上下文或图片后重试",
+                    self.limit / (1024 * 1024)),
+                "plugin_request_too_large",
+            )));
+        };
+        while !bytes.is_empty() {
+            let take = CHUNK.saturating_sub(self.buffer.len()).min(bytes.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.buffer.len() == CHUNK { self.flush()?; }
+        }
+        self.total = total;
+        Ok(length)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.failure.is_some() { return Err(io::Error::other("请求正文已停止写入")); }
+        if self.buffer.is_empty() { return Ok(()); }
+        let result = self.resource.append(&self.buffer);
+        if let Err(error) = result { return Err(self.stopped(error)); }
+        self.buffer.clear();
+        Ok(())
     }
 }

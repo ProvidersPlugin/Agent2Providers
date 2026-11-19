@@ -54,15 +54,15 @@ pub fn parse(payload: &Value, name: Option<&str>) -> Result<Value> {
             return Err(Error::http(400, "该凭据是国内版，请使用对应地区插件"));
         }
     }
-    for (key, expected) in [("platform", endpoints::PLATFORM), ("prefixPath", "/plugin")] {
-        if payload.get(key).is_some_and(|value| {
-            !value.is_null()
-                && value
-                    .as_str()
-                    .is_none_or(|value| !value.trim().is_empty() && value.trim() != expected)
-        }) {
-            return Err(Error::http(400, "国际版平台或鉴权前缀与官方协议不符"));
-        }
+    // 平台/前缀只做地区识别，不能当协议校验：第三方导出会带自己的通道名
+    // （如 "CLI"），官方 .info 也不写这两个字段。它们不参与请求，解析后统一按
+    // 国际版规范值写回，所以这里只拦明确属于国内版的标记。
+    if payload
+        .get("platform")
+        .and_then(|value| value.as_str())
+        .is_some_and(|platform| platform.trim().eq_ignore_ascii_case("workbuddy"))
+    {
+        return Err(Error::http(400, "该凭据是国内版，请使用对应地区插件"));
     }
     for key in [
         "accessToken",

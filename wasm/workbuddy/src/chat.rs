@@ -5,20 +5,24 @@ use agent2api_wasm_sdk::{
     self as sdk, json, protocol::Converter, sse::SseDecoder, Error, Result, Value,
 };
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let current = session::ensure(false)?;
     let model = params["body"]["model"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("auto");
-    let declared = catalog::check(&current, model)?;
+        .unwrap_or("auto")
+        .to_string();
+    let declared = catalog::check(&current, &model)?;
     if declared.as_ref().is_some_and(|row| row["kind"] == "image") {
         return Err(Error::http(400, "请通过图片接口使用该模型"));
     }
-    let (mut body, report) = normalize::normalize_outbound(&params["body"], &current.secret);
-    if !body.is_object() {
-        return Err(Error::http(400, "WorkBuddy请求体必须为对象"));
-    }
+    // 正文从入站参数里移交出去：整条出站链路只保留这一份，不再复制。
+    let mut body = match params.as_object_mut().and_then(|object| object.remove("body")) {
+        Some(body) if body.is_object() => body,
+        _ => return Err(Error::http(400, "WorkBuddy请求体必须为对象")),
+    };
+    drop(params);
+    let report = normalize::normalize_outbound(&mut body, &current.secret);
     body["model"] = json!(model);
     body["stream"] = json!(true);
     let _ = (report.notable(), report.describe());
@@ -35,12 +39,12 @@ pub fn forward(params: &Value) -> Result<()> {
             );
         }
     }
-    let mut response = network::open(
-        "POST",
+    // 正文走分片资源通道：不再生成整份 JSON 字符串与 base64 信封。
+    let mut response = network::open_chat(
         &current.endpoint()?,
         "/v2/chat/completions",
         headers::chat(&current.secret)?,
-        Some(&body),
+        &body,
     )?;
     if !(200..300).contains(&response.status)
         || response
@@ -55,7 +59,7 @@ pub fn forward(params: &Value) -> Result<()> {
             &current.secrets(),
         ));
     }
-    let mut converter = Converter::new("chat", model)?;
+    let mut converter = Converter::new("chat", &model)?;
     let mut decoder = SseDecoder::default();
     let mut started = false;
     let mut done = false;

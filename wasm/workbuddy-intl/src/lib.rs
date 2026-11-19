@@ -86,7 +86,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             "国际日活沿用主程序现有签到排程，不接受缺少授权模型链的任务派发",
         )),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "images.capabilities" => Ok(json!({ "generation": true, "editing": true })),

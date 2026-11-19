@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-wasm-codearts"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "agent2api-wasm-sdk",
  "base64",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-wasm-trae"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "agent2api-wasm-sdk",
  "base64",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-wasm-workbuddy"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "agent2api-wasm-sdk",
  "base64",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-wasm-workbuddy-intl"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "agent2api-wasm-sdk",
  "base64",

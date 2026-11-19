@@ -77,16 +77,26 @@ fn read(secret: &Value) -> Result<Value> {
     let fast = packs::fast(&packs);
     let selected = packs::select(&packs);
     let basic = selected.map(packs::basic_balance);
-    let (available, unit) = if pool.unlimited {
-        (None, "积分")
-    } else if pool.remain.is_some() {
-        (pool.remain, "积分")
-    } else if let Some(fast) = &fast {
-        (fast.remain.filter(|_| !fast.unlimited), "次")
-    } else if let Some(basic) = &basic {
-        (basic.remain.filter(|_| !basic.unlimited), "额度")
-    } else {
-        (None, "积分")
+    let official = util::number(&ent["usage_summary"]["total_amount"])
+        .zip(util::number(&ent["usage_summary"]["consumed_amount"]));
+    let (available, unit) = {
+        let (value, unit) = if pool.unlimited {
+            (None, "积分")
+        } else if pool.remain.is_some() {
+            (pool.remain, "积分")
+        } else if let Some(fast) = &fast {
+            (fast.remain.filter(|_| !fast.unlimited), "次")
+        } else if let Some(basic) = &basic {
+            (basic.remain.filter(|_| !basic.unlimited), "额度")
+        } else {
+            (None, "积分")
+        };
+        // 逐包读数缺失时用上游自己的汇总兜底：本插件只服务 Trae CN，usage_summary
+        // 就是积分口径。否则界面只能拿钱包里第一个数字（SOLO 并发数）当余额。
+        match value {
+            Some(_) => (value, unit),
+            None => official.map_or((None, unit), |(total, consumed)| (Some(total - consumed), "积分")),
+        }
     };
     let mut wallets = Vec::new();
     if pool.remain.is_some() || pool.unlimited {
@@ -111,9 +121,7 @@ fn read(secret: &Value) -> Result<Value> {
     if let Some(number) = packs::pay_number(&pay, false, &["fast_request_per", "fastRequestPer"]) {
         wallets.push(json!({ "type": "fast_request_per", "displayName": "快请求配额", "balance": number, "balanceView": format!("{number} 次/月") }));
     }
-    if let Some((total, consumed)) = util::number(&ent["usage_summary"]["total_amount"])
-        .zip(util::number(&ent["usage_summary"]["consumed_amount"]))
-    {
+    if let Some((total, consumed)) = official {
         wallets.push(json!({ "type": "usage_summary", "displayName": "官方汇总", "balance": total-consumed,
             "balanceView": format!("剩 {:.2} / 共 {:.2}（已用 {:.2}）", total-consumed,total,consumed) }));
     }

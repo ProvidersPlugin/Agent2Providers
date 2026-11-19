@@ -80,13 +80,19 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             Ok(json!({ "generation": false, "editing": false, "reason": gates::SUMMARY }))
         }
         "images.generate" | "images.edit" => Err(gates::chat()),
-        "classify" => Ok(errors::classify(
-            params["status"]
-                .as_u64()
-                .and_then(|n| u16::try_from(n).ok())
-                .unwrap_or(502),
-            &params["body"],
-        )),
+        "classify" => {
+            let secrets = crate::binding::Account::current()
+                .map(|account| account.credential.secrets())
+                .unwrap_or_default();
+            Ok(errors::classify(
+                params["status"]
+                    .as_u64()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(502),
+                &params["body"],
+                &secrets,
+            ))
+        }
         "is_error_response" => Ok(json!(
             params["status"].as_u64().unwrap_or(502) >= 400 || errors::failure(&params["body"])
         )),

@@ -74,7 +74,7 @@ pub fn transport(error: Error) -> Error {
     .with_code("codearts_transport")
 }
 
-pub fn upstream(status: u16, operation: &str) -> Error {
+pub fn upstream(status: u16, operation: &str, body: &Value, secrets: &[String]) -> Error {
     if status == 401 {
         return Error::http(
             401,
@@ -87,11 +87,13 @@ pub fn upstream(status: u16, operation: &str) -> Error {
     } else {
         502
     };
-    Error::http(
-        status,
-        format!("CodeArts {operation}未获上游成功确认（HTTP {status}）；原始诊断已隐藏"),
-    )
-    .with_code("codearts_upstream")
+    let detail = upstream_detail(body, secrets);
+    let message = if detail.is_empty() {
+        format!("CodeArts {operation}未获上游成功确认（HTTP {status}）")
+    } else {
+        format!("CodeArts {operation}未获上游成功确认（HTTP {status}）：{detail}")
+    };
+    Error::http(status, message).with_code("codearts_upstream")
 }
 
 pub fn spellings(secret: &str) -> Vec<String> {
@@ -150,125 +152,285 @@ pub fn upstream_text(value: &Value, key: &str, secrets: &[String], limit: usize)
     Ok(text.to_string())
 }
 
-pub fn classify(status: u16, body: &Value) -> Value {
+struct Classified {
+    kind: &'static str,
+    status: u16,
+    message: String,
+    code: &'static str,
+    reset_at: Option<i64>,
+    upstream_code: Option<i64>,
+}
+
+/// 复合业务码末段的真实状态码：`InferHub.001001005.400` → 400。
+/// `TM.00001041`、`APIG.0301` 的末段不在 4xx/5xx 内，不会被误当成状态码。
+fn code_status(code: &str) -> Option<u16> {
+    let tail = code.trim().rsplit('.').next()?;
+    let status = tail.parse::<u16>().ok()?;
+    (400..=599).contains(&status).then_some(status)
+}
+
+/// 错误码可以公开（它是上游给的固定编号），但仍经过同一套脱敏。
+fn public_code(code: &str, secrets: &[String]) -> String {
+    let shown = public_text(code.trim(), secrets, 96);
+    if shown == "[已隐藏]" {
+        String::new()
+    } else {
+        shown
+    }
+}
+
+fn detail_from(payload: &Value, secrets: &[String]) -> String {
+    let text = payload["message"]
+        .as_str()
+        .or_else(|| payload["error_msg"].as_str())
+        .or_else(|| payload["msg"].as_str())
+        .unwrap_or("");
+    let text = public_text(text, secrets, 200);
+    if text == "[已隐藏]" {
+        String::new()
+    } else {
+        text.trim().to_string()
+    }
+}
+
+/// 上游业务码：字符串或数字都接受，成功码不计入错误。
+fn code_of(payload: &Value) -> String {
+    ["error_code", "providerCode", "code"]
+        .iter()
+        .find_map(|key| {
+            payload[*key]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| payload[*key].as_i64().map(|code| code.to_string()))
+        })
+        .filter(|code| !matches!(code.trim(), "" | "0" | "0000"))
+        .unwrap_or_default()
+}
+
+/// 上游错误体里的可公开说明：错误码优先，其次脱敏后的原文。
+fn upstream_detail(body: &Value, secrets: &[String]) -> String {
     let payload = body
         .get("error")
         .filter(|error| error.is_object())
         .unwrap_or(body);
-    let code = ["error_code", "providerCode", "code"]
-        .iter()
-        .find_map(|key| payload[*key].as_str())
-        .unwrap_or("");
-    let lower = payload["message"]
+    let code = public_code(&code_of(payload), secrets);
+    let message = detail_from(payload, secrets);
+    match (code.is_empty(), message.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => message,
+        (false, true) => format!("错误码 {code}"),
+        (false, false) => format!("错误码 {code}：{message}"),
+    }
+}
+
+fn details(status: u16, body: &Value, secrets: &[String]) -> Classified {
+    let payload = body
+        .get("error")
+        .filter(|error| error.is_object())
+        .unwrap_or(body);
+    let code_owned = code_of(payload);
+    let code = code_owned.as_str();
+    let code_lower = code.trim().to_ascii_lowercase();
+    let message = payload["message"]
         .as_str()
         .or_else(|| payload["error_msg"].as_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let image = code.contains("001001020")
-        || code == "codearts_not_multimodal"
+        .unwrap_or("");
+    let lower = message.to_ascii_lowercase();
+    let image = code_lower.contains("001001020")
+        || code_lower == "codearts_not_multimodal"
         || lower.contains("is not multimodal")
-        || lower.contains("不支持图片输入");
-    let token = code == "codearts_credential_rejected"
-        || code == "codearts_access_expired"
-        || code == "token_expired"
-        || code == "APIG.0602"
+        || message.contains("不支持图片输入");
+    let token = code_lower == "codearts_credential_rejected"
+        || code_lower == "codearts_access_expired"
+        || code_lower == "token_expired"
+        || code_lower.starts_with("apig.0301")
+        || code_lower.starts_with("apig.0302")
+        || code_lower.starts_with("apig.0303")
+        || code_lower.starts_with("apig.0307")
+        || code_lower.starts_with("apig.0602")
+        || code_lower.starts_with("sts5.1804")
+        || code_lower.starts_with("sts5.1806")
+        || code_lower == "invalid_grant"
         || status == 401
         || lower.contains("token expired")
-        || lower.contains("invalid token");
+        || lower.contains("invalid token")
+        || lower.contains("security token has expired")
+        || lower.contains("verify ak sk signature fail");
     let blocked = !image
-        && (code == "codearts_content_blocked"
-            || code == "content_blocked"
+        && (code_lower == "codearts_content_blocked"
+            || code_lower == "content_blocked"
             || lower.contains("content policy")
             || lower.contains("content blocked")
             || lower.contains("content filter")
-            || lower.contains("内容策略拒绝"));
-    let concurrency = code == "TM.00001041" || code == "codearts_concurrency_limited";
+            || message.contains("内容策略拒绝"));
+    let concurrency = code_lower.starts_with("tm.00001041")
+        || code_lower == "codearts_concurrency_limited";
+    // 华为网关的限流/繁忙码：与原生同一口径，归入额度窗口。
+    let rate_code = code_lower.starts_with("modelarts.81101")
+        || code_lower.starts_with("modelarts.81111")
+        || code_lower.starts_with("modelarts.81114")
+        || code_lower == "busyexception";
     let quota = !image
         && !blocked
         && !concurrency
         && (status == 429
             || code.contains("429")
-            || code == "quota_limited"
-            || code == "insufficient_quota"
+            || rate_code
+            || code_lower == "quota_limited"
+            || code_lower == "insufficient_quota"
             || lower.contains("insufficient quota")
             || lower.contains("rate limit")
             || lower.contains("too many")
-            || lower.contains("额度"));
-    let rejected_model = code == "model_not_found"
+            || message.contains("额度"));
+    let model_not_found = code_lower == "model_not_found"
         || lower.contains("model not found")
         || lower.contains("invalid model");
-    let status = if token {
-        401
+    // 请求形态问题：上游明确拒绝，重试与换账号都不会变。
+    let parameter = !image
+        && (code_lower.starts_with("inferhub.001001005")
+            || lower.contains("request param is invalid"));
+    let model_mismatch = code_lower.starts_with("inferhub.001001011")
+        || lower.contains("not equals requestheader")
+        || lower.contains("model not equals");
+    let tool_name = code_lower.starts_with("inferhub.001001017")
+        || (lower.contains("function name") && lower.contains("length over limit"));
+    let channel = code_lower == "4000" || lower.contains("invalid channel, group not found");
+    let busy = code_lower.starts_with("tm.00000001") || message.contains("网络繁忙");
+    let (kind, status, code_tag, reason) = if token {
+        (
+            "token_expired",
+            401,
+            "codearts_credential_rejected",
+            "CodeArts 登录凭据已失效，请续期或重新登录",
+        )
     } else if quota {
-        429
-    } else if image || rejected_model {
-        400
-    } else if blocked {
-        403
+        (
+            "quota_limited",
+            429,
+            "quota_limited",
+            "CodeArts 额度或速率窗口受限，请稍后重试",
+        )
     } else if concurrency {
-        409
-    } else if (400..600).contains(&status) {
-        status
+        (
+            "fatal",
+            409,
+            "codearts_concurrency_limited",
+            "CodeArts 当前账号已有三路对话，请等待在途请求结束",
+        )
+    } else if image {
+        (
+            "fatal",
+            400,
+            "codearts_not_multimodal",
+            "当前 CodeArts 模型不支持图片输入，请更换模型或去掉图片",
+        )
+    } else if model_not_found {
+        (
+            "fatal",
+            400,
+            "codearts_model_rejected",
+            "当前 CodeArts 模型未获上游确认，请重新获取本账号目录",
+        )
+    } else if parameter {
+        (
+            "fatal",
+            400,
+            "codearts_parameter_rejected",
+            "CodeArts 上游拒绝了本次请求参数；请检查 stop、温度或输出上限等客户端设置",
+        )
+    } else if model_mismatch {
+        (
+            "fatal",
+            400,
+            "codearts_model_mismatch",
+            "CodeArts 模型名与上游请求头不一致，请重新获取本账号目录后再试",
+        )
+    } else if tool_name {
+        (
+            "fatal",
+            400,
+            "codearts_tool_name_rejected",
+            "CodeArts 上游拒绝了过长的工具名（上限 64 字符）",
+        )
+    } else if channel {
+        (
+            "fatal",
+            400,
+            "codearts_channel_unsupported",
+            "CodeArts 上游通道已不支持该模型或操作",
+        )
+    } else if blocked {
+        (
+            "content_blocked",
+            403,
+            "codearts_content_blocked",
+            "CodeArts 内容策略拒绝了本次请求",
+        )
+    } else if busy {
+        (
+            "fatal",
+            503,
+            "codearts_busy",
+            "CodeArts 上游繁忙，临时拒绝了本次请求，请稍后重试",
+        )
     } else {
-        502
+        let status = code_status(code)
+            .or_else(|| (400..600).contains(&status).then_some(status))
+            .unwrap_or(502);
+        (
+            "fatal",
+            status,
+            "codearts_upstream",
+            "CodeArts 上游未完成本次请求",
+        )
     };
     let reset_at = payload["resetAt"]
         .as_i64()
         .or_else(|| payload["reset_at"].as_i64())
         .filter(|at| {
             *at > 0
-                && *at <= (1_i64 << 53) - 1
+                && *at < (1_i64 << 53)
                 && chrono::DateTime::from_timestamp_millis(*at).is_some()
         });
     let upstream_code = payload["upstreamCode"]
         .as_i64()
         .or_else(|| payload["upstream_code"].as_i64())
         .or_else(|| payload["code"].as_i64());
-    json!({"kind":if token {"token_expired"} else if quota {"quota_limited"} else if blocked {"content_blocked"} else {"fatal"},
-        "status":status,"reset_at":reset_at,"upstream_code":upstream_code,
-        "message":if token {"CodeArts 登录凭据已失效，请续期或重新登录"} else if quota {"CodeArts 额度或速率窗口受限，请稍后重试"}
-            else if concurrency {"CodeArts 当前账号已有三路对话，请等待在途请求结束，不会把并发占用记为额度耗尽"}
-            else if image {"当前 CodeArts 模型不支持图片输入，请更换模型或去掉图片"}
-            else if rejected_model {"当前 CodeArts 模型未获上游确认，请重新获取本账号目录"}
-            else if blocked {"CodeArts 内容策略拒绝了本次请求"}
-            else {"CodeArts 上游未完成本次请求，原始敏感诊断已隐藏"}})
+    // 固定脱敏后再拼接：错误码可公开，原文仍受凭据与 URL 遮蔽约束。
+    let mut text = reason.to_string();
+    let code_note = public_code(code, secrets);
+    if !code_note.is_empty() {
+        text.push_str(&format!("（{code_note}）"));
+    }
+    let detail = detail_from(payload, secrets);
+    if !detail.is_empty() && detail != code_note {
+        text.push('：');
+        text.push_str(&detail);
+    }
+    if code_note.is_empty() && detail.is_empty() {
+        text.push_str(&format!("（HTTP {status}）"));
+    }
+    Classified {
+        kind,
+        status,
+        message: text,
+        code: code_tag,
+        reset_at,
+        upstream_code,
+    }
 }
 
-pub fn classified(status: u16, body: &Value) -> Error {
-    let class = classify(status, body);
-    let status = class["status"]
-        .as_u64()
-        .and_then(|status| u16::try_from(status).ok())
-        .unwrap_or(502);
-    let code = match class["kind"].as_str() {
-        Some("token_expired") => "token_expired",
-        Some("quota_limited") => "quota_limited",
-        Some("content_blocked") => "codearts_content_blocked",
-        _ if status == 409
-            && class["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("已有三路")) =>
-        {
-            "codearts_concurrency_limited"
-        }
-        _ if status == 400
-            && class["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("不支持图片输入")) =>
-        {
-            "codearts_not_multimodal"
-        }
-        _ => "codearts_upstream",
-    };
-    let mut error = Error::http(
-        status,
-        class["message"]
-            .as_str()
-            .unwrap_or("CodeArts 本次请求未获确认"),
-    )
-    .with_code(code);
-    error.reset_at = class["reset_at"].as_i64();
-    error.upstream_code = class["upstream_code"].as_i64();
+pub fn classify(status: u16, body: &Value, secrets: &[String]) -> Value {
+    let class = details(status, body, secrets);
+    json!({"kind":class.kind,"status":class.status,"reset_at":class.reset_at,
+        "upstream_code":class.upstream_code,"message":class.message})
+}
+
+pub fn classified(status: u16, body: &Value, secrets: &[String]) -> Error {
+    let class = details(status, body, secrets);
+    let mut error = Error::http(class.status, class.message).with_code(class.code);
+    error.reset_at = class.reset_at;
+    error.upstream_code = class.upstream_code;
     error
 }
 

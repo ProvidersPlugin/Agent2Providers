@@ -37,7 +37,12 @@ fn request(account: &Account, path: &str, body: &Value) -> Result<Value> {
     let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| errors::protocol("活动领取没有返回完整回应"))?;
     if status != 200 || value["code"].as_i64() != Some(0) {
-        return Err(errors::upstream(status, "福利领取"));
+        return Err(errors::upstream(
+            status,
+            "福利领取",
+            &value,
+            &account.credential.secrets(),
+        ));
     }
     account.unchanged()?;
     Ok(value["data"].clone())

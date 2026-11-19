@@ -48,6 +48,11 @@ pub fn forward(params: &Value) -> Result<Value> {
     body["model"] = json!(upstream);
     body["stream"] = json!(true);
     body["stream_options"] = json!({"include_usage":true});
+    // stop 是上游明确拒绝的字段：字符串与数组都会被判成参数非法（InferHub.001001005.400），
+    // 删除比改写可靠；不把客户端的无效参数透传给上游。
+    if let Some(fields) = body.as_object_mut() {
+        fields.remove("stop");
+    }
     for key in ["max_tokens", "max_completion_tokens"] {
         if body[key]
             .as_i64()
@@ -140,7 +145,11 @@ pub fn forward(params: &Value) -> Result<Value> {
             let status = response.status;
             let payload = response.bytes(256 * 1024).map_err(errors::transport)?;
             let value: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
-            return Err(errors::classified(status, &value));
+            return Err(errors::classified(
+                status,
+                &value,
+                &account.credential.secrets(),
+            ));
         }
         if !response
             .header_values("content-type")
@@ -166,7 +175,7 @@ pub fn forward(params: &Value) -> Result<Value> {
                 let mut value: Value = serde_json::from_str(&event)
                     .map_err(|_| errors::protocol("CodeArts 回答事件无效"))?;
                 if errors::failure(&value) {
-                    return Err(errors::classified(200, &value));
+                    return Err(errors::classified(200, &value, &account.credential.secrets()));
                 }
                 account.unchanged()?;
                 let content_blocked = value["choices"].as_array().is_some_and(|choices| {

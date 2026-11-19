@@ -37,12 +37,20 @@ pub fn get(account: &Account, request: ReadRequest<'_>, maximum: usize) -> Resul
     account.unchanged()?;
     if status != 200 {
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        return Err(errors::classified(status, &value));
+        return Err(errors::classified(
+            status,
+            &value,
+            &account.credential.secrets(),
+        ));
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| errors::protocol("CodeArts 上游回应不是完整 JSON，未保存或公开原始正文"))?;
     if errors::failure(&value) {
-        return Err(errors::classified(status, &value));
+        return Err(errors::classified(
+            status,
+            &value,
+            &account.credential.secrets(),
+        ));
     }
     if !value.is_object() {
         return Err(errors::protocol("CodeArts 上游回应缺少对象结构"));

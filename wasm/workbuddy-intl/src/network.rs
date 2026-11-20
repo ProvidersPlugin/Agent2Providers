@@ -43,6 +43,24 @@ pub fn open(
 }
 /// 对话正文的最大字节数：与图片编辑入口的内联数据上限一致。
 const MAX_CHAT_BODY: usize = 14 * 1024 * 1024;
+fn chat_transport_error(mut error: Error) -> Error {
+    let preserve = matches!(
+        error.code.as_deref(),
+        Some(
+            "plugin_request_too_large"
+                | "bad_params"
+                | "forbidden"
+                | "request_replay_blocked"
+                | "plugin_resource_limit"
+                | "timeout"
+                | "aborted"
+        )
+    );
+    if !preserve {
+        error.message = "WorkBuddy网络请求未完成".into();
+    }
+    error
+}
 /// 对话正文先分片写入当前调用资源，再由宿主取原字节发送。
 /// 正文过大时返回明确原因（上下文过大），不再先耗尽实例内存。
 pub fn open_chat(
@@ -53,13 +71,7 @@ pub fn open_chat(
 ) -> Result<http::Response> {
     headers["Content-Type"] = Value::String("application/json".into());
     http::open_json_resource("POST", &endpoints::url(origin, path)?, headers, body, MAX_CHAT_BODY)
-        .map_err(|mut error| {
-            // 上限错误已带可读原因，只有真正的传输/资源失败才换成笼统文案。
-            if error.code.as_deref() != Some("plugin_request_too_large") {
-                error.message = "WorkBuddy网络请求未完成".into();
-            }
-            error
-        })
+        .map_err(chat_transport_error)
 }
 pub fn open_timeout(
     method: &str,

@@ -37,7 +37,6 @@ members = [
     "zcode",
     "zcode-intl",
     "cline-free",
-    "cline-pass",
 ]
 
 [profile.release]

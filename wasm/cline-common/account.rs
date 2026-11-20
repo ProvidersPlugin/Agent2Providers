@@ -393,7 +393,7 @@ pub fn view(secret: &Value) -> Value {
     let mut view = json!({ "name": name, "displayName": name, "uid": id, "account": id,
         "tokenTail": tail,
         "hasAccessToken": access(secret).is_ok() || local(secret), "hasRefreshToken": has_refresh,
-        "canRefresh": crate::PROVIDER_ID != "cline-free" && !api_key(secret)
+        "canRefresh": !api_key(secret)
             && has_refresh && secret["desktopReadOnly"] != true,
         "canSyncCredentials": local(secret), "desktopAuth": local(secret) });
     if let Some(expiry) = expiry(secret) {

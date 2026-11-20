@@ -1,6 +1,5 @@
 //! 只刷新当前池当前账号。即使两个池引用同一令牌，也不越权读写另一池。
 //! 跨池授权凭据组的原子同步必须由宿主另行提供；本文件不实现跨池续期。
-//! 免费池换证由原账号的固定宿主入口执行；插件侧不发送或保存它的续期结果。
 
 use super::{account, client, desktop, endpoints};
 use agent2api_wasm_sdk::{self as sdk, json, state::Scope, AccountLock, Error, Result, Value};
@@ -9,11 +8,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 const OVERLAY: &str = "desktop-credential-overlay";
 const KEY: &str = "credentials";
 const TTL: i64 = 7_200_000;
-const CONTROL: &str = "cline-pass-refresh-control";
+const CONTROL: &str = "cline-refresh-control";
 
 fn unresolved() -> Error {
     Error::http(409,
-        "ClinePass 上次续期结果尚未确认，不会重复消费同一续期令牌；仍有效的访问令牌可继续使用，到期后请重新登录")
+        "Cline 上次续期结果尚未确认，不会重复消费同一续期令牌；仍有效的访问令牌可继续使用，到期后请重新登录")
         .with_code("cline_refresh_result_unconfirmed")
 }
 
@@ -42,14 +41,6 @@ fn retain_valid(current: &Snapshot) -> Result<Value> {
         return Err(source_changed());
     }
     Ok(latest.secret)
-}
-
-fn free_requires_host() -> Error {
-    Error::http(
-        409,
-        "Cline 免费池凭据需要由主程序原账号续期入口更新，未在普通调用中发送或重复换证",
-    )
-    .with_code("cline_free_refresh_requires_host")
 }
 
 struct Snapshot {
@@ -221,8 +212,7 @@ fn read_once() -> Result<Option<Snapshot>> {
         }
         secret
     } else {
-        // 免费池读取只观察原材料，不清除或写回历史桌面临时覆盖。
-        if crate::PROVIDER_ID != "cline-free" && !overlay.value.is_null() {
+        if !overlay.value.is_null() {
             if !sdk::state::conversation_compare_exchange(
                 OVERLAY,
                 KEY,
@@ -283,14 +273,12 @@ pub fn due() -> Result<bool> {
         return Ok(status["authorized"] == true && status["refreshable"] == true && expiring(&snapshot.secret));
     }
     if !renewable(&snapshot.secret) { return Ok(false); }
-    if crate::PROVIDER_ID == "cline-pass" {
-        let control = sdk::state::get(Scope::Account, CONTROL, 1)?;
-        if !control.compatible {
-            return Err(source_changed());
-        }
-        if control.value["stamp"] == refresh_stamp(&snapshot) {
-            return Ok(false);
-        }
+    let control = sdk::state::get(Scope::Account, CONTROL, 1)?;
+    if !control.compatible {
+        return Err(source_changed());
+    }
+    if control.value["stamp"] == refresh_stamp(&snapshot) {
+        return Ok(false);
     }
     Ok(expiring(&snapshot.secret))
 }
@@ -363,9 +351,12 @@ fn save(current: &Snapshot, secret: &Value) -> Result<u64> {
     } else {
         let record = sdk::account().map_err(|_| source_unconfirmed())?;
         check_record(&current.record, &record)?;
+        let mut public = account::view(secret);
+        public["needsRelogin"] = json!(false);
+        public["needsReloginReason"] = json!("");
         let updated = sdk::host(
             "account.update",
-            json!({ "expect": current.record["secret"], "secret": secret, "public": account::view(secret) }),
+            json!({ "expect": current.record["secret"], "secret": secret, "public": public }),
         )
         .map_err(|_| save_unconfirmed())?;
         match updated.get("updated").and_then(Value::as_bool) {
@@ -374,6 +365,20 @@ fn save(current: &Snapshot, secret: &Value) -> Result<u64> {
             None => Err(save_unconfirmed()),
         }
     }
+}
+
+fn mark_relogin(current: &Snapshot) {
+    let Ok(record) = sdk::account() else { return };
+    if !same_identity(&current.record, &record) || record["secret"] != current.record["secret"] {
+        return;
+    }
+    let mut public = account::view(&current.secret);
+    public["needsRelogin"] = json!(true);
+    public["needsReloginReason"] = json!("Cline 登录授权已失效，请重新登录");
+    let _ = sdk::host(
+        "account.update",
+        json!({ "expect": current.record["secret"], "secret": current.record["secret"], "public": public }),
+    );
 }
 
 pub fn ensure(force: bool) -> Result<Value> {
@@ -390,7 +395,6 @@ pub fn ensure(force: bool) -> Result<Value> {
         if force { return desktop::synchronize(&before.record); }
         return Ok(before.secret);
     }
-    if crate::PROVIDER_ID == "cline-free" && force { return Err(free_requires_host()); }
     if account::api_key(&before.secret) {
         if force {
             return Err(Error::http(
@@ -428,16 +432,6 @@ pub fn ensure(force: bool) -> Result<Value> {
     if !force && !expiring(&before.secret) {
         return Ok(before.secret);
     }
-    // 普通Free调用只使用尚未到期的原令牌；提前续期失败不能封住仍有效的余额查询。
-    if crate::PROVIDER_ID == "cline-free" {
-        let expiry = account::expiry(&before.secret);
-        if expiry.is_none_or(|at| at > sdk::now()) {
-            return Ok(before.secret);
-        }
-        return Err(Error::http(401,
-            "Cline Free 访问令牌已到期，需要主程序受控续期；旧账号未登记或登记已失效时，请重新获取完整凭据并更新此账号")
-            .with_code("cline_free_refresh_requires_host"));
-    }
     let _lock = AccountLock::acquire().map_err(|_| source_unconfirmed())?;
     let current = read()?;
     if !same_identity(&before.record, &current.record) {
@@ -460,16 +454,18 @@ pub fn ensure(force: bool) -> Result<Value> {
         if account::expiry(&current.secret).is_none_or(|expiry| expiry > sdk::now()) {
             return Ok(current.secret);
         }
+        mark_relogin(&current);
         return Err(
             Error::http(401, "Cline 访问令牌已到期且没有续期材料，请重新登录")
-                .with_code("cline_token"),
+                .with_code("refresh_token_expired"),
         );
     }
     if !renewable(&current.secret) {
+        mark_relogin(&current);
         return Err(Error::http(
             400,
             "Cline 账号没有 refreshToken，无法续期，请重新登录",
-        ));
+        ).with_code("refresh_token_expired"));
     }
     let recent_key = format!(
         "refresh:{}",
@@ -543,7 +539,14 @@ pub fn ensure(force: bool) -> Result<Value> {
         Err(_) if !force && matches!(reply.status, 429 | 500..=599) && usable(&current) => {
             return retain_valid(&current)
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            if matches!(reply.status, 401 | 403) {
+                mark_relogin(&current);
+                return Err(Error::http(401, "Cline 续期令牌已被拒绝，请重新登录；本次不会自动重发")
+                    .with_code("refresh_token_expired"));
+            }
+            return Err(error);
+        }
     };
     let saved_revision = save(&current, &secret)?;
     if !sdk::state::compare_exchange(Scope::Account, CONTROL, 1, reserved.revision, Value::Null, 0)? {

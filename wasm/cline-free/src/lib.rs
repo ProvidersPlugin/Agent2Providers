@@ -59,10 +59,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.view" => Ok(account::view(&params["secret"])),
         "account.identity" => Ok(json!(account::identity(&params["secret"]))),
         "token.ensure" => Ok(json!(refresh::token(false)?)),
-        "token.refresh" => {
-            if params["desktopRefresh"] == true { Ok(json!(refresh::token(true)?)) }
-            else { sdk::host("credential.cline-free.refresh", json!({})) }
-        },
+        "token.refresh" => Ok(json!(refresh::token(true)?)),
         "token.expiring" => Ok(json!(refresh::due()?)),
         "login.start" => login::start(&params),
         "login.poll" => login::poll(&params),

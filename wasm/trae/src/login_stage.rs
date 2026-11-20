@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::{i18n, util, PROVIDER_ID};
 
-const ORIGIN: &str = "https://api.trae.cn";
+const ORIGIN: &str = "https://www.trae.cn";
 
 pub fn invalid() -> Error {
     Error::http(
@@ -156,7 +156,7 @@ fn authorization(raw: &str) -> Result<()> {
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
-        || !raw.starts_with("https://api.trae.cn/authorization?")
+        || !raw.starts_with("https://www.trae.cn/authorization?")
     {
         return Err(invalid());
     }

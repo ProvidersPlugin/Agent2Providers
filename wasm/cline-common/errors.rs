@@ -92,8 +92,7 @@ pub fn stop_retry(body: &Value) -> bool {
             | "cline_refresh_denied"
             | "cline_refresh_rejected"
             | "cline_refresh_incomplete"
-            | "cline_free_refresh_requires_host"
-            | "cline_free_refresh_unconfirmed"
+            | "refresh_token_expired"
             | "cline_desktop_relogin_required"
             | "cline_api_key_rejected"
     ) || body.to_string().contains("local_precondition")

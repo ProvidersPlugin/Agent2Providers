@@ -10,7 +10,7 @@
   "managed_login": {
     "methods": [0],
     "loopback_profiles": ["trae.pkce.v1"],
-    "authorization_origins": ["https://api.trae.cn"]
+    "authorization_origins": ["https://www.trae.cn"]
   },
   "origins": [
     "https://trae-api-cn.mchost.guru",

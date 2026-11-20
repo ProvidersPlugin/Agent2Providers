@@ -22,14 +22,6 @@ pub fn methods(locale: &str) -> Value {
         _ => ["浏览器登录", "打开 Cline 设备授权页并确认授权码，不需要本机回调。", "手动填写令牌", "保留 workos: 前缀；没有续期令牌时，到期后需重新登录。", "导入凭证 JSON", "凭证 JSON", "粘贴单个 Cline 账号 JSON 或 providers.json，只导入 Cline auth，不读取其他提供商。"],
     };
     let free = crate::PROVIDER_ID == "cline-free";
-    let renewal = match locale {
-        "en" => "Ordinary sign-in and imports do not grant renewal rights automatically. New Free accounts can use explicit enrollment; existing accounts can update credentials in account settings and explicitly authorize renewal. Local links require separate local-renewal permission in plugin settings.",
-        "ja" => "通常のログインや取り込みでは更新権限を自動で付与しません。新しい無料枠アカウントは明示的に登録し、既存アカウントは設定で新しい認証情報を保存して更新を許可できます。本機の参照はプラグイン設定で別途更新許可が必要です。",
-        "ko" => "일반 로그인과 가져오기는 자동 갱신 권한을 부여하지 않습니다. 새 무료 풀 계정은 명시적으로 등록하고, 기존 계정은 계정 설정에서 새 인증 정보를 저장하며 갱신을 허용할 수 있습니다. 로컬 연결은 플러그인 설정에서 별도 갱신 허용이 필요합니다.",
-        "pt-BR" => "Login e importações comuns não concedem renovação automaticamente. Novas contas Free podem ser cadastradas com confirmação; contas existentes podem atualizar credenciais e autorizar renovação nas configurações da conta. Vínculos locais exigem permissão separada no plugin.",
-        "zh-Hant" => "一般登入與匯入不會自動補續期權限。新免費池帳號可明確登記；已有帳號可在帳號設定中更新新憑據並勾選續期授權。本機即時引用需在插件設定中另行授權本機續期。",
-        _ => "普通登录和导入不会自动补续期权限。新免费池账号可明确登记；已有账号可在账号设置中更新新凭据并勾选续期授权。本机实时引用需在插件设置中另行授权本机续期。",
-    };
     let readonly = match locale {
         "en" => "Stores a live local reference, not a token snapshot. Local renewal and writing rotated credentials back require separate permission in plugin settings; otherwise, sign in again in the official client.",
         "ja" => "トークンのコピーではなく本機ログインの参照を保存します。本機の更新と認証情報の書き戻しにはプラグイン設定で別途許可が必要です。許可しない場合は公式クライアントで再ログインしてください。",
@@ -51,20 +43,13 @@ pub fn methods(locale: &str) -> Value {
         "zh-Hant" => ["Cline API Key", "貼上 app.cline.bot → Settings → API Keys 建立的原始密鑰，不加 workos: 前綴，也不按 OAuth 權杖自動續期。", "API Key"],
         _ => ["Cline API Key", "粘贴 app.cline.bot → Settings → API Keys 创建的原始密钥，不加 workos: 前缀，也不按 OAuth 令牌自动续期。", "API Key"],
     };
-    let instruction = |base: &str| {
-        if free {
-            format!("{base}\n{renewal}")
-        } else {
-            base.to_string()
-        }
-    };
     let mut methods = vec![
-        json!({ "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": instruction(text[1]), "prompts": [], "browserMode": "external", "manualCallback": false }),
-        json!({ "methodIndex": 1, "type": "api", "label": text[2], "instructions": instruction(text[3]), "prompts": [
+        json!({ "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [], "browserMode": "external", "manualCallback": false }),
+        json!({ "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[3], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": "Refresh Token", "secret": true, "optional": true }
         ] }),
-        json!({ "methodIndex": 2, "type": "api", "label": text[4], "instructions": instruction(text[6]), "prompts": [
+        json!({ "methodIndex": 2, "type": "api", "label": text[4], "instructions": text[6], "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[5], "secret": true }
         ] }),
         desktop,

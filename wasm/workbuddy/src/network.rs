@@ -49,8 +49,69 @@ pub fn open(
 }
 /// 对话正文的最大字节数：与图片编辑入口的内联数据上限一致。
 const MAX_CHAT_BODY: usize = 14 * 1024 * 1024;
-/// 对话正文先分片写入当前调用资源，再由宿主取原字节发送。
-/// 正文过大时返回明确原因（上下文过大），不再先耗尽实例内存。
+/// 中小正文直接内联发出以兼容旧版宿主固定入口，大正文走分片资源通道避免撑爆实例内存。
+const INLINE_CHAT_BODY: usize = 4 * 1024 * 1024;
+
+struct SizeCounter {
+    bytes: usize,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl std::io::Write for SizeCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let Some(total) = self.bytes.checked_add(buf.len()).filter(|total| *total <= self.limit) else {
+            self.overflowed = true;
+            return Err(std::io::Error::other("inline_limit"));
+        };
+        self.bytes = total;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn inline_json_bytes(body: &Value) -> Result<Option<Vec<u8>>> {
+    let mut counter = SizeCounter {
+        bytes: 0,
+        limit: INLINE_CHAT_BODY,
+        overflowed: false,
+    };
+    match serde_json::to_writer(&mut counter, body) {
+        Ok(()) => {
+            let mut bytes = Vec::with_capacity(counter.bytes);
+            serde_json::to_writer(&mut bytes, body)
+                .map_err(|_| Error::http(400, "WorkBuddy请求正文序列化失败"))?;
+            Ok(Some(bytes))
+        }
+        Err(_) if counter.overflowed => Ok(None),
+        Err(_) => Err(Error::http(400, "WorkBuddy请求正文序列化失败")),
+    }
+}
+
+fn chat_transport_error(mut error: Error) -> Error {
+    // 宿主的上限、参数、重放拦截与超时等结构化错误本身不回显凭据，保留原原因以便排查；
+    // 只有未分类的底层传输失败才换成笼统文案。
+    let preserve = matches!(
+        error.code.as_deref(),
+        Some(
+            "plugin_request_too_large"
+                | "bad_params"
+                | "forbidden"
+                | "request_replay_blocked"
+                | "plugin_resource_limit"
+                | "timeout"
+                | "aborted"
+        )
+    );
+    if !preserve {
+        error.message = "WorkBuddy网络请求未完成".into();
+    }
+    error
+}
+
+/// 中小正文走内联发送，大正文分片写入调用资源并由宿主取原字节发送。
 pub fn open_chat(
     origin: &str,
     path: &str,
@@ -58,14 +119,12 @@ pub fn open_chat(
     body: &Value,
 ) -> Result<http::Response> {
     headers["Content-Type"] = Value::String("application/json".into());
-    http::open_json_resource("POST", &endpoints::url(origin, path)?, headers, body, MAX_CHAT_BODY)
-        .map_err(|mut error| {
-            // 上限错误已带可读原因，只有真正的传输/资源失败才换成笼统文案。
-            if error.code.as_deref() != Some("plugin_request_too_large") {
-                error.message = "WorkBuddy网络请求未完成".into();
-            }
-            error
-        })
+    let url = endpoints::url(origin, path)?;
+    let response = match inline_json_bytes(body)? {
+        Some(bytes) => http::open_raw("POST", &url, headers, Some(&bytes)),
+        None => http::open_json_resource("POST", &url, headers, body, MAX_CHAT_BODY),
+    };
+    response.map_err(chat_transport_error)
 }
 pub fn open_edit_resource(
     origin: &str,

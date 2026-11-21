@@ -50,6 +50,15 @@ pub fn ensure(force: bool) -> Result<String> {
         latest.readable()?;
         return Ok(latest.credential.access_key_id);
     }
+    // 上一次换证的结果还留在暂存块里没激活：活动凭据仍是旧 refresh token，
+    // 再换一次只会拿已作废的串去撞上游。交给下一轮恢复，不在这里重发。
+    if crate::pending::has_pending(&latest.raw_secret) {
+        return Err(Error::http(
+            503,
+            "上一次续期结果尚待恢复，已避免用可能失效的旧 refresh token 再换一次；请稍后重试",
+        )
+        .with_code("codearts_refresh_recovery_pending"));
+    }
     let fallback = if !force
         && latest.credential.require_readable(now).is_ok()
         && !latest.credential.needs_refresh(0, now)
@@ -285,9 +294,7 @@ fn refresh_locked(account: &Account, force: bool) -> Result<String> {
         return Err(Error::http(502, "CodeArts 续期响应返回了已过期的访问凭据"));
     }
 
-    let mut next_secret = account.raw_secret.clone();
-    apply_refreshed_tokens(
-        &mut next_secret,
+    let patch = crate::pending::token_patch(
         access_key_id,
         secret_access_key,
         security_token,
@@ -295,19 +302,36 @@ fn refresh_locked(account: &Account, force: bool) -> Result<String> {
         expires_at_ms,
         new_refresh_token,
     );
+    let mut next_secret = account.raw_secret.clone();
+    crate::pending::apply_patch(&mut next_secret, &patch);
 
     let mut next_public = account::view(&next_secret)?;
     next_public["needsRelogin"] = json!(false);
     next_public["needsReloginReason"] = Value::Null;
 
-    let update_result = host(
-        "account.update",
-        json!({
-            "expect": account.raw_secret,
-            "secret": next_secret,
-            "public": next_public,
-        }),
-    );
+    // 两次 CAS：先把换回来的结果耐久落盘，再激活。第二次没落地时暂存块留在
+    // 账号里，下一次读账号补激活；只要第一次写成功过，新令牌就不会只存在于内存。
+    let update_result = match crate::pending::journal(
+        &account.raw_secret,
+        &account.credential.refresh_token,
+        &patch,
+    ) {
+        Some(journal) => {
+            if crate::pending::activate(&journal, &next_secret, &next_public) {
+                Ok(json!({ "updated": true }))
+            } else {
+                Ok(json!({ "updated": true, "pending": true }))
+            }
+        }
+        None => host(
+            "account.update",
+            json!({
+                "expect": account.raw_secret,
+                "secret": next_secret,
+                "public": next_public,
+            }),
+        ),
+    };
 
     match update_result {
         Ok(value) if value.get("updated").and_then(Value::as_bool) == Some(true) => {
@@ -344,38 +368,6 @@ fn mark_needs_relogin(account: &Account) {
             "public": next_public,
         }),
     );
-}
-
-fn apply_refreshed_tokens(
-    secret: &mut Value,
-    access_key_id: &str,
-    secret_access_key: &str,
-    security_token: &str,
-    expiration: &str,
-    expires_at_ms: i64,
-    refresh_token: &str,
-) {
-    let patch = |map: &mut serde_json::Map<String, Value>| {
-        map.insert("access_key_id".into(), json!(access_key_id));
-        map.insert("accessToken".into(), json!(access_key_id));
-        map.insert("secret_access_key".into(), json!(secret_access_key));
-        map.insert("security_token".into(), json!(security_token));
-        map.insert("refresh_token".into(), json!(refresh_token));
-        map.insert("refreshToken".into(), json!(refresh_token));
-        map.insert("expires_at".into(), json!(expiration));
-        map.insert("expiration".into(), json!(expiration));
-        map.insert("expiresAt".into(), json!(expires_at_ms));
-        map.remove("needsRelogin");
-        map.remove("needsReloginReason");
-    };
-    if let Some(root) = secret.as_object_mut() {
-        patch(root);
-        for key in ["codearts_provider_credential", "credential", "auth"] {
-            if let Some(Value::Object(nested)) = root.get_mut(key) {
-                patch(nested);
-            }
-        }
-    }
 }
 
 fn is_sts_refresh_expired(body: Option<&Value>) -> bool {

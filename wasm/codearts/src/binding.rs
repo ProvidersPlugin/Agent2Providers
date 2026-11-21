@@ -52,7 +52,14 @@ impl Account {
     }
 
     fn read(allow_disabled: bool) -> Result<Self> {
-        let record = sdk::account().map_err(errors::host)?;
+        let mut record = sdk::account().map_err(errors::host)?;
+        // 上一轮换证成功但没激活的暂存结果先补完，否则后续读到的还是旧凭据。
+        if matches!(
+            crate::pending::recover(&record),
+            crate::pending::Recovery::Promoted
+        ) {
+            record = sdk::account().map_err(errors::host)?;
+        }
         validate_record(&record, allow_disabled)?;
         let id = record["id"]
             .as_str()
@@ -100,7 +107,7 @@ impl Account {
         if record["id"].as_str() != Some(self.binding.account.as_str())
             || record["identity"].as_str() != Some(self.binding.host_identity.as_str())
             || needs_relogin(&record) != self.needs_relogin
-            || record["secret"] != self.raw_secret
+            || !crate::pending::same_active_secret(&record["secret"], &self.raw_secret)
         {
             return Err(util::invalidated());
         }

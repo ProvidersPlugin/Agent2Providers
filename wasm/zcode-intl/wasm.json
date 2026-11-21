@@ -2,7 +2,7 @@
   "abi": 1,
   "verified": false,
   "requires": [
-    "http.v1", "resources.v1", "http.timeout.v1", "accounts.cas.v1", "settings.v1", "settings.schema.v1",
+    "http.v1", "resources.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1", "settings.v1", "settings.schema.v1",
     "clock.v1", "random.v1", "locks.v1", "state.v1", "chat.stream.v1", "catalog.v1", "catalog.accounts.v1",
     "login.forms.v1", "login.interaction.v1", "errors.v1", "checkin.rolling.v1",
     "protocol.convert.v1", "verification.account.v1", "verification.claim.v1", "desktop.launch.v1"

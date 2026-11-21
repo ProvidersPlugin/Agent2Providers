@@ -1,6 +1,9 @@
 //! 独立 ZCode 国际版：只拥有 zcode-intl 身份，不携带国内账号/设置/目录命名空间。
 //! 在线目录来自官方公开客户端配置；无自动续期，通用 Anthropic 转换由受控 SDK 承担。
-//! 有意不要求 accounts.identity.v1：旧版没有 userId 的手动凭据仍可由宿主去重。
+//! 网关 3.5.0-beta.6 起强制要求声明 desktop.launch.v1 必须同时声明
+//! accounts.identity.v1（否则安装时校验报“缺少依赖声明”），故补上该声明；
+//! 旧版没有 userId 的手动凭据仍返回空身份、由宿主去重，导入是否被网关
+//! 接受需在网关侧实测确认。
 
 mod account;
 mod activation;

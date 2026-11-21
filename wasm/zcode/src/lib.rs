@@ -1,7 +1,10 @@
 //! 国内版 ZCode：独立账号目录、双套餐通道与赠送套餐领取。
 //! 凭据/验证码限定账号或登录流程，既不读取本机环境，也不共享国际版身份。
-//! 未声明 accounts.identity.v1 是有意的：旧版无 userId 的手动凭据返回空身份，
-//! 由宿主按凭据去重；不能为了新契约把这些仍可使用的账号拒之门外。
+//! 旧版无 userId 的手动凭据会返回空身份，由宿主按凭据去重；原本有意不声明
+//! accounts.identity.v1 以兼容这些账号。但网关 3.5.0-beta.6 起强制要求声明
+//! desktop.launch.v1 必须同时声明 accounts.identity.v1（否则安装时校验报
+//! “Wasm 能力 desktop.launch.v1 缺少依赖声明”），只能补上该声明；
+//! 无 userId 的旧手动凭据导入是否仍被网关接受，需在网关侧实测确认。
 
 mod account;
 mod activation;

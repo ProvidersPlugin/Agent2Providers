@@ -64,13 +64,15 @@ pub struct Field {
     pub maximum: Option<f64>,
     #[serde(default)]
     pub options: Vec<Choice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 impl Field {
     pub fn new(key: impl Into<String>, label: impl Into<Value>, kind: impl Into<String>, default: Value) -> Self {
         Self { key: key.into(), label: label.into(), kind: kind.into(), default, description: Value::Null,
             trim: false, empty_is_default: false, min_length: None, max_length: None, pattern: None,
-            minimum: None, maximum: None, options: Vec::new() }
+            minimum: None, maximum: None, options: Vec::new(), source_id: None }
     }
 }
 

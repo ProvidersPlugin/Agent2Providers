@@ -4,7 +4,7 @@ use super::{
 };
 use agent2api_wasm_sdk::{self as sdk, json, state, Error, Result, Value};
 
-pub const DEFAULT_VERSION: &str = "3.18.0";
+pub const DEFAULT_VERSION: &str = "3.18.2";
 pub const PLATFORM: &str = "win32-x64";
 pub const OS_CATEGORY: &str = "windows";
 const CACHE_NAMESPACE: &str = "zcode-configuration";
@@ -174,8 +174,8 @@ pub fn schema() -> Value {
     json!({ "version": 1, "title": "ZCode 国内版活动与套餐", "runtime_overrides": false,
         "description": "WASM 使用独立设置，不读取环境变量；活动版本不改变套餐池推理模板绑定的版本。",
         "fields": [
-            { "key": "appVersion", "label": "客户端版本号", "type": "string", "default": DEFAULT_VERSION,
-                "trim": true, "empty_is_default": true, "max_length": 32, "pattern": "^[0-9][0-9A-Za-z._-]*$" },
+            { "key": "appVersion", "label": "客户端版本号", "type": "upstream_version", "source_id": "zcode", "default": DEFAULT_VERSION,
+                "description": "自动从官网同步最新正式版本，无需手动填写；断网或尚未同步时使用插件内置保底版本。" },
             { "key": "disableEndpointMapping", "label": "停用上游端点映射", "type": "boolean", "default": false },
             { "key": "requireCaptcha", "label": "套餐池模型请求始终要求验证", "type": "boolean", "default": false }
         ] })

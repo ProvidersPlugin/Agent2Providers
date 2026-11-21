@@ -2,12 +2,19 @@
   "id": "agent2api-wasm-antigravity",
   "name": "Antigravity",
   "description": "独立的 Antigravity 提供商，支持 Google 网页登录、凭据导入与自动续期、账号模型目录、额度查询、对话及图片生成与编辑。",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "protocol": 1,
   "providers": [
-    { "id": "antigravity", "label": "Antigravity", "order": 29, "default_enabled": true }
+    {
+      "id": "antigravity",
+      "label": "Antigravity",
+      "order": 29,
+      "default_enabled": true
+    }
   ],
-  "entry": { "wasm32-unknown-unknown": "antigravity.wasm" },
+  "entry": {
+    "wasm32-unknown-unknown": "antigravity.wasm"
+  },
   "icons": "assets",
   "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
 }

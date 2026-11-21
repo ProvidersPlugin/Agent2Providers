@@ -1,5 +1,5 @@
-//! 凭据只属于当前池的当前账号。identity沿用Cline external_id→展示身份→摘要规则。
-//! OAuth保留workos:前缀；Pass API Key按官方原值发送，公开视图只给尾号和身份。
+//! 凭据只属于当前账号。identity沿用Cline external_id→展示身份→摘要规则。
+//! OAuth保留workos:前缀，公开视图只给尾号和身份。
 
 use super::endpoints;
 use agent2api_wasm_sdk::{json, Error, Result, Value};
@@ -61,35 +61,8 @@ pub fn clean_token(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-pub fn api_key(secret: &Value) -> bool {
-    if crate::PROVIDER_ID != "cline-pass" {
-        return false;
-    }
-    let access = text(secret, &["accessToken", "access_token", "token"]);
-    secret["credentialType"] == "api_key"
-        || if access.is_empty() {
-            !text(secret, &["apiKey", "api_key", "key"]).is_empty()
-        } else {
-            clean_token(&access).is_ok_and(|token| token.starts_with("sk_"))
-        }
-}
-
 pub fn access(secret: &Value) -> Result<String> {
     let token = clean_token(&text(secret, &["accessToken", "access_token", "token"]))?;
-    if api_key(secret) {
-        let token = if token.is_empty() {
-            clean_token(&text(secret, &["apiKey", "api_key", "key"]))?
-        } else {
-            token
-        };
-        if token.is_empty() || token.starts_with(endpoints::PREFIX) {
-            return Err(Error::http(
-                400,
-                "Cline API Key 必须使用官方原始密钥，不带 workos: 前缀",
-            ));
-        }
-        return Ok(token);
-    }
     let raw = token.strip_prefix(endpoints::PREFIX).unwrap_or(&token);
     if raw.is_empty() {
         return Err(Error::http(401, "Cline 账号缺少访问令牌，请重新登录").with_code("cline_token"));
@@ -178,25 +151,12 @@ pub fn identity(secret: &Value) -> String {
     if !account.is_empty() {
         return account;
     }
-    let raw = text(
-        secret,
-        &[
-            "accessToken",
-            "access_token",
-            "token",
-            "apiKey",
-            "api_key",
-            "key",
-        ],
-    );
+    let raw = text(secret, &["accessToken", "access_token", "token"]);
     let Ok(token) = clean_token(&raw) else {
         return String::new();
     };
     if token.is_empty() {
         return String::new();
-    }
-    if api_key(secret) {
-        return format!("token-{}", fingerprint(&token));
     }
     let id = user_id(&token);
     if !id.is_empty() {
@@ -231,45 +191,39 @@ pub fn parse(payload: &Value) -> Result<Value> {
         return Err(Error::http(400, "Cline 凭据必须是单账号 JSON 对象"));
     }
     if let Some(provider) = input.get("provider").and_then(Value::as_str) {
-        if matches!(provider, "cline-free" | "cline-pass") && provider != crate::PROVIDER_ID {
+        if provider == "cline-pass" {
             return Err(Error::http(
                 400,
-                "这份 Cline 凭据声明了另一个额度池，请选择对应插件",
+                "这份凭据标记为 Cline 订阅池；订阅池已改用内置「Cline Pass」API 模板，请勿导入到免费池",
+            ));
+        }
+        if provider != crate::PROVIDER_ID {
+            return Err(Error::http(
+                400,
+                "这份 Cline 凭据声明了其他提供商，不能导入到免费池",
             ));
         }
     }
     if let Some(pool) = input.get("pool").and_then(Value::as_str) {
-        let other = if crate::PROVIDER_ID == "cline-free" {
-            ["pass", "cline-pass"]
-        } else {
-            ["free", "cline-free"]
-        };
-        if other.iter().any(|other| pool.eq_ignore_ascii_case(other)) {
+        if ["pass", "cline-pass"]
+            .iter()
+            .any(|other| pool.eq_ignore_ascii_case(other))
+        {
             return Err(Error::http(
                 400,
-                "这份 Cline 凭据声明了另一个额度池，请选择对应插件",
+                "这份凭据标记为 Cline 订阅池；订阅池已改用内置「Cline Pass」API 模板，请勿导入到免费池",
             ));
         }
     }
     let access = access(input)?;
-    let is_key = api_key(input);
     let refresh = clean_token(&text(input, &["refreshToken", "refresh_token"]))?;
-    if is_key && !refresh.is_empty() {
-        return Err(Error::http(
-            400,
-            "Cline API Key 不使用续期令牌，请不要混合两种登录凭据",
-        ));
-    }
     let mut secret = json!({ "accessToken": access });
-    if is_key {
-        secret["credentialType"] = json!("api_key");
-    }
     if !refresh.is_empty() {
         secret["refreshToken"] = json!(refresh);
     }
-    let jwt = if is_key { Value::Null } else { claims(&access) };
+    let jwt = claims(&access);
     let mut id = text(input, &["account", "userId", "accountId"]);
-    if id.is_empty() && !is_key {
+    if id.is_empty() {
         id = user_id(&access);
     }
     if id.is_empty() {
@@ -285,11 +239,7 @@ pub fn parse(payload: &Value) -> Result<Value> {
         id = display(&jwt, false);
     }
     if id.is_empty() {
-        id = if is_key {
-            format!("token-{}", fingerprint(&access))
-        } else {
-            identity(input)
-        };
+        id = identity(input);
     }
     if id.len() > 512 || id.chars().any(char::is_control) {
         return Err(Error::http(400, "Cline 账号标识格式不正确"));
@@ -322,17 +272,7 @@ pub fn parse(payload: &Value) -> Result<Value> {
 }
 
 pub fn view(secret: &Value) -> Value {
-    let token = text(
-        secret,
-        &[
-            "accessToken",
-            "access_token",
-            "token",
-            "apiKey",
-            "api_key",
-            "key",
-        ],
-    );
+    let token = text(secret, &["accessToken", "access_token", "token"]);
     let id = identity(secret);
     let name = text(secret, &["displayName", "name"]);
     let name = if name.is_empty() {
@@ -393,8 +333,7 @@ pub fn view(secret: &Value) -> Value {
     let mut view = json!({ "name": name, "displayName": name, "uid": id, "account": id,
         "tokenTail": tail,
         "hasAccessToken": access(secret).is_ok() || local(secret), "hasRefreshToken": has_refresh,
-        "canRefresh": !api_key(secret)
-            && has_refresh && secret["desktopReadOnly"] != true,
+        "canRefresh": has_refresh && secret["desktopReadOnly"] != true,
         "canSyncCredentials": local(secret), "desktopAuth": local(secret) });
     if let Some(expiry) = expiry(secret) {
         view["expiresAt"] = json!(expiry);
@@ -471,24 +410,6 @@ pub fn normalize(params: &Value) -> Result<Value> {
     if payload.is_string() {
         payload = json!({ "accessToken": payload.as_str().unwrap_or("") });
     }
-    let mut secret = parse(&payload)?;
-    if api_key(&secret) {
-        // API Key没有可解码的账号身份；只读查询本家账号，不按密钥摘要制造新账号。
-        let token = access(&secret)?;
-        let info = super::client::request("GET", "/users/me", Some(&token), true, None)?.data()?;
-        let id = text(&info, &["clineUserId", "id"]);
-        if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
-            return Err(Error::http(502, "Cline API Key 校验未返回有效账号标识"));
-        }
-        let declared = text(&secret, &["account"]);
-        if !declared.starts_with("token-") && declared != id {
-            return Err(Error::http(409, "Cline API Key 的账号身份与输入不一致")
-                .with_code("identity_changed"));
-        }
-        secret["account"] = json!(id);
-        let name = display(&info, true);
-        secret["displayName"] = json!(if name.is_empty() { id } else { name });
-        return normalized(secret, params["name"].as_str());
-    }
+    let secret = parse(&payload)?;
     normalized(secret, params["name"].as_str())
 }

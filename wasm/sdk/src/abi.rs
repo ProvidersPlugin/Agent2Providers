@@ -35,8 +35,13 @@ pub unsafe fn dispatch(pointer: i32, length: i32, handler: fn(&str, Value) -> Re
             let method = input.get("method").and_then(Value::as_str).unwrap_or("").to_string();
             let params = input.as_object_mut().and_then(|object| object.remove("params"))
                 .unwrap_or(Value::Null);
+            let locale = params["payload"]["locale"].as_str().unwrap_or("zh-CN").to_string();
+            let provider = params["provider"].as_str().unwrap_or("").to_string();
+            let login_methods = method == "admin.action" && params["action"] == "auth.methods";
             drop(input);
-            handler(&method, params)
+            handler(&method, params).map(|result| if login_methods {
+                crate::login::prepare_methods(result, &provider, &locale)
+            } else { result })
         })
     };
     let reply = match result { Ok(result) => json!({ "result": result }), Err(error) => json!({ "error": error }) };

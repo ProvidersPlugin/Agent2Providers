@@ -11,9 +11,9 @@ pub fn methods(locale: &str) -> Value {
     };
     json!({ "instructions": text[2], "methods": [
         { "methodIndex": 0, "type": "oauth", "label": text[0], "prompts": [], "instructions": text[2],
-            "browserMode": "external", "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
+            "browserMode": "choice", "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
         { "methodIndex": 1, "type": "oauth", "label": text[1], "prompts": [], "instructions": text[2],
-            "browserMode": "external", "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
+            "browserMode": "choice", "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
         { "methodIndex": 2, "type": "api", "label": text[3], "prompts": [
             { "key": "token", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": "Refresh Token", "secret": true, "optional": true },

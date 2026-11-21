@@ -7,7 +7,7 @@ pub fn methods(locale: &str) -> Value {
     let mut value = json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": "Kiro 网页登录",
             "instructions": WEB, "localOnly": false, "manualCallback": true,
-            "callbackInput": "url", "validatesCallback": true, "browserMode": "external",
+            "callbackInput": "url", "validatesCallback": true, "browserMode": "choice",
             "prompts": [
                 { "key": "loginMethod", "type": "select", "label": "登录方式", "default": "portal", "options": [
                     { "value": "portal", "label": "Kiro登录页（Google / GitHub / AWS）" },

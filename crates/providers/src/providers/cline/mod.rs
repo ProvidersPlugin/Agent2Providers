@@ -84,10 +84,8 @@ pub struct ClineProvider {
 impl ClineProvider {
     /// 免费池实例（provider id `cline-free`）
     pub const FREE: Self = Self::new(Pool::Free);
-    /// 订阅池实例（provider id `cline-pass`）
-    pub const PASS: Self = Self::new(Pool::Pass);
 
-    /// 构造某个池的实例（`const`：两个实例都是静态量）
+    /// 构造某个池的实例（`const`：静态量）
     pub const fn new(pool: Pool) -> Self {
         Self { pool }
     }

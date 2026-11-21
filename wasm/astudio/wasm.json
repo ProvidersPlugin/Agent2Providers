@@ -13,6 +13,6 @@
     "https://astronstudio-api-volces-prod.xf-yun.com",
     "https://agent.xfyun.cn"
   ],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

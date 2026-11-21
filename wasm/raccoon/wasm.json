@@ -10,6 +10,6 @@
   ],
   "origins": ["https://xiaohuanxiong.com"],
   "helpers": ["desktop.credentials.raccoon.v1", "desktop.refresh.raccoon.v1"],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

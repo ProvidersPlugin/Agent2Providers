@@ -127,7 +127,6 @@ const ICON_FALLBACK = {
   'zcode-intl': 'zcode',
   'monkeycode-intl': 'monkeycode',
   'modelscope-intl': 'modelscope',
-  'cline-pass': 'cline',
   'cline-free': 'cline',
   'accio-cn': 'accio',
 };

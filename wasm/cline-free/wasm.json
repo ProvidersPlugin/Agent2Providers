@@ -2,7 +2,7 @@
   "abi": 1,
   "verified": false,
   "requires": [
-    "http.v1", "accounts.cas.v1", "accounts.identity.v1", "settings.v1", "sessions.v1",
+    "http.v1", "resources.v1", "accounts.cas.v1", "accounts.identity.v1", "settings.v1", "sessions.v1",
     "clock.v1", "locks.v1", "state.v1", "catalog.v1", "chat.stream.v1",
     "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1", "errors.v1"
   ],
@@ -12,6 +12,6 @@
     "https://api.workos.com",
     "https://authkit.cline.bot"
   ],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

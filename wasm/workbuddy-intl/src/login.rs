@@ -127,7 +127,7 @@ pub fn start(params: &Value) -> Result<Value> {
         return Err(Error::http(409, "登录已取消或更新"));
     }
     Ok(
-        json!({ "flow": flow, "url": url, "poll_interval_ms": 3000, "external_browser": true,
+        json!({ "flow": flow, "url": url, "poll_interval_ms": 3000, "external_browser": false,
         "instructions": "在国际站完成官方授权，主程序将自动轮询，不需要回填授权码。",
         "allowed_hosts": ["workbuddy.ai", "codebuddy.ai", "tencent.com", "qq.com", "wechat.com", "tenpay.com"],
         "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),

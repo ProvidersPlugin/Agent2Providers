@@ -44,7 +44,7 @@ fn read(secret: &Value) -> Result<Value> {
     let ent = client::post(
         &format!("{}{}", endpoints::ACCOUNT, endpoints::ENT_USAGE),
         headers::ug(secret, &device, false)?,
-        &json!({}),
+        &json!({ "require_usage": true, "req_source": 2 }),
     )?
     .accepted()?;
     if ent["user_entitlement_pack_list"]

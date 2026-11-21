@@ -2,13 +2,13 @@
   "abi": 1,
   "verified": false,
   "requires": [
-    "http.v1", "accounts.cas.v1", "accounts.identity.v1", "settings.v1", "settings.schema.v1",
+    "http.v1", "resources.v1", "accounts.cas.v1", "accounts.identity.v1", "settings.v1", "settings.schema.v1",
     "clock.v1", "random.v1", "locks.v1", "state.v1",
     "catalog.v1", "catalog.accounts.v1", "chat.stream.v1", "login.forms.v1", "login.interaction.v1",
     "runtime.platform.v1", "runtime.architecture.v1", "native.helpers.v1", "errors.v1"
   ],
   "helpers": ["desktop.device.qwenwork.v1"],
   "origins": ["https://gateway.qwenwork.cn"],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

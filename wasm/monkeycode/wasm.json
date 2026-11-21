@@ -22,6 +22,6 @@
   ],
   "managed_task": { "profiles": [{ "profile": "monkeycode.cn.task.v1" }] },
   "origins": ["https://monkeycode-ai.com"],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 4
 }

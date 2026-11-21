@@ -87,12 +87,12 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "claim" => onboarding::claim(params["claim"].as_str().unwrap_or("")),
         "claim.status" => onboarding::status(params["refresh"].as_bool().unwrap_or(false)),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "images.capabilities" => Ok(json!({ "generation": true, "editing": true })),
-        "images.generate" => images::generate(&params, false),
-        "images.edit" => images::generate(&params, true),
+        "images.generate" => images::generate(params, false),
+        "images.edit" => images::generate(params, true),
         "login.start" => sms::start(&params),
         "login.poll" => sms::poll(&params),
         "login.callback" => sms::callback(&params),

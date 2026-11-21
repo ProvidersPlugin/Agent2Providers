@@ -52,7 +52,7 @@ pub fn methods(locale: &str) -> Value {
                 { "key": "name", "type": "text", "label": text[4], "optional": true }
             ] },
         { "methodIndex": 1, "type": "oauth", "label": text[5], "prompts": [],
-            "browserMode": "external", "manualCallback": true, "callbackInput": "url", "validatesCallback": true,
+            "browserMode": "choice", "manualCallback": true, "callbackInput": "url", "validatesCallback": true,
             "instructions": text[6] }
     ] })
 }

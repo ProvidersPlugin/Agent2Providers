@@ -24,14 +24,9 @@ const PASS: &[&str] = &[
     "top_logprobs",
     "stream_options",
     "metadata",
-    "providerOptions",
-    "provider",
 ];
 
-pub fn build(input: &Value, session: &str) -> Result<Value> {
-    let object = input
-        .as_object()
-        .ok_or_else(|| Error::http(400, "Cline 请求体必须是 JSON 对象"))?;
+pub fn build(mut input: Value, session: &str) -> Result<Value> {
     let model = input["model"]
         .as_str()
         .filter(|model| !model.is_empty())
@@ -49,21 +44,20 @@ pub fn build(input: &Value, session: &str) -> Result<Value> {
                 .as_str()
                 .filter(|value| !value.trim().is_empty())
         })
-        .unwrap_or("high");
+        .unwrap_or("high")
+        .to_string();
+    let object = input
+        .as_object_mut()
+        .ok_or_else(|| Error::http(400, "Cline 请求体必须是 JSON 对象"))?;
     let mut output = json!({ "model": model, "max_tokens": max_tokens, "session_id": session,
         "reasoning_effort": reasoning, "stream": true });
-    if let Some(messages) = object.get("messages") {
-        output["messages"] = messages.clone();
+    if let Some(messages) = object.remove("messages") {
+        output["messages"] = messages;
     }
     for key in PASS {
-        if matches!(*key, "providerOptions" | "provider") && crate::PROVIDER_ID != "cline-pass" {
-            continue;
-        }
-        if let Some(value) = object.get(*key) {
-            output[*key] = value.clone();
+        if let Some(value) = object.remove(*key) {
+            output[*key] = value;
         }
     }
-    // Pass上游接受明确的providerOptions/provider路由要求；不能白名单重建后静默丢掉。
-    // 不自动加指定上游或失败重放策略，仍保持原账号与原模型通道。
     Ok(output)
 }

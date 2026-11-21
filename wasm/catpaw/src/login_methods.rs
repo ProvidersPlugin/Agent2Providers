@@ -23,7 +23,7 @@ pub fn methods(locale: &str) -> Value {
     desktop["instructions"] = json!(desktop_text(locale));
     json!({ "instructions": gates::summary(locale), "methods": [
         { "methodIndex": 0, "type": "oauth", "label": web[0], "instructions": web[1], "prompts": [],
-            "browserMode": "external", "manualCallback": false, "callbackInput": "url", "validatesCallback": true },
+            "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "validatesCallback": true },
         { "methodIndex": 1, "type": "api", "label": manual[0],
             "instructions": manual[1],
             "prompts": [

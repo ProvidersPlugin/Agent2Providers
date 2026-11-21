@@ -55,7 +55,13 @@ pub fn prepare() -> Result<Value> {
         let mut payload = json!({ "token": {
             "access_token": token, "token_type": "Bearer", "refresh_token": refresh, "expiry": expiry,
         }, "auth_method": "consumer" });
-        if !id_token.is_empty() { payload["token"]["id_token"] = json!(id_token); payload["id_token"] = json!(id_token); }
+        // Windows 凭据库单条限制为 2560 字节，只放一份顶层 id_token；若极少数账号仍超限则略去可选 id_token。
+        if !id_token.is_empty() {
+            payload["id_token"] = json!(id_token);
+            if serde_json::to_vec(&payload).is_ok_and(|bytes| bytes.len() > 2560) {
+                if let Some(fields) = payload.as_object_mut() { fields.remove("id_token"); }
+            }
+        }
         vec![Change { resource: "oauth".into(), value: payload }]
     } else {
         let previous = launch::existing("state")?;

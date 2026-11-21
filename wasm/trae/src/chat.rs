@@ -5,7 +5,7 @@ use super::{
     account, client, credentials, endpoints, errors, events::Decoder, headers, models, payload,
     refresh, stream::Output, util,
 };
-use agent2api_wasm_sdk::{http, Error, Result, Value};
+use agent2api_wasm_sdk::{self as sdk, http, Error, Result, Value};
 use sha2::Digest;
 
 fn session(params: &Value, record: &Value) -> Result<String> {
@@ -85,44 +85,54 @@ fn consume(mut response: http::Response, output: &mut Output) -> Result<()> {
     output.end()
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let mut record = refresh::ensure(false, None)?;
     let model = params["wire_model"]
         .as_str()
         .filter(|v| !v.trim().is_empty())
         .or_else(|| params["body"]["model"].as_str())
         .unwrap_or("")
-        .trim();
+        .trim()
+        .to_string();
     if model.is_empty() || model.len() > 512 || model.chars().any(char::is_control) {
         return Err(Error::http(400, "请明确指定 Trae 当前目录中的模型"));
     }
     let shown = params["body"]["model"]
         .as_str()
         .filter(|v| !v.is_empty())
-        .unwrap_or(model);
+        .unwrap_or(&model)
+        .to_string();
     let mut renewed = false;
-    let routes = match models::for_chat(&record, model) {
+    let routes = match models::for_chat(&record, &model) {
         Ok(routes) => routes,
         Err(error) if error.code.as_deref() == Some("trae_session_expired") => {
             record = refresh::ensure(true, Some(&record["secret"]))?;
             renewed = true;
-            models::for_chat(&record, model)?
+            models::for_chat(&record, &model)?
         }
         Err(error) => return Err(error),
     };
-    let session = session(params, &record)?;
+    let session = session(&params, &record)?;
+    let mut raw_body = Some(sdk::take_body(&mut params).unwrap_or(Value::Null));
+    drop(params);
     let mut last = Error::http(404, "Trae 没有可用的模型通道");
-    for route in routes {
+    let mut iter = routes.into_iter().peekable();
+    while let Some(route) = iter.next() {
+        let source = if iter.peek().is_none() {
+            raw_body.take().unwrap_or(Value::Null)
+        } else {
+            raw_body.as_ref().cloned().unwrap_or(Value::Null)
+        };
+        let body = match payload::prepare_body(source, &route, &session) {
+            Ok(body) => body,
+            Err(error) if error.code.as_deref() == Some("trae_route_capability") => {
+                last = error;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         loop {
             let secret = credentials::parse(&record["secret"])?;
-            let body = match payload::prepare_body(&params["body"], &route, &session) {
-                Ok(body) => body,
-                Err(error) if error.code.as_deref() == Some("trae_route_capability") => {
-                    last = error;
-                    break;
-                }
-                Err(error) => return Err(error),
-            };
             account::unchanged(&record["secret"])?;
             let response = http::open(
                 "POST",
@@ -136,7 +146,7 @@ pub fn forward(params: &Value) -> Result<()> {
                 .as_str()
                 .unwrap_or("")
                 .contains("application/json");
-            let mut output = Output::new(shown)?;
+            let mut output = Output::new(&shown)?;
             let result = if !(200..300).contains(&status) || json_response {
                 match client::read(response) {
                     Ok(reply) => Err(errors::upstream(status, &reply.body)),
@@ -154,19 +164,19 @@ pub fn forward(params: &Value) -> Result<()> {
             };
             if output.started || output.observed_tools() {
                 if result.is_ok() {
-                    let _ = models::remember(&record["secret"], model, &route);
+                    let _ = models::remember(&record["secret"], &model, &route);
                 }
                 return result;
             }
             match result {
                 Ok(()) => {
-                    let _ = models::remember(&record["secret"], model, &route);
+                    let _ = models::remember(&record["secret"], &model, &route);
                     return Ok(());
                 }
                 Err(error) if error.code.as_deref() == Some("trae_session_expired") && !renewed => {
                     record = refresh::ensure(true, Some(&record["secret"]))?;
                     renewed = true;
-                    if !models::for_chat(&record, model)?.contains(&route) {
+                    if !models::for_chat(&record, &model)?.contains(&route) {
                         return Err(Error::http(
                             409,
                             "Trae 续期后的模型通道已变化，请重新发送请求",

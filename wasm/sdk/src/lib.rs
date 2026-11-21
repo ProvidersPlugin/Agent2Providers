@@ -75,6 +75,11 @@ pub fn native_call(helper: &str, operation: &str, payload: Value) -> Result<Valu
 
 pub fn account() -> Result<Value> { host("account.get", json!({})) }
 
+/// 从入站参数按值移出 `body`，避免长上下文场景在插件内存里长期保留两份请求树。
+pub fn take_body(params: &mut Value) -> Option<Value> {
+    params.as_object_mut().and_then(|object| object.remove("body"))
+}
+
 pub fn account_disabled(record: &Value) -> bool {
     record["public"]["enabled"] == false
         && record["usageQueryCall"] != true && record["accountMaintenanceCall"] != true

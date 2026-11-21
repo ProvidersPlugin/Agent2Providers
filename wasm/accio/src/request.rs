@@ -3,12 +3,12 @@
 //! 图片 inline_data/file_data 直接交上游；没有已确认的 Accio 文件上传接口，不编造 multipart。
 
 use crate::{credentials::Credentials, endpoints, reasoning, util};
-use agent2api_wasm_sdk::{json, Error, Result, Value};
+use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashMap;
 use url::Url;
 
-const MAX_JSON: usize = 10 * 1024 * 1024;
+const MAX_JSON: usize = 14 * 1024 * 1024;
 
 fn bad(message: &str) -> Error {
     Error::http(400, message)
@@ -390,10 +390,12 @@ pub fn build(body: &Value, entry: &Value, credential: &Credentials) -> Result<Va
         }
     }
     // body 再 base64 封装后必须小于 16 MiB；不是图片资源化入站的替代品。
-    if output.to_string().len() > MAX_JSON {
-        return Err(bad(
-            "Accio 含图片的上游请求超过 10 MiB，受宿主 16 MiB 消息封装限制",
-        ));
+    if http::json_exceeds(&output, MAX_JSON)? {
+        return Err(Error::http(
+            413,
+            "Accio 含图片的上游请求超过 14 MiB，受宿主 16 MiB 消息封装限制",
+        )
+        .with_code("plugin_request_too_large"));
     }
     Ok(output)
 }

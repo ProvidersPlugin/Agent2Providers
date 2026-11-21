@@ -69,8 +69,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": 2000,
         "instructions": login_methods::instructions(params["payload"]["locale"].as_str().unwrap_or("zh-CN")),
-        "external_browser": true, "allowed_hosts": ["qoder.com.cn", "qoder.com", "qoder.sh"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url",
+        "external_browser": false, "allowed_hosts": ["qoder.com.cn", "qoder.com", "qoder.sh"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url",
             "cookieCapture": null, "captureCallback": false } }),
     )
 }

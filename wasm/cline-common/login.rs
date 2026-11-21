@@ -90,8 +90,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url, "poll_interval_ms": interval,
         "instructions": i18n::login_prompt(locale, &user_code, expires / 1000),
-        "external_browser": true, "allowed_hosts": ["authkit.cline.bot", "api.workos.com"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
+        "external_browser": false, "allowed_hosts": ["authkit.cline.bot", "api.workos.com"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
     )
 }
 

@@ -64,7 +64,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             Ok(json!({ "success": report["outcome"] == "claimed" || report["outcome"] == "done",
                 "message": report["message"], "report": report }))
         }
-        "conversation" => { chat::forward(&params)?; Ok(Value::Null) }
+        "conversation" => { chat::forward(params)?; Ok(Value::Null) }
         "classify" => Ok(errors::classify(params["status"].as_u64().unwrap_or(502) as u16, &params["body"])),
         "is_error_response" => Ok(json!(params["status"].as_u64().unwrap_or(502) >= 400
             || errors::business_error(&params["body"]))),

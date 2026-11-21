@@ -1,5 +1,7 @@
 pub mod sms;
 pub mod managed;
+mod methods;
+pub use methods::prepare_methods;
 
 use serde::{Deserialize, Serialize};
 use crate::{json, Value};

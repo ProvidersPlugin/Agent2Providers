@@ -109,12 +109,6 @@
       "default_enabled": true
     },
     {
-      "id": "cline-pass",
-      "label": "Cline 订阅池",
-      "order": 18,
-      "default_enabled": true
-    },
-    {
       "id": "kuku",
       "label": "KukuAI 库库",
       "order": 19,

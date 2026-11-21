@@ -54,7 +54,7 @@ pub fn start(params: &Value) -> Result<Value> {
         Some(Value::String(mode)) => mode.as_str(),
         Some(_) => return Err(Error::http(400, "千问办公登录窗口类型无效")),
     };
-    if !matches!(mode, "" | "external") {
+    if !matches!(mode, "" | "external" | "embedded" | "auto") {
         return Err(Error::http(400, "千问办公国际设备授权请在系统浏览器完成"));
     }
     let mut owner = params["payload"].clone();
@@ -93,8 +93,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": 2000,
         "instructions": super::login_methods::instructions(locale),
-        "external_browser": true, "allowed_hosts": ["gateway.qwenwork.ai", "qwenwork.ai"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url",
+        "external_browser": false, "allowed_hosts": ["gateway.qwenwork.ai", "qwenwork.ai"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url",
             "cookieCapture": null, "captureCallback": false } }),
     )
 }

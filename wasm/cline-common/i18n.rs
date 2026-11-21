@@ -21,7 +21,6 @@ pub fn methods(locale: &str) -> Value {
         "zh-Hant" => ["瀏覽器登入", "開啟 Cline 裝置授權頁並確認授權碼，不需要本機回呼。", "手動填寫權杖", "保留 workos: 前綴；沒有續期權杖時，到期後需重新登入。", "匯入憑證 JSON", "憑證 JSON", "貼上單一 Cline 帳號 JSON 或 providers.json，只匯入 Cline auth，不讀其他提供商。"],
         _ => ["浏览器登录", "打开 Cline 设备授权页并确认授权码，不需要本机回调。", "手动填写令牌", "保留 workos: 前缀；没有续期令牌时，到期后需重新登录。", "导入凭证 JSON", "凭证 JSON", "粘贴单个 Cline 账号 JSON 或 providers.json，只导入 Cline auth，不读取其他提供商。"],
     };
-    let free = crate::PROVIDER_ID == "cline-free";
     let readonly = match locale {
         "en" => "Stores a live local reference, not a token snapshot. Local renewal and writing rotated credentials back require separate permission in plugin settings; otherwise, sign in again in the official client.",
         "ja" => "トークンのコピーではなく本機ログインの参照を保存します。本機の更新と認証情報の書き戻しにはプラグイン設定で別途許可が必要です。許可しない場合は公式クライアントで再ログインしてください。",
@@ -35,16 +34,8 @@ pub fn methods(locale: &str) -> Value {
         "{}\n{readonly}",
         desktop["instructions"].as_str().unwrap_or("")
     ));
-    let key_text = match locale {
-        "en" => ["Cline API Key", "Paste the original API key from app.cline.bot → Settings → API Keys. It is sent without the workos: prefix and is not renewed as an OAuth token.", "API Key"],
-        "ja" => ["Cline API キー", "app.cline.bot の Settings → API Keys で発行したキーを貼り付けます。workos: 接頭辞を付けずに送信し、OAuth トークンとして更新しません。", "API キー"],
-        "ko" => ["Cline API 키", "app.cline.bot의 Settings → API Keys에서 발급한 원본 키를 붙여넣으세요. workos: 접두사 없이 전송하며 OAuth 토큰처럼 갱신하지 않습니다.", "API 키"],
-        "pt-BR" => ["Chave de API do Cline", "Cole a chave original de app.cline.bot → Settings → API Keys. Ela é enviada sem o prefixo workos: e não é renovada como um token OAuth.", "Chave de API"],
-        "zh-Hant" => ["Cline API Key", "貼上 app.cline.bot → Settings → API Keys 建立的原始密鑰，不加 workos: 前綴，也不按 OAuth 權杖自動續期。", "API Key"],
-        _ => ["Cline API Key", "粘贴 app.cline.bot → Settings → API Keys 创建的原始密钥，不加 workos: 前缀，也不按 OAuth 令牌自动续期。", "API Key"],
-    };
-    let mut methods = vec![
-        json!({ "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [], "browserMode": "external", "manualCallback": false }),
+    let methods = vec![
+        json!({ "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [], "browserMode": "choice", "manualCallback": false }),
         json!({ "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[3], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": "Refresh Token", "secret": true, "optional": true }
@@ -54,10 +45,6 @@ pub fn methods(locale: &str) -> Value {
         ] }),
         desktop,
     ];
-    if !free {
-        methods.push(json!({ "methodIndex": 4, "type": "api", "label": key_text[0], "instructions": key_text[1],
-            "prompts": [{ "key": "apiKey", "type": "text", "label": key_text[2], "secret": true }] }));
-    }
     json!({ "methods": methods })
 }
 

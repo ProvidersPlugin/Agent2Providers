@@ -99,7 +99,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "claim.status" => activities::preview(),
         "claim" => activities::claim(params["claim"].as_str().unwrap_or("")),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "images.capabilities" => Ok(json!({ "generation": true, "editing": false })),

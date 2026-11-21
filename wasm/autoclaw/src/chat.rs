@@ -216,13 +216,18 @@ fn normalize_history(body: &mut Value) -> Result<()> {
     Ok(())
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let token = refresh::ensure()?;
     let snapshot = account::read()?;
     if account::access(&snapshot.secret) != token {
         return Err(Error::http(409, "AutoClaw 账号凭据已变化，请重试"));
     }
-    let mut body = params["body"].clone();
+    let client_headers = params
+        .as_object_mut()
+        .and_then(|object| object.remove("headers"))
+        .unwrap_or(Value::Null);
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !body.is_object() {
         return Err(Error::http(400, "AutoClaw 请求体必须是对象"));
     }
@@ -250,9 +255,10 @@ pub fn forward(params: &Value) -> Result<()> {
     let mut response = http::open(
         "POST",
         &format!("{}{}", endpoints::ORIGIN, endpoints::CHAT),
-        headers::chat(&token, &route.route, &params["headers"])?,
+        headers::chat(&token, &route.route, &client_headers)?,
         Some(&body),
     )?;
+    drop(body);
     let content_type = response.headers["content-type"]
         .as_str()
         .unwrap_or("")

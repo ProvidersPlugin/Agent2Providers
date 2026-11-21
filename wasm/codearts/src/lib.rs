@@ -67,7 +67,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "models.refresh" => catalog::refresh(&params),
         "usage.query" => balance::query(),
         "admin.action" => admin(&params),
-        "conversation" | "chat" => chat::forward(&params),
+        "conversation" | "chat" => chat::forward(params),
         "login.start" | "login.poll" | "login.callback" | "login.cancel" => {
             agent2api_wasm_sdk::host(&method.replacen("login.", "codearts.login.", 1), params)
         }

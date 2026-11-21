@@ -262,8 +262,7 @@ pub fn expiring(secret: &Value) -> bool {
 }
 
 pub fn renewable(secret: &Value) -> bool {
-    !account::api_key(secret)
-        && !account::text(secret, &["refreshToken", "refresh_token"]).is_empty()
+    !account::text(secret, &["refreshToken", "refresh_token"]).is_empty()
 }
 
 pub fn due() -> Result<bool> {
@@ -393,22 +392,6 @@ pub fn ensure(force: bool) -> Result<Value> {
             return Err(Error::http(401, "Cline本机登录态已过期，请授权本机续期或重新登录官方客户端"));
         }
         if force { return desktop::synchronize(&before.record); }
-        return Ok(before.secret);
-    }
-    if account::api_key(&before.secret) {
-        if force {
-            return Err(Error::http(
-                401,
-                "Cline API Key 已被拒绝，请在官方页面更换密钥；API Key 不使用 OAuth 续期",
-            )
-            .with_code("cline_api_key_rejected"));
-        }
-        if account::expiry(&before.secret).is_some_and(|at| at <= sdk::now()) {
-            return Err(
-                Error::http(401, "Cline API Key 已超过登记有效期，请更新密钥")
-                    .with_code("cline_api_key_rejected"),
-            );
-        }
         return Ok(before.secret);
     }
     if before.record["secret"]["desktopReadOnly"] == true {

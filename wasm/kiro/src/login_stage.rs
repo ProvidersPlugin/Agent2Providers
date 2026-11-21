@@ -316,7 +316,7 @@ pub fn publish(
         || step["expiresAt"].as_i64() != Some(context.expires_at)
         || !step["captcha"].is_null()
         || step["browser"]["url"] != url
-        || step["browser"]["browserMode"] != "external"
+        || !matches!(step["browser"]["browserMode"].as_str(), Some("external" | "embedded"))
         || step["browser"]["manualCallback"] != true
         || step["browser"]["callbackInput"] != "url"
     {

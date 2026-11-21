@@ -241,13 +241,43 @@ fn complete_arguments(value: &str) -> bool {
     !value.is_empty() && serde_json::from_str::<Value>(value).is_ok()
 }
 
+fn first_argument_key(value: &str) -> Option<&str> {
+    let value = value
+        .trim_start()
+        .strip_prefix('{')?
+        .trim_start()
+        .strip_prefix('"')?;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'"' if !escaped => {
+                return value[index + 1..]
+                    .trim_start()
+                    .starts_with(':')
+                    .then_some(&value[..index]);
+            }
+            b'\\' if !escaped => escaped = true,
+            _ => escaped = false,
+        }
+    }
+    None
+}
+
+fn resent_arguments(current: &str, incoming: &str) -> bool {
+    let Some(key) = first_argument_key(current) else {
+        return false;
+    };
+    // 新增片段本身也可能是合法 JSON；整包重发必须是同一首字段的完整对象。
+    first_argument_key(incoming) == Some(key)
+        && serde_json::from_str::<Value>(incoming).is_ok_and(|value| value.is_object())
+        && !complete_arguments(&(current.to_owned() + incoming))
+}
+
 fn merge_piece(current: &mut String, incoming: &str) -> Result<()> {
     if incoming.is_empty() || current == incoming || current.starts_with(incoming) {
         return Ok(());
     }
-    if incoming.starts_with(current.as_str()) {
-        *current = incoming.into();
-    } else if complete_arguments(incoming) && !complete_arguments(&(current.clone() + incoming)) {
+    if incoming.starts_with(current.as_str()) || resent_arguments(current, incoming) {
         *current = incoming.into();
     } else {
         if current.len().saturating_add(incoming.len()) > MAX_TOOL_BUFFER {

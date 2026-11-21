@@ -261,8 +261,8 @@ impl Decoder {
     }
 }
 
-fn body(params: &Value) -> Result<Value> {
-    let mut body = params["body"].clone();
+fn body(mut params: Value) -> Result<Value> {
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
     let object = body
         .as_object_mut()
         .ok_or_else(|| Error::http(400, "请求体必须是 JSON 对象"))?;
@@ -307,11 +307,12 @@ fn body(params: &Value) -> Result<Value> {
     {
         options.insert("include_usage".into(), json!(true));
     }
-    reasoning::apply(&mut body, params, &description)?;
+    reasoning::apply(&mut body, &params, &description)?;
+    drop(params);
     Ok(body)
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(params: Value) -> Result<()> {
     let account = account::prepared()?;
     let payload = body(params)?;
     account::validate_current(&account)?;

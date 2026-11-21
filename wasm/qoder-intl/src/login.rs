@@ -72,8 +72,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": 2000,
         "instructions": login_methods::notice(locale, "start"),
-        "external_browser": true, "allowed_hosts": ["qoder.com", "qoder.sh"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url",
+        "external_browser": false, "allowed_hosts": ["qoder.com", "qoder.sh"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url",
             "cookieCapture": null, "captureCallback": false } }),
     )
 }

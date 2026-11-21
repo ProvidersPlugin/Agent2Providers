@@ -11,61 +11,35 @@ pub struct Response {
     done: bool,
 }
 
-pub fn open(method: &str, url: &str, headers: Value, body: Option<&Value>) -> Result<Response> {
-    open_raw(method, url, headers, body.map(|body| body.to_string()).as_deref().map(str::as_bytes))
-}
-
 /// 大正文的发送通道：先分片写入当前调用资源，再由宿主直接取原字节发出。
 ///
-/// 普通 `open` 会把整份正文变成 String，再 base64 成文本塞进外层信封 ——
-/// 发送期间正文至少存在三份（原 Value、字符串、base64 文本与信封字节）。
-/// 对话这类 MB 级正文用这条路径，实例里只多一个 64 KiB 的分片缓冲。
-///
-/// `limit` 是允许的最大正文字节数；超过即返回 413（不提交请求），
-/// 让调用方看到“上下文过大”，而不是实例被内存上限终止。
-pub fn open_json_resource(method: &str, url: &str, headers: Value, body: &Value, limit: usize) -> Result<Response> {
-    let resource = crate::images::Resource::create(RESOURCE_MIME).map_err(|mut error| {
-        error.message = "请求正文资源创建失败，未提交请求".into();
-        error
-    })?;
-    let written = {
-        let mut writer = BodyWriter::new(&resource, limit);
-        let result = serde_json::to_writer(&mut writer, body)
-            .map_err(|_| writer.take("请求正文序列化失败"))
-            .and_then(|()| writer.finish());
-        (result, writer.total)
-    };
-    let (written, total) = written;
-    if let Err(error) = written {
-        let _ = resource.remove();
-        return Err(error);
-    }
-    let sealed = match resource.seal() {
-        Ok(value) => value,
-        Err(mut error) => {
-            let _ = resource.remove();
-            error.message = "请求正文资源封存失败，未提交请求".into();
-            return Err(error);
-        }
-    };
-    if sealed["id"].as_str() != Some(resource.id.as_str())
-        || sealed["size"].as_u64() != u64::try_from(total).ok()
-    {
-        let _ = resource.remove();
-        return Err(Error::new("请求正文资源封存回执不一致，未提交请求"));
-    }
-    let result = open_resource(method, url, headers, &resource.id);
-    // 宿主已把字节交给 HTTP 句柄；这里只释放本次调用里的资源槽。
-    let _ = resource.remove();
-    result
+/// 普通内联发送会把整份正文变成字符串并做 Base64 编码，峰值内存占用数倍于原文；
+/// 大于阈值的正文自动走本通道（旧声明缺少 `resources.v1` 时回落内联），实例里只多一个 64 KiB 缓冲。
+const AUTO_RESOURCE_THRESHOLD: usize = 1024 * 1024;
+const AUTO_RESOURCE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+pub fn open(method: &str, url: &str, headers: Value, body: Option<&Value>) -> Result<Response> {
+    json_params(method, url, headers, body, None)
 }
 
-/// 宿主只接受这几种资源类型；正文以二进制承载，类型由请求头表达。
-const RESOURCE_MIME: &str = "application/octet-stream";
+/// 超过 `limit` 即返回 413（不提交请求），让调用方看到“上下文过大”，而不是实例被内存上限终止。
+pub fn open_json_resource(method: &str, url: &str, headers: Value, body: &Value, limit: usize) -> Result<Response> {
+    json_resource_params(method, url, headers, body, limit, None, false)
+}
+
+/// 零分配判断 JSON 序列化后的字节数是否超过上限，避免先生成整段字符串再测量。
+pub fn json_exceeds(value: &Value, limit: usize) -> Result<bool> {
+    let mut counter = SizeCounter { bytes: 0, limit, overflowed: false };
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(false),
+        Err(_) if counter.overflowed => Ok(true),
+        Err(_) => Err(Error::new("请求正文序列化失败")),
+    }
+}
 
 /// 需要在 manifest 中声明 http.timeout.v1（依赖 http.v1）。
 pub fn open_timeout(method: &str, url: &str, headers: Value, body: Option<&Value>, timeout_ms: u64) -> Result<Response> {
-    open_raw_timeout(method, url, headers, body.map(|body| body.to_string()).as_deref().map(str::as_bytes), timeout_ms)
+    json_params(method, url, headers, body, Some(timeout_ms))
 }
 
 pub fn open_account(method: &str, path: &str, headers: Value, body: Option<&Value>) -> Result<Response> {
@@ -83,12 +57,128 @@ fn account_params(method: &str, path: &str, headers: Value, body: Option<&Value>
 }
 
 pub fn open_raw(method: &str, url: &str, headers: Value, body: Option<&[u8]>) -> Result<Response> {
-    raw_params(method, url, headers, body, None)
+    open_raw_params(method, url, headers, body, None)
 }
 
 /// 需要在 manifest 中声明 http.timeout.v1（依赖 http.v1）。
 pub fn open_raw_timeout(method: &str, url: &str, headers: Value, body: Option<&[u8]>, timeout_ms: u64) -> Result<Response> {
-    raw_params(method, url, headers, body, Some(timeout_ms))
+    open_raw_params(method, url, headers, body, Some(timeout_ms))
+}
+
+fn json_params(method: &str, url: &str, headers: Value, body: Option<&Value>, timeout_ms: Option<u64>) -> Result<Response> {
+    let Some(value) = body else {
+        return raw_params(method, url, headers, None, timeout_ms);
+    };
+    let mut counter = SizeCounter { bytes: 0, limit: AUTO_RESOURCE_THRESHOLD, overflowed: false };
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => {
+            let mut bytes = Vec::with_capacity(counter.bytes);
+            serde_json::to_writer(&mut bytes, value).map_err(|_| Error::new("请求正文序列化失败"))?;
+            raw_params(method, url, headers, Some(&bytes), timeout_ms)
+        }
+        Err(_) if counter.overflowed => {
+            json_resource_params(method, url, headers, value, AUTO_RESOURCE_MAX_BYTES, timeout_ms, true)
+        }
+        Err(_) => Err(Error::new("请求正文序列化失败")),
+    }
+}
+
+fn open_raw_params(method: &str, url: &str, headers: Value, body: Option<&[u8]>, timeout_ms: Option<u64>) -> Result<Response> {
+    let Some(bytes) = body.filter(|bytes| bytes.len() > AUTO_RESOURCE_THRESHOLD) else {
+        return raw_params(method, url, headers, body, timeout_ms);
+    };
+    if bytes.len() > AUTO_RESOURCE_MAX_BYTES {
+        return Err(Error::coded(
+            format!("请求正文超过 {} MiB 的受控上限，请缩小上下文或图片后重试", AUTO_RESOURCE_MAX_BYTES / (1024 * 1024)),
+            "plugin_request_too_large",
+        ));
+    }
+    let resource = match crate::images::Resource::create(RESOURCE_MIME) {
+        Ok(resource) => resource,
+        Err(error) if error.code.as_deref() == Some("forbidden") => {
+            return raw_params(method, url, headers, Some(bytes), timeout_ms);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Err(error) = resource.append(bytes) {
+        let _ = resource.remove();
+        return Err(error);
+    }
+    seal_and_open_resource(method, url, headers, resource, bytes.len(), timeout_ms)
+}
+
+fn json_resource_params(
+    method: &str, url: &str, headers: Value, body: &Value, limit: usize, timeout_ms: Option<u64>, fallback_inline: bool,
+) -> Result<Response> {
+    let resource = match crate::images::Resource::create(RESOURCE_MIME) {
+        Ok(resource) => resource,
+        Err(error) if fallback_inline && error.code.as_deref() == Some("forbidden") => {
+            let bytes = serde_json::to_vec(body).map_err(|_| Error::new("请求正文序列化失败"))?;
+            return raw_params(method, url, headers, Some(&bytes), timeout_ms);
+        }
+        Err(mut error) => {
+            if !fallback_inline {
+                error.message = "请求正文资源创建失败，未提交请求".into();
+            }
+            return Err(error);
+        }
+    };
+    let (written, total) = {
+        let mut writer = BodyWriter::new(&resource, limit);
+        let result = serde_json::to_writer(&mut writer, body)
+            .map_err(|_| writer.take("请求正文序列化失败"))
+            .and_then(|()| writer.finish());
+        (result, writer.total)
+    };
+    if let Err(error) = written {
+        let _ = resource.remove();
+        return Err(error);
+    }
+    seal_and_open_resource(method, url, headers, resource, total, timeout_ms)
+}
+
+fn seal_and_open_resource(
+    method: &str, url: &str, headers: Value, resource: crate::images::Resource, total: usize, timeout_ms: Option<u64>,
+) -> Result<Response> {
+    let sealed = match resource.seal() {
+        Ok(value) => value,
+        Err(mut error) => {
+            let _ = resource.remove();
+            error.message = "请求正文资源封存失败，未提交请求".into();
+            return Err(error);
+        }
+    };
+    if sealed["id"].as_str() != Some(resource.id.as_str())
+        || sealed["size"].as_u64() != u64::try_from(total).ok()
+    {
+        let _ = resource.remove();
+        return Err(Error::new("请求正文资源封存回执不一致，未提交请求"));
+    }
+    let result = resource_params(method, url, headers, &resource.id, timeout_ms);
+    // 宿主已把字节交给 HTTP 句柄；这里只释放本次调用里的资源槽。
+    let _ = resource.remove();
+    result
+}
+
+/// 宿主只接受这几种资源类型；正文以二进制承载，类型由请求头表达。
+const RESOURCE_MIME: &str = "application/octet-stream";
+
+struct SizeCounter {
+    bytes: usize,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl Write for SizeCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let Some(total) = self.bytes.checked_add(buf.len()).filter(|total| *total <= self.limit) else {
+            self.overflowed = true;
+            return Err(io::Error::other("size_limit"));
+        };
+        self.bytes = total;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
 fn raw_params(method: &str, url: &str, headers: Value, body: Option<&[u8]>, timeout_ms: Option<u64>) -> Result<Response> {

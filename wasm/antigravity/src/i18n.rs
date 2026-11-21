@@ -27,7 +27,7 @@ pub fn methods(locale: &str) -> Value {
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": t[0], "instructions": instructions(locale),
             "prompts": [project, name], "manualCallback": true, "callbackInput": "url",
-            "validatesCallback": true, "browserMode": "external" },
+            "validatesCallback": true, "browserMode": "choice" },
         { "methodIndex": 1, "type": "api", "label": t[1], "instructions": t[6], "prompts": [
             { "key": "refreshToken", "type": "text", "label": "Google refresh token", "placeholder": "1//…", "secret": true },
             project, { "key": "email", "type": "text", "label": t[5], "placeholder": t[3], "optional": true }, name

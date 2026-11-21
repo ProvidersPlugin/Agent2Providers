@@ -33,7 +33,7 @@ pub fn methods(locale: &str) -> Value {
     let text = text(locale);
     json!({ "instructions": text[1], "methods": [
         { "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [],
-            "browserMode": "external", "manualCallback": false, "callbackInput": "url" },
+            "browserMode": "choice", "manualCallback": false, "callbackInput": "url" },
         { "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[1], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": text[7], "secret": true, "optional": true },

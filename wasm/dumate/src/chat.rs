@@ -2,7 +2,7 @@ use agent2api_wasm_sdk::{http, Error, Result, Value};
 
 use crate::{account, endpoints, errors, network, request, stream::Output, token, util};
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(params: Value) -> Result<()> {
     let request = request::build(params)?;
     let original = account::current()?;
     token::ensure(false)?;

@@ -1,4 +1,4 @@
-//! Cline 共用协议常量；池身份由独立 crate 决定，绝不在此选择其他提供商账号。
+//! Cline 协议常量；仅服务 Cline 免费池插件，绝不在此选择其他提供商账号。
 
 pub const API: &str = "https://api.cline.bot/api/v1";
 pub const WORKOS: &str = "https://api.workos.com";

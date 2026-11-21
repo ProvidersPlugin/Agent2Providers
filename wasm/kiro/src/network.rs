@@ -55,8 +55,10 @@ pub fn get(c: &Credentials, url: &str) -> Result<Value> {
     )
 }
 pub fn post(url: &str, headers: Value, body: &Value, secrets: &[&str]) -> Result<Value> {
-    if body.to_string().len() > 10 * 1024 * 1024 {
-        return Err(Error::http(413, "Kiro 请求超过受控传输上限"));
+    if http::json_exceeds(body, 14 * 1024 * 1024)? {
+        return Err(
+            Error::http(413, "Kiro 请求超过受控传输上限").with_code("plugin_request_too_large")
+        );
     }
     read(
         http::open_timeout("POST", url, headers, Some(body), 20_000).map_err(errors::transport)?,

@@ -94,7 +94,6 @@ pub fn stop_retry(body: &Value) -> bool {
             | "cline_refresh_incomplete"
             | "refresh_token_expired"
             | "cline_desktop_relogin_required"
-            | "cline_api_key_rejected"
     ) || body.to_string().contains("local_precondition")
 }
 

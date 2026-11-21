@@ -11,6 +11,6 @@
   ],
   "origins": ["https://api.claw.speedai.com", "https://api.kuaipaper.com"],
   "helpers": ["desktop.credentials.codar.v1"],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

@@ -95,8 +95,8 @@ pub fn start(params: &Value) -> Result<Value> {
     )?;
     Ok(json!({ "flow": flow, "url": url, "poll_interval_ms": 0,
         "instructions": i18n::instructions(locale),
-        "external_browser": true, "allowed_hosts": [],
-        "login_ui": { "browserMode": "external", "manualCallback": true, "callbackInput": "url",
+        "external_browser": false, "allowed_hosts": [],
+        "login_ui": { "browserMode": "choice", "manualCallback": true, "callbackInput": "url",
             "captureCallback": true, "cookieCapture": null, "loopbackTargets": [redirect] } }))
 }
 

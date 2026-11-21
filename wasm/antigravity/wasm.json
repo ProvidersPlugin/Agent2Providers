@@ -29,6 +29,7 @@
           {"root":"program_files_x86","path":"Antigravity/Antigravity.exe"}
         ],
         "identity": {"kind":"pe_product","values":["Antigravity"],"minimum_version":[2,0,0],"absent":["resources/app/product.json"]},
+        "hot_switch": {"service_executables":["language_server.exe","language_server_windows_x64.exe"],"respawn_timeout_ms":15000},
         "resources": [
           {"id":"oauth","label":"Antigravity 登录凭证","storage":{"kind":"keyring","target":"gemini:antigravity","username":"antigravity"}}
         ]

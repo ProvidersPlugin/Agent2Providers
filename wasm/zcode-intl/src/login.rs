@@ -101,8 +101,8 @@ pub fn start(params: &Value) -> Result<Value> {
         Ok(
             json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": interval,
             "instructions": super::i18n::text(locale, "authorize"),
-            "external_browser": true, "allowed_hosts": ["zcode.z.ai", "chat.z.ai", "api.z.ai"],
-            "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
+            "external_browser": false, "allowed_hosts": ["zcode.z.ai", "chat.z.ai", "api.z.ai"],
+            "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
         )
     })();
     let current = state::get(Scope::Login, KEY, 1)?;
@@ -295,7 +295,7 @@ pub fn methods(locale: &str) -> Value {
         _ => ["网页登录", "登录 ZCode 国际版（Z.AI），授权后自动取得完整编码套餐密钥。", "手动填写凭据", "导入凭据 JSON", "凭据 JSON"],
     };
     json!({ "methods": [
-        { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "external", "manualCallback": false, "instructions": labels[1] },
+        { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false, "instructions": labels[1] },
         { "methodIndex": 1, "type": "api", "label": labels[2], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Z.AI Access Token / API Key", "secret": true, "optional": true },
             { "key": "jwt", "type": "text", "label": "Start Plan JWT", "secret": true, "optional": true },

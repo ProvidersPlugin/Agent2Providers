@@ -17,10 +17,15 @@ fn uncertain(message: &str) -> Error {
     .with_code("image_output_uncertain")
 }
 
-pub fn generate(params: &Value, editing: bool) -> Result<Value> {
+pub fn generate(mut params: Value, editing: bool) -> Result<Value> {
     let record = account::current()?;
     let session = account::token(&record["secret"])?;
-    let mut body = params["body"].clone();
+    let client_headers = params
+        .as_object_mut()
+        .and_then(|object| object.remove("headers"))
+        .unwrap_or(Value::Null);
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !body.is_object() {
         return Err(Error::http(400, "Loomy 图片请求体必须是 JSON 对象"));
     }
@@ -78,10 +83,12 @@ pub fn generate(params: &Value, editing: bool) -> Result<Value> {
     let response = http::open(
         "POST",
         &format!("{MODEL_BASE}/images/generations"),
-        headers::build(&session, &params["headers"], true)?,
+        headers::build(&session, &client_headers, true)?,
         Some(&body),
     )
     .map_err(|_| uncertain("请求传输失败"))?;
+    drop(client_headers);
+    drop(body);
     let status = response.status;
     let bytes = response
         .bytes(MAX_RESPONSE)

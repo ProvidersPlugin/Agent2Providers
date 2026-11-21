@@ -1,4 +1,4 @@
-//! 单独的Cline免费池；共享目录中仅放可复用实现，不声明/加载订阅池。
+//! 单独的 Cline 免费池 WASM 插件。
 
 #[path = "../../cline-common/account.rs"]
 mod account;
@@ -68,7 +68,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "models.refresh" => models::refresh(),
         "usage.query" => usage::query(),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "classify" => Ok(errors::classify(

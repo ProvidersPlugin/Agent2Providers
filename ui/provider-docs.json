@@ -167,12 +167,6 @@
         "claims": { "status": "not_applicable" }
       }
     },
-    "cline-pass": {
-      "capabilities": {
-        "checkin": { "status": "not_applicable" },
-        "claims": { "status": "not_applicable" }
-      }
-    },
     "kuku": {
       "capabilities": {
         "refresh": { "status": "unsupported" },

@@ -110,13 +110,15 @@ impl Output {
     }
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let _ = account::ensure()?;
-    let mut body = params["body"].clone();
+    let account = params["account"].as_str().unwrap_or("").to_string();
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !body.is_object() { return Err(Error::http(400, "请求体必须是 JSON 对象")); }
     let requested = body["model"].as_str().filter(|name| !name.trim().is_empty())
         .ok_or_else(|| Error::http(400, "请求缺少模型名称"))?;
-    body["model"] = json!(models::wire_id(requested, params["account"].as_str().unwrap_or(""))?);
+    body["model"] = json!(models::wire_id(requested, &account)?);
     if let Some(level) = body["reasoning_effort"].as_str() {
         let catalog = models::cached()?;
         if let Some(model) = catalog["models"].as_array().into_iter().flatten().find(|model| model["id"] == body["model"]) {
@@ -132,8 +134,10 @@ pub fn forward(params: &Value) -> Result<()> {
     let url = format!("{}/chat/completions", upstream::base("gatewayBase"));
     let token = account::signing_session()?;
     let bytes = serde_json::to_vec(&body).map_err(|_| Error::http(400, "AtomCode 请求体无法编码"))?;
+    drop(body);
     let headers = signing::headers(&url, &token, &bytes, upstream::headers(Some(&token)))?;
     let response = http::open_raw("POST", &url, headers, Some(&bytes))?;
+    drop(bytes);
     if !(200..300).contains(&response.status) {
         let status = response.status;
         let bytes = response.bytes(1024 * 1024)?;

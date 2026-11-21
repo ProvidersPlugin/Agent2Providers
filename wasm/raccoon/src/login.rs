@@ -1,4 +1,4 @@
-//! 官方authorize固定返回office-raccoon://auth/callback；无上游扫码状态轮询接口。
+//! 内嵌授权走官方自定义协议，外部网页登录走本轮登记的HTTP回环地址。
 //! 使用宿主可信flow作state，自动捕获与完整URL回填共用严格校验；不接受无state裸code。
 //! 一次性换码状态保存在Scope::Login，取消/重入CAS阻止复活，敏感code不进入公开状态。
 
@@ -44,33 +44,43 @@ pub fn start(params: &Value) -> Result<Value> {
     {
         return Err(Error::http(400, "小浣熊请使用网页登录或手动凭据入口"));
     }
-    if params["payload"]["mode"] == "external" {
-        return Err(Error::http(
-            400,
-            "小浣熊网页登录需要应用内窗口自动接回，请选择应用内登录",
-        ));
-    }
+    let external = params["payload"]["mode"] == "external";
+    let callback = if external {
+        let raw = params["payload"]["callbackOrigin"].as_str().unwrap_or("");
+        let origin = url::Url::parse(raw).map_err(|_| Error::http(400, "小浣熊网页回跳地址无效"))?;
+        if origin.scheme() != "http" || !matches!(origin.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+            || origin.port().is_none_or(|port| port == 0) || origin.path() != "/" || origin.query().is_some() || origin.fragment().is_some()
+            || !origin.username().is_empty() || origin.password().is_some() {
+            return Err(Error::http(400, "小浣熊回跳需 HTTP 回环地址和端口，远程面板请先做本机端口转发"));
+        }
+        format!("{}/api/session/login/remote-callback", origin.origin().ascii_serialization())
+    } else { "office-raccoon://auth/callback".to_string() };
     let mut url = url::Url::parse(&format!("{}/authorize", endpoints::ORIGIN))
         .map_err(|_| Error::new("小浣熊授权地址无效"))?;
     url.query_pairs_mut()
-        .append_pair("login_source", "desktop")
+        .append_pair("login_source", if external { "web" } else { "desktop" })
         .append_pair("appname", "办公小浣熊客户端")
         .append_pair("state", flow);
+    if external {
+        let mut target = url::Url::parse(&callback).map_err(|_| Error::new("小浣熊回跳地址无效"))?;
+        target.query_pairs_mut().append_pair("state", flow);
+        url.query_pairs_mut().append_pair("redirect", target.as_str());
+    }
     let previous = load()?;
     if previous.value.is_object() {
         return Err(Error::http(409, "小浣熊登录已发起，请使用当前授权页面"));
     }
     if !save(
         &previous,
-        json!({ "phase": "waiting", "expires": sdk::now().saturating_add(TTL) }),
+        json!({ "phase": "waiting", "callback": callback, "expires": sdk::now().saturating_add(TTL) }),
     )? {
         return Err(Error::http(409, "小浣熊登录流程已变化"));
     }
     Ok(
         json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": 0,
         "instructions": "",
-        "external_browser": false, "allowed_hosts": ["xiaohuanxiong.com", "sensetime.com", "aliyun.com", "aliyuncs.com", "alicdn.com", "qq.com", "baidu.com"],
-        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": true } }),
+        "external_browser": external, "allowed_hosts": ["xiaohuanxiong.com", "sensetime.com", "aliyun.com", "aliyuncs.com", "alicdn.com", "qq.com", "baidu.com"],
+        "login_ui": { "browserMode": "choice", "manualCallback": true, "callbackInput": "url", "cookieCapture": null, "captureCallback": true } }),
     )
 }
 
@@ -91,43 +101,33 @@ pub fn poll(params: &Value) -> Result<Value> {
     Ok(json!({ "state": "pending", "hint": "等待本次官方登录回调" }))
 }
 
-fn code(raw: &str, expected: &str) -> Result<String> {
-    let url = url::Url::parse(raw.trim())
+fn code(raw: &str, expected: &str, callback: &str) -> Result<Option<String>> {
+    if raw.len() > 8192 || raw.contains('\\') || raw.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+        return Err(Error::http(400, "请提交完整的小浣熊登录回调地址"));
+    }
+    let url = url::Url::parse(raw)
         .map_err(|_| Error::http(400, "请提交完整的小浣熊登录回调地址"))?;
-    if url.scheme() != "office-raccoon"
-        || !url
-            .host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("auth"))
-        || url.path() != "/callback"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(Error::http(400, "小浣熊登录回调地址无效"));
+    if raw.split_once('?').map(|(base, _)| base) != Some(callback)
+        || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(Error::http(400, "小浣熊登录回调地址与本次流程不一致"));
     }
-    let states: Vec<_> = url
-        .query_pairs()
-        .filter(|(key, _)| key == "state")
-        .map(|(_, value)| value.into_owned())
-        .collect();
-    let codes: Vec<_> = url
-        .query_pairs()
-        .filter(|(key, _)| key == "code")
-        .map(|(_, value)| value.into_owned())
-        .collect();
-    if states.len() != 1
-        || states[0] != expected
-        || codes.len() != 1
-        || codes[0].trim().is_empty()
-        || codes[0].len() > 8192
-    {
-        return Err(Error::http(
-            400,
-            "小浣熊回调缺少有效授权码或state不属于当前流程，请重新登录",
-        ));
+    let mut fields = std::collections::BTreeMap::new();
+    for (key, value) in url.query_pairs() {
+        if key.is_empty() || fields.len() >= 32 || value.len() > 8192 || value.chars().any(char::is_control)
+            || fields.insert(key.into_owned(), value.into_owned()).is_some() {
+            return Err(Error::http(400, "小浣熊回调参数重复或无效"));
+        }
     }
-    Ok(codes[0].trim().to_string())
+    if fields.get("state").map(String::as_str) != Some(expected) {
+        return Err(Error::http(400, "小浣熊回调不属于当前登录流程"));
+    }
+    if fields.get("error").is_some_and(|value| !value.is_empty()) { return Ok(None); }
+    let code = fields.get("code").or_else(|| fields.get("authorization_code"))
+        .filter(|value| !value.trim().is_empty()).ok_or_else(|| Error::http(400, "小浣熊回调缺少授权码"))?;
+    if fields.contains_key("code") && fields.contains_key("authorization_code") {
+        return Err(Error::http(400, "小浣熊回调包含多个授权码"));
+    }
+    Ok(Some(code.to_string()))
 }
 
 pub fn callback(params: &Value) -> Result<Value> {
@@ -144,7 +144,15 @@ pub fn callback(params: &Value) -> Result<Value> {
         .filter(|raw| !raw.is_empty())
         .or_else(|| params["code"].as_str())
         .unwrap_or("");
-    let code = code(raw, flow)?;
+    let callback = previous.value["callback"].as_str().unwrap_or("office-raccoon://auth/callback");
+    let code = match code(raw, flow, callback) {
+        Ok(Some(code)) => code,
+        Ok(None) => {
+            save(&previous, json!({"phase":"failed","message":"小浣熊官方授权已取消","expires":previous.value["expires"]}))?;
+            return poll(params);
+        }
+        Err(error) => return Ok(json!({"state":"pending","retryable":true,"hint":error.message})),
+    };
     let marker = util::random_hex(16)?;
     let mut reserved = previous.value.clone();
     reserved["phase"] = json!("exchanging");
@@ -205,12 +213,12 @@ pub fn cancel(params: &Value) -> Result<Value> {
 
 pub fn browser_instructions(locale: &str) -> &'static str {
     match locale {
-        "en" => "Finish sign-in on the official Raccoon page opened inside the desktop app. The gateway captures the callback and adds the account automatically; no callback address needs to be pasted. On a phone or web panel, use token or JSON import instead.",
-        "zh-Hant" => "請在桌面應用程式內開啟的小浣熊官方頁面完成登入。閘道會自動接回並新增帳號，不需貼上回呼網址。手機或網頁面板請改用令牌或 JSON 匯入。",
-        "ja" => "デスクトップアプリ内で開いた公式 Raccoon ページでログインしてください。ゲートウェイがコールバックを受け取り、アカウントを自動で追加します。URL の貼り付けは不要です。スマートフォンやウェブ管理画面ではトークンまたは JSON の取り込みをご利用ください。",
-        "ko" => "데스크톱 앱 안에서 열린 공식 Raccoon 페이지에서 로그인하세요. 게이트웨이가 콜백을 받아 계정을 자동으로 추가하므로 주소를 붙여 넣을 필요가 없습니다. 휴대전화나 웹 관리 화면에서는 토큰 또는 JSON 가져오기를 이용하세요.",
-        "pt-BR" => "Conclua o login na página oficial do Raccoon aberta dentro do aplicativo de desktop. O gateway captura o retorno e adiciona a conta automaticamente, sem colar um endereço. No celular ou painel web, importe tokens ou JSON.",
-        _ => "请在桌面应用内打开的小浣熊官方页面完成登录。网关会自动接回并添加账号，无需粘贴回调地址。手机或网页面板请改用令牌或 JSON 导入。",
+        "en" => "Finish sign-in on the official Raccoon page. Desktop users can choose the embedded window or system browser. Web callbacks require an HTTP loopback panel address with an explicit port; forward the remote gateway port locally before signing in. Paste the full callback URL if automatic return fails.",
+        "zh-Hant" => "請在小浣熊官方頁面完成登入；桌面可選內置視窗或系統瀏覽器。網頁回跳需 HTTP 回環面板位址及顯式連接埠，遠端部署請先將連接埠轉發到本機。未自動返回時可貼上完整回呼網址。",
+        "ja" => "公式 Raccoon ページでログインしてください。デスクトップでは内蔵ウィンドウまたはシステムブラウザーを選べます。Web の戻り先には HTTP のループバックアドレスと明示的なポートが必要です。リモート接続では先にポートをローカルへ転送してください。自動で戻らない場合は完全なコールバック URL を貼り付けられます。",
+        "ko" => "Raccoon 공식 페이지에서 로그인하세요. 데스크톱에서는 내장 창이나 시스템 브라우저를 선택할 수 있습니다. 웹 콜백에는 명시적 포트가 있는 HTTP 루프백 패널 주소가 필요합니다. 원격 연결에서는 먼저 포트를 로컬로 전달하세요. 자동 반환이 실패하면 전체 콜백 URL을 붙여넣을 수 있습니다.",
+        "pt-BR" => "Conclua o login na página oficial do Raccoon. No desktop, escolha a janela integrada ou o navegador do sistema. O retorno web exige um endereço HTTP local com porta explícita; encaminhe a porta do gateway remoto para sua máquina antes de entrar. Se não retornar automaticamente, cole a URL completa de retorno.",
+        _ => "请在小浣熊官方页面完成登录；桌面可选择内置窗口或系统浏览器。网页回跳需要 HTTP 回环面板地址和显式端口，远程部署请先将端口转发到本机。未自动返回时可粘贴完整回调地址。",
     }
 }
 
@@ -257,8 +265,8 @@ pub fn methods(locale: &str) -> Value {
         _ => ["网页登录", "填写令牌", "导入登录态JSON", "登录态JSON"],
     };
     json!({ "methods": [
-        { "methodIndex": 0, "type": "oauth", "label": labels[0], "instructions": browser_instructions(locale), "prompts": [], "browserMode": "choice", "embeddedOnly": true, "desktopOnly": true,
-            "manualCallback": false, "callbackInput": "url", "validatesCallback": true },
+        { "methodIndex": 0, "type": "oauth", "label": labels[0], "instructions": browser_instructions(locale), "prompts": [], "browserMode": "choice",
+            "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
         { "methodIndex": 1, "type": "api", "label": labels[1], "prompts": [
             { "key": "accessToken", "label": "Access Token", "type": "text", "secret": true },
             { "key": "refreshToken", "label": "Refresh Token", "type": "text", "secret": true, "optional": true },

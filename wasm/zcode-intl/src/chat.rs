@@ -101,11 +101,16 @@ impl Output {
     }
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let record = account::with_device()?;
     let secret = &record["secret"];
     account::ensure()?;
-    let mut original = params["body"].clone();
+    let client_headers = params
+        .as_object_mut()
+        .and_then(|object| object.remove("headers"))
+        .unwrap_or(Value::Null);
+    let mut original = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !original.is_object() {
         return Err(Error::http(400, "ZCode 请求体必须是对象"));
     }
@@ -131,7 +136,8 @@ pub fn forward(params: &Value) -> Result<()> {
         let mut payload = protocol::request("anthropic", &original, &wire_model)?;
         reasoning::anthropic(&mut payload, &original, &wire_model, selected.as_ref());
         let context =
-            request_context::Context::new(&params["headers"], &original, &account::mid(secret))?;
+            request_context::Context::new(&client_headers, &original, &account::mid(secret))?;
+        drop(original);
         let version = prompt::apply(&mut payload, &wire_model, &context)?;
         let mut headers = config::identity_headers(&version, Some("ai-sdk/anthropic/3.0.81"));
         headers["Content-Type"] = json!("application/json");
@@ -159,7 +165,7 @@ pub fn forward(params: &Value) -> Result<()> {
             return Err(Error::http(400, "编码套餐通道缺少访问凭据"));
         }
         let context =
-            request_context::Context::new(&params["headers"], &original, &account::mid(secret))?;
+            request_context::Context::new(&client_headers, &original, &account::mid(secret))?;
         let mut headers = config::identity_headers(&config::app_version()?, None);
         headers["Content-Type"] = json!("application/json");
         headers["Accept"] = json!("*/*");
@@ -213,6 +219,7 @@ pub fn forward(params: &Value) -> Result<()> {
         return Err(Error::http(409, "国际版账号已变化，未发送旧账号的模型请求"));
     }
     let mut response = http::open("POST", &url, headers, Some(&body))?;
+    drop(body);
     account::unchanged(&record)?;
     let content_type = response.headers["content-type"]
         .as_str()

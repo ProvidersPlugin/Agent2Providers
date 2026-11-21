@@ -13,6 +13,6 @@
     "https://account.xfinfr.com",
     "https://loomyad.xunfei.cn"
   ],
-  "memory_mib": 64,
+  "memory_mib": 128,
   "concurrency": 8
 }

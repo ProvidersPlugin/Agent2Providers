@@ -34,7 +34,10 @@ fn put(before: &state::Snapshot, value: Value, ttl: i64) -> Result<()> {
     Ok(())
 }
 pub fn start(params: &Value) -> Result<Value> {
-    let locale = params["payload"]["locale"].as_str().unwrap_or("zh-CN");
+    let locale = match params["payload"]["locale"].as_str().unwrap_or("zh-CN") {
+        "zh-Hans" => "zh-CN",
+        locale => locale,
+    };
     if !matches!(locale, "zh-CN" | "zh-Hant" | "en" | "ja" | "ko" | "pt-BR") {
         return Err(Error::http(400, "千问办公登录语言无效"));
     }
@@ -52,7 +55,7 @@ pub fn start(params: &Value) -> Result<Value> {
     }
     if params["payload"]
         .get("mode")
-        .is_some_and(|mode| !matches!(mode.as_str(), Some("external" | "")))
+        .is_some_and(|mode| !matches!(mode.as_str(), Some("external" | "embedded" | "auto" | "")))
     {
         return Err(Error::http(400, "千问办公设备授权请在系统浏览器中完成"));
     }
@@ -91,8 +94,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url.to_string(), "poll_interval_ms": 2000,
         "instructions": login_methods::instructions(locale),
-        "external_browser": true, "allowed_hosts": ["gateway.qwenwork.cn", "qwenwork.cn"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url",
+        "external_browser": false, "allowed_hosts": ["gateway.qwenwork.cn", "qwenwork.cn"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url",
             "cookieCapture": null, "captureCallback": false } }),
     )
 }
@@ -198,7 +201,10 @@ fn step(value: &Value) -> Result<Option<Credentials>> {
     let mut headers = client::account_headers(None);
     headers["X-Request-Id"] = json!(util::uuid()?);
     let reply = client::request("GET", &path, headers, None, "设备授权轮询")?;
-    if matches!(reply.status, 202 | 404) {
+    if matches!(reply.status, 202 | 404)
+        || reply.status == 400
+            && client::unwrap_data(&reply.value)["errorCode"] == "INVALID_DEVICE_FLOW"
+    {
         return Ok(None);
     }
     if reply.status == 429 || reply.status >= 500 {

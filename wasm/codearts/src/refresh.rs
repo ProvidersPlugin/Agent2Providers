@@ -12,7 +12,7 @@ use crate::{
 
 pub const LEAD_MS: i64 = 15 * 60 * 1000;
 const RELOGIN: &str = "CodeArts 登录授权此前已被明确标记失效，请通过原授权渠道重新登录；临时访问凭据续期不会延长登录授权的截止时间";
-const NO_REFRESH: &str = "CodeArts 当前临时凭据没有 refresh_token，不能自动换证；原生 ticket 通道也不提供刷新令牌，到期后需要重新登录，未重放登录票据";
+const NO_REFRESH: &str = "刷新失败，缺少 refresh_token，请通过「CodeArts 网页登录」完成授权。";
 
 /// ensure只允许继续使用本次仍有效的旧访问凭据，不把它当成一次成功换证。
 /// 原生提前续期失败可保留未过期旧值；强制刷新则必须明确失败，不能返回旧AK冒充成功。
@@ -93,24 +93,71 @@ pub fn projection(credential: &Credential, needs_relogin: bool, now: i64) -> Val
     })
 }
 
-fn reason(credential: &Credential, needs_relogin: bool) -> (&'static str, &'static str) {
+fn reason(credential: &Credential, needs_relogin: bool) -> (&'static str, String) {
     if needs_relogin {
-        return ("authorization_expired", RELOGIN);
+        return ("authorization_expired", RELOGIN.to_string());
     }
-    match credential.refresh_material() {
-        RefreshMaterial::MissingToken => ("requires_relogin", NO_REFRESH),
-        RefreshMaterial::MissingContext => ("missing_oauth_context",
-            "CodeArts 刷新令牌必须配合同次授权的 OAuth 上下文；不能新建PKCE或DPoP材料替代，请完整导入"),
-        RefreshMaterial::InvalidClient => ("invalid_client_id",
-            "CodeArts 原授权客户端标识无效，不能改用另一个客户端换证，请完整导入原授权材料"),
-        RefreshMaterial::InvalidVerifier => ("invalid_pkce_verifier",
-            "CodeArts 缺少合法的原PKCE verifier，不能只靠刷新令牌换证，请完整导入原授权材料"),
-        RefreshMaterial::InvalidProofKey => ("invalid_dpop_key",
-            "CodeArts 原DPoP私钥缺失、无效或与公钥不一致，未生成新密钥替代"),
-        RefreshMaterial::Complete if credential.stable_identity().is_none() => (
-            "identity_unconfirmed", gates::IDENTITY),
-        RefreshMaterial::Complete => ("host_managed", gates::REFRESH),
+    let material = credential.refresh_material();
+    if material == RefreshMaterial::MissingToken {
+        return ("requires_relogin", NO_REFRESH.to_string());
     }
+    let Some(context) = &credential.oauth_context else {
+        return field_reason("missing_oauth_context", "oauth_context", true);
+    };
+    match material {
+        RefreshMaterial::InvalidClient => field_reason(
+            "invalid_client_id",
+            "client_id",
+            context.client_id.as_deref().is_none_or(|value| value.trim().is_empty()),
+        ),
+        RefreshMaterial::InvalidVerifier => {
+            let (field, missing) = material_field([
+                ("code_verifier", context.pkce_pair.code_verifier.as_str()),
+                ("code_challenge", context.pkce_pair.code_challenge.as_str()),
+                ("code_challenge_method", context.pkce_pair.code_challenge_method.as_str()),
+            ], "pkce_pair");
+            field_reason("invalid_pkce_verifier", field, missing)
+        }
+        RefreshMaterial::InvalidProofKey => {
+            let private = &context.dpop_key_pair.private_key_jwk;
+            let public = &context.dpop_key_pair.public_key_jwk;
+            let (field, missing) = material_field([
+                ("private_key_jwk.kty", private.kty.as_str()),
+                ("private_key_jwk.crv", private.crv.as_str()),
+                ("private_key_jwk.d", private.d.as_str()),
+                ("private_key_jwk.x", private.x.as_str()),
+                ("private_key_jwk.y", private.y.as_str()),
+                ("public_key_jwk.kty", public.kty.as_str()),
+                ("public_key_jwk.crv", public.crv.as_str()),
+                ("public_key_jwk.x", public.x.as_str()),
+                ("public_key_jwk.y", public.y.as_str()),
+            ], "dpop_key_pair");
+            field_reason("invalid_dpop_key", field, missing)
+        }
+        RefreshMaterial::Complete if credential.stable_identity().is_none() => {
+            let (field, missing) = material_field([
+                ("domain_id", credential.domain_id.as_str()),
+                ("user_id", credential.user_id.as_str()),
+            ], "domain_id / user_id");
+            field_reason("identity_unconfirmed", field, missing)
+        }
+        RefreshMaterial::Complete => ("host_managed", gates::REFRESH.to_string()),
+        RefreshMaterial::MissingToken => ("requires_relogin", NO_REFRESH.to_string()),
+        RefreshMaterial::MissingContext => field_reason("missing_oauth_context", "oauth_context", true),
+    }
+}
+
+fn material_field<const N: usize>(
+    fields: [(&'static str, &str); N],
+    invalid: &'static str,
+) -> (&'static str, bool) {
+    fields.into_iter().find(|(_, value)| value.trim().is_empty())
+        .map_or((invalid, false), |(field, _)| (field, true))
+}
+
+fn field_reason(state: &'static str, field: &str, missing: bool) -> (&'static str, String) {
+    let issue = if missing { format!("缺少 {field}") } else { format!("{field} 无效") };
+    (state, format!("刷新失败，{issue}，请通过「CodeArts 网页登录」完成授权。"))
 }
 
 fn blocked(credential: &Credential, needs_relogin: bool) -> Error {

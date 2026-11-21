@@ -221,13 +221,7 @@ fn normalize_history(body: &mut Value) -> Result<()> {
     Ok(())
 }
 
-fn session_id(params: &Value, snapshot: &account::Snapshot) -> Result<String> {
-    let session = params["session"].as_str().unwrap_or("");
-    let first = params["body"]["messages"].as_array().and_then(|messages| {
-        messages
-            .iter()
-            .find(|message| !matches!(message["role"].as_str(), Some("system" | "developer")))
-    });
+fn session_id(session: &str, first: Option<&Value>, snapshot: &account::Snapshot) -> Result<String> {
     if session.is_empty() && first.is_none() {
         return util::uuid();
     }
@@ -257,12 +251,26 @@ fn session_id(params: &Value, snapshot: &account::Snapshot) -> Result<String> {
     ))
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     // 先验证与整理纯请求字段，不为尚无有效请求的输入消耗一次性刷新凭据。
-    let mut body = params["body"].clone();
+    let session_key = params["session"].as_str().unwrap_or("").to_string();
+    let client_headers = params
+        .as_object_mut()
+        .and_then(|object| object.remove("headers"))
+        .unwrap_or(Value::Null);
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !body.is_object() {
         return Err(Error::http(400, "AutoClaw 请求体必须是对象"));
     }
+    let first_message = session_key.is_empty().then(|| {
+        body["messages"].as_array().and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| !matches!(message["role"].as_str(), Some("system" | "developer")))
+                .cloned()
+        })
+    }).flatten();
     normalize_history(&mut body)?;
     let route = models::route(body["model"].as_str().unwrap_or(""))?;
     body["model"] = json!(route.route);
@@ -282,7 +290,7 @@ pub fn forward(params: &Value) -> Result<()> {
     if account::access(&snapshot.secret) != token {
         return Err(Error::http(409, "AutoClaw 账号凭据已变化，请重试"));
     }
-    let session = session_id(params, &snapshot)?;
+    let session = session_id(&session_key, first_message.as_ref(), &snapshot)?;
     if !account::same(&snapshot, &account::read()?) {
         return Err(Error::http(
             409,
@@ -292,9 +300,10 @@ pub fn forward(params: &Value) -> Result<()> {
     let mut response = http::open(
         "POST",
         &format!("{}{}", endpoints::ORIGIN, endpoints::CHAT),
-        headers::chat(&token, &route.route, &session, &params["headers"])?,
+        headers::chat(&token, &route.route, &session, &client_headers)?,
         Some(&body),
     )?;
+    drop(body);
     let content_type = response.headers["content-type"]
         .as_str()
         .unwrap_or("")

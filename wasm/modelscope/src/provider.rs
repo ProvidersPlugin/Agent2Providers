@@ -82,7 +82,7 @@ pub fn handle(region: Region, method: &str, params: Value) -> Result<Value> {
         "usage.query" => balance::query(region),
         "checkin.claim" => checkin::claim(region),
         "conversation" => {
-            chat::forward(region, &params)?;
+            chat::forward(region, params)?;
             Ok(Value::Null)
         }
         "images.capabilities" => Ok(json!({ "generation": true, "editing": true })),

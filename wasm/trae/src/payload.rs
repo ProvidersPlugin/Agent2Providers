@@ -19,11 +19,10 @@ const SAMPLING_KEYS: [&str; 6] = [
     "n",
 ];
 
-pub fn prepare_body(source: &Value, route: &Route, session: &str) -> Result<Value, Error> {
-    let Value::Object(body) = source else {
+pub fn prepare_body(mut obj: Value, route: &Route, session: &str) -> Result<Value, Error> {
+    if !obj.is_object() {
         return Err(Error::http(400, "Trae 请求体必须是 JSON 对象"));
-    };
-    let mut obj: Value = json!(body.clone());
+    }
     if obj
         .get("messages")
         .and_then(Value::as_array)
@@ -38,16 +37,15 @@ pub fn prepare_body(source: &Value, route: &Route, session: &str) -> Result<Valu
     drop_orphan_tool_results(&mut obj)?;
     normalize_tool_results(&mut obj);
     normalize_images(&mut obj, route.supports_images)?;
-    let Some(messages) = obj
+    if obj
         .get("messages")
         .and_then(Value::as_array)
-        .filter(|messages| !messages.is_empty())
-    else {
+        .is_none_or(Vec::is_empty)
+    {
         return Err(Error::http(400, "Trae 请求必须包含非空 messages 数组"));
-    };
+    }
 
     let mut out = serde_json::Map::new();
-    out.insert("messages".to_string(), json!(messages));
     out.insert("function".to_string(), json!(route.function));
     out.insert("stream".to_string(), json!(true));
     out.insert("config_name".to_string(), json!(route.config_name));
@@ -57,27 +55,6 @@ pub fn prepare_body(source: &Value, route: &Route, session: &str) -> Result<Valu
     }
     out.insert("session_id".to_string(), json!(session));
     out.insert("request_id".to_string(), json!(super::util::uuid()?));
-    if let Some(tools) = obj
-        .get("tools")
-        .filter(|tools| tools.as_array().is_some_and(|tools| !tools.is_empty()))
-    {
-        out.insert("tools".to_string(), tools.clone());
-        if let Some(choice) = obj.get("tool_choice") {
-            out.insert("tool_choice".to_string(), choice.clone());
-        }
-        if let Some(parallel) = obj
-            .get("parallel_tool_calls")
-            .filter(|value| value.is_boolean())
-        {
-            out.insert("parallel_tool_calls".to_string(), parallel.clone());
-        }
-    }
-    if let Some(parallel) = obj
-        .get("parallel_tool_calls")
-        .filter(|value| value.is_boolean())
-    {
-        out.insert("parallel_tool_calls".to_string(), parallel.clone());
-    }
     for key in SAMPLING_KEYS {
         if let Some(number) = obj.get(key).filter(|value| value.is_number()) {
             out.insert(key.to_string(), number.clone());
@@ -119,11 +96,31 @@ pub fn prepare_body(source: &Value, route: &Route, session: &str) -> Result<Valu
         })?;
         out.insert("reasoning_effort".to_string(), json!(effort));
     }
-    match obj.get("stop") {
-        Some(Value::String(_)) | Some(Value::Array(_)) => {
-            out.insert("stop".to_string(), obj["stop"].clone());
+    if let Some(fields) = obj.as_object_mut() {
+        if let Some(messages) = fields.remove("messages") {
+            out.insert("messages".to_string(), messages);
         }
-        _ => {}
+        if let Some(tools) = fields
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| !tools.is_empty())
+            .then(|| fields.remove("tools"))
+            .flatten()
+        {
+            out.insert("tools".to_string(), tools);
+            if let Some(choice) = fields.remove("tool_choice") {
+                out.insert("tool_choice".to_string(), choice);
+            }
+        }
+        if let Some(parallel) = fields
+            .get("parallel_tool_calls")
+            .filter(|value| value.is_boolean())
+        {
+            out.insert("parallel_tool_calls".to_string(), parallel.clone());
+        }
+        if let Some(stop @ (Value::String(_) | Value::Array(_))) = fields.remove("stop") {
+            out.insert("stop".to_string(), stop);
+        }
     }
     Ok(Value::Object(out))
 }

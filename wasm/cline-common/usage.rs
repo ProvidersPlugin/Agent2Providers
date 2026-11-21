@@ -35,67 +35,7 @@ pub fn sources(report: &Value) -> Value {
         sources.push(json!({ "id": "account", "label": "Cline 按量 credit", "provider": crate::PROVIDER_ID,
             "unit": "credit", "remaining": remaining, "total": null, "used": null, "unlimited": false }));
     }
-    if crate::PROVIDER_ID == "cline-pass" {
-        for window in report["windows"].as_array().into_iter().flatten() {
-            if let (Some(key), Some(percent)) = (
-                window["key"].as_str(),
-                account::number(&window["remainingPercent"]),
-            ) {
-                let models = window["models"].as_array().cloned().unwrap_or_default();
-                if models.is_empty() {
-                    continue;
-                }
-                sources.push(json!({ "id": key, "label": window["label"], "provider": crate::PROVIDER_ID,
-                    "models": models, "unit": "%", "remaining": null, "total": null, "used": null,
-                    "remainingPercent": percent, "resetsAt": window["resetsAt"].as_i64().unwrap_or(0), "unlimited": false }));
-            }
-        }
-    }
     json!(sources)
-}
-
-fn subscription_windows(data: &Value) -> Result<Vec<Value>> {
-    let limits = data["limits"]
-        .as_array()
-        .filter(|limits| limits.len() <= 32)
-        .ok_or_else(|| Error::http(502, "ClinePass 未返回有效的订阅窗口，未当作额度充足"))?;
-    let models = super::models::cached()
-        .ok()
-        .and_then(|catalog| catalog["models"].as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|model| model["id"].as_str())
-        .filter(|model| model.starts_with("cline-pass/"))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let mut windows = Vec::new();
-    for (kind, code, label) in [
-        ("five_hour", "5h", "ClinePass · 5 小时"),
-        ("weekly", "weekly", "ClinePass · 每周"),
-        ("monthly", "monthly", "ClinePass · 每月"),
-    ] {
-        let rows = limits
-            .iter()
-            .filter(|row| row["type"] == kind)
-            .collect::<Vec<_>>();
-        if rows.len() > 1 {
-            return Err(Error::http(
-                502,
-                "ClinePass 返回了重复订阅窗口，未发布冲突读数",
-            ));
-        }
-        let Some(row) = rows.first() else { continue };
-        let used = account::number(&row["percentUsed"])
-            .filter(|used| *used >= 0.0)
-            .ok_or_else(|| Error::http(502, "ClinePass 窗口用量缺失，未记录为零消耗"))?;
-        windows.push(
-            json!({ "key": format!("cline-pass:{kind}"), "group": "ClinePass", "window": code,
-            "label": label, "unit": "%", "remainingPercent": (100.0 - used).clamp(0.0, 100.0),
-            "usedPercent": used, "remaining": null, "limit": null, "unlimited": false,
-            "resetsAt": row.get("resetsAt").and_then(account::expires), "models": models }),
-        );
-    }
-    Ok(windows)
 }
 
 fn check_user(data: &Value, expected: &str) -> Result<()> {
@@ -144,9 +84,7 @@ pub fn query() -> Result<Value> {
     }
     check(&record)?;
     let stored = account::text(&secret, &["account"]);
-    let mut user_id = if stored.starts_with("usr-")
-        || account::api_key(&secret) && !stored.starts_with("token-")
-    {
+    let mut user_id = if stored.starts_with("usr-") {
         stored
     } else {
         account::user_id(&token)
@@ -158,27 +96,15 @@ pub fn query() -> Result<Value> {
     if user_id.is_empty() || user_id.len() > 512 || user_id.chars().any(char::is_control) {
         return Err(Error::http(502, "Cline 余额查询未取得账号标识"));
     }
-    let declared = if account::api_key(&secret) {
-        String::new()
-    } else {
-        account::user_id(&token)
-    };
+    let declared = account::user_id(&token);
     if !declared.is_empty() && declared != user_id {
         return Err(changed());
     }
     check(&record)?;
     let mut warnings = Vec::new();
-    let raw = match credits(&token, &user_id) {
-        Ok(raw) => Some(raw),
-        Err(error) if error.code.as_deref() == Some("identity_changed") => return Err(error),
-        Err(error) if crate::PROVIDER_ID == "cline-pass" => {
-            warnings.push(format!("Cline 按量 credit 未读取：{}", error.message));
-            None
-        }
-        Err(error) => return Err(error),
-    };
+    let raw = credits(&token, &user_id)?;
     check(&record)?;
-    let credits = raw.map(|raw| raw / 1_000_000.0);
+    let credits = raw / 1_000_000.0;
     let plan = match client::request("GET", "/users/me/plan", Some(&token), true, None) {
         Ok(reply) if reply.status == 404 => None,
         Ok(reply) => match reply.data() {
@@ -222,54 +148,11 @@ pub fn query() -> Result<Value> {
             subscription["status"] = json!(status.chars().take(80).collect::<String>());
         }
     }
-    let wallets = credits.into_iter().map(|credits| json!({ "type": "cline_credit", "unit": "credit",
-        "displayName": if credits < 0.0 { "Cline credit（已欠费）" } else { "Cline credit" }, "balance": credits })).collect::<Vec<_>>();
-    let mut windows = Vec::new();
-    if crate::PROVIDER_ID == "cline-pass" {
-        match client::request(
-            "GET",
-            "/users/me/plan/usage-limits",
-            Some(&token),
-            true,
-            None,
-        ) {
-            Ok(reply) if reply.status == 404 => {
-                subscription["quotaStatus"] = json!("inactive");
-            }
-            Ok(reply) => match reply.data().and_then(|data| subscription_windows(&data)) {
-                Ok(readings) => {
-                    subscription["quotaStatus"] = json!(if readings.is_empty() {
-                        "unreported"
-                    } else {
-                        "reported"
-                    });
-                    windows = readings;
-                }
-                Err(error) => {
-                    warnings.push(format!("ClinePass 订阅窗口未读取：{}", error.message));
-                    subscription["quotaStatus"] = json!("unknown");
-                }
-            },
-            Err(error) => {
-                warnings.push(format!("ClinePass 订阅窗口未读取：{}", error.message));
-                subscription["quotaStatus"] = json!("unknown");
-            }
-        }
-        check(&record)?;
-    }
-    if credits.is_none() && windows.is_empty() {
-        return Err(Error::http(
-            502,
-            "ClinePass 未取得有效订阅窗口或按量余额，未记录为零或查询成功",
-        )
-        .with_code("cline_usage_invalid_response"));
-    }
+    let wallets = vec![json!({ "type": "cline_credit", "unit": "credit",
+        "displayName": if credits < 0.0 { "Cline credit（已欠费）" } else { "Cline credit" }, "balance": credits })];
     let mut report = json!({ "unit": "credit", "available": credits, "wallets": wallets, "subscription": subscription,
         "readOnly": true, "partial": !warnings.is_empty(), "warnings": warnings,
         "raw": { "userId": user_id, "balance": raw, "balanceMicrocredits": raw } });
-    if crate::PROVIDER_ID == "cline-pass" {
-        report["windows"] = json!(windows);
-    }
     check(&record)?;
     refresh::confirm(&secret)?;
     report["quotaSources"] = sources(&report);

@@ -7,7 +7,7 @@ use super::{
 };
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
 
-const MAX_ENCODED: usize = 4 * 1024 * 1024;
+const MAX_ENCODED: usize = 16 * 1024 * 1024;
 struct Failure {
     error: Error,
     started: bool,
@@ -18,11 +18,12 @@ pub fn forward(params: &Value) -> Result<()> {
     if !body.is_object() {
         return Err(Error::http(400, "Qoder 请求体必须是 JSON 对象"));
     }
-    if body.to_string().len() > MAX_ENCODED / 4 * 3 {
+    if http::json_exceeds(body, MAX_ENCODED / 4 * 3)? {
         return Err(Error::http(
             413,
             "Qoder 输入超过当前受控传输容量，请缩小图片或上下文；未丢弃内容",
-        ));
+        )
+        .with_code("plugin_request_too_large"));
     }
     let model_name = body["model"].as_str().unwrap_or("");
     let mut snapshot = refresh::ensure(false)?;
@@ -39,14 +40,19 @@ pub fn forward(params: &Value) -> Result<()> {
             &snapshot.credentials,
             params["session"].as_str(),
         )?;
-        let raw = payload.value.to_string();
+        let thinking = payload.thinking;
+        let raw = serde_json::to_vec(&payload.value)
+            .map_err(|_| Error::http(400, "Qoder 请求体无法编码"))?;
+        drop(payload);
         if raw.len() > MAX_ENCODED / 4 * 3 {
             return Err(Error::http(
                 413,
                 "Qoder 编码请求超过当前受控传输容量，请缩小图片或上下文；未丢弃内容",
-            ));
+            )
+            .with_code("plugin_request_too_large"));
         }
-        let encoded = cosy::encode(raw.as_bytes());
+        let encoded = cosy::encode(&raw);
+        drop(raw);
         let mut headers = cosy::headers(Some(&encoded), endpoints::CHAT, &snapshot.credentials)?;
         headers["Content-Type"] = json!("application/json");
         headers["Accept"] = json!("text/event-stream");
@@ -61,7 +67,8 @@ pub fn forward(params: &Value) -> Result<()> {
             headers,
             Some(&encoded),
         )?;
-        match consume(response, model_name, payload.thinking, &snapshot) {
+        drop(encoded);
+        match consume(response, model_name, thinking, &snapshot) {
             Ok(()) => return Ok(()),
             Err(Failure {
                 error,

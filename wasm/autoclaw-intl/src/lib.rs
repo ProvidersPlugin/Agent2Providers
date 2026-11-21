@@ -69,7 +69,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "usage.query" => usage::query(),
         "checkin.claim" => checkin::claim(),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "login.start" => login::start(&params),

@@ -49,8 +49,10 @@ pub fn get(url: &str, headers: Value, secrets: &[&str]) -> Result<Value> {
     )
 }
 pub fn post(url: &str, headers: Value, body: &Value, secrets: &[&str]) -> Result<Value> {
-    if body.to_string().len() > 8 * 1024 * 1024 {
-        return Err(Error::http(413, "库库请求超过受控传输上限"));
+    if http::json_exceeds(body, 14 * 1024 * 1024)? {
+        return Err(
+            Error::http(413, "库库请求超过受控传输上限").with_code("plugin_request_too_large")
+        );
     }
     read(
         http::open("POST", url, headers, Some(body)).map_err(errors::transport)?,

@@ -112,8 +112,8 @@ pub fn start(params: &Value) -> Result<Value> {
     Ok(
         json!({ "flow": flow, "url": url, "poll_interval_ms": INTERVAL,
         "instructions": instructions,
-        "external_browser": true, "allowed_hosts": ["auth.huaweicloud.com"],
-        "login_ui": { "browserMode": "external", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
+        "external_browser": false, "allowed_hosts": ["auth.huaweicloud.com"],
+        "login_ui": { "browserMode": "choice", "manualCallback": false, "callbackInput": "url", "cookieCapture": null, "captureCallback": false } }),
     )
 }
 

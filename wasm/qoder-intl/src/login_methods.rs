@@ -85,7 +85,7 @@ pub fn methods(locale: &str) -> Value {
     };
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [],
-            "browserMode": "external", "manualCallback": false, "callbackInput": "url" },
+            "browserMode": "choice", "manualCallback": false, "callbackInput": "url" },
         { "methodIndex": 1, "type": "api", "label": text[2], "prompts": [
             { "key": "pat", "type": "text", "label": "PAT", "secret": true }
         ] },

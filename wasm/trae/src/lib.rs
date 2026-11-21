@@ -78,7 +78,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "login.poll" => login::poll(&params),
         "login.cancel" => login::cancel(&params),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "classify" if login_stopped(&params["body"]) => Ok(json!({ "kind": "fatal", "status": 502,

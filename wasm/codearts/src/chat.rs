@@ -6,23 +6,22 @@ use crate::{
 };
 use agent2api_wasm_sdk::{self as sdk, json, Result, Value};
 
-pub fn forward(params: &Value) -> Result<Value> {
+pub fn forward(mut params: Value) -> Result<Value> {
     let account = Account::current()?;
     account.readable()?;
-    let mut body = params["body"].clone();
     let requested = params["wire_model"]
         .as_str()
-        .or_else(|| body["model"].as_str())
+        .or_else(|| params["body"]["model"].as_str())
         .filter(|model| !model.trim().is_empty() && model.len() <= 512)
         .ok_or_else(|| errors::invalid("请选择 CodeArts 模型"))?
         .to_string();
-    if !body["messages"]
+    if !params["body"]["messages"]
         .as_array()
         .is_some_and(|rows| !rows.is_empty() && rows.len() <= 512)
     {
         return Err(errors::invalid("messages 必须是非空数组"));
     }
-    let mut list = catalog::list(params)?;
+    let mut list = catalog::list(&params)?;
     if list["models"].as_array().is_none_or(|rows| {
         !rows.iter().any(|row| {
             row["id"]
@@ -30,7 +29,7 @@ pub fn forward(params: &Value) -> Result<Value> {
                 .is_some_and(|id| id.eq_ignore_ascii_case(&requested))
         })
     }) {
-        list = catalog::refresh(params)?;
+        list = catalog::refresh(&params)?;
     }
     let target_model = list["models"].as_array().into_iter().flatten().find(|row| {
         row["id"]
@@ -44,6 +43,13 @@ pub fn forward(params: &Value) -> Result<Value> {
         .and_then(|row| row["providerModel"].as_str().or_else(|| row["id"].as_str()))
         .ok_or_else(|| errors::protocol("CodeArts 目录缺少模型发送名"))?
         .to_string();
+    let max_output = target_model.and_then(|row| row["maxOutputTokens"].as_i64());
+    let is_benefit = target_model.is_some_and(|row| row["benefit"] == true);
+    drop(list);
+    let mut body = sdk::take_body(&mut params)
+        .filter(Value::is_object)
+        .ok_or_else(|| errors::invalid("CodeArts 请求体必须是 JSON 对象"))?;
+    drop(params);
     let display = body["model"].as_str().unwrap_or(&requested).to_string();
     body["model"] = json!(upstream);
     body["stream"] = json!(true);
@@ -73,10 +79,7 @@ pub fn forward(params: &Value) -> Result<Value> {
         body.as_object_mut()
             .map(|fields| fields.remove("enable_thinking"));
     }
-    reserve(
-        &mut body,
-        target_model.and_then(|row| row["maxOutputTokens"].as_i64()),
-    );
+    reserve(&mut body, max_output);
     if body["tool_choice"]["type"] == "function"
         && body["tool_choice"]["function"]["name"]
             .as_str()
@@ -97,6 +100,7 @@ pub fn forward(params: &Value) -> Result<Value> {
         }
     }
     let bytes = serde_json::to_vec(&body).map_err(|_| errors::invalid("CodeArts 请求无法编码"))?;
+    drop(body);
     if bytes.len() > 8 * 1024 * 1024 {
         return Err(errors::invalid("CodeArts 请求超过 8 MiB"));
     }
@@ -125,7 +129,7 @@ pub fn forward(params: &Value) -> Result<Value> {
             ("x-model-id".into(), upstream.clone()),
             ("User-Session-Id".into(), id.into()),
         ];
-        if target_model.is_some_and(|row| row["benefit"] == true) {
+        if is_benefit {
             headers.push(("maas_type".into(), "benefit".into()));
         }
         let target = Target {
@@ -177,7 +181,6 @@ pub fn forward(params: &Value) -> Result<Value> {
                 if errors::failure(&value) {
                     return Err(errors::classified(200, &value, &account.credential.secrets()));
                 }
-                account.unchanged()?;
                 let content_blocked = value["choices"].as_array().is_some_and(|choices| {
                     choices
                         .iter()
@@ -197,6 +200,7 @@ pub fn forward(params: &Value) -> Result<Value> {
                     if !has_answer {
                         continue;
                     }
+                    account.unchanged()?;
                     sdk::stream_head(200)?;
                     started = true;
                 }
@@ -214,7 +218,6 @@ pub fn forward(params: &Value) -> Result<Value> {
         if !done || !answer {
             return Err(errors::protocol("CodeArts 回答为空或在完整结束标记前中断"));
         }
-        account.unchanged()?;
         Ok(Value::Null)
     })();
     let cleanup = sdk::host("codearts.session.close", json!({}));

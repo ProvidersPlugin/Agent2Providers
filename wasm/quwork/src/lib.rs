@@ -65,7 +65,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "models.list" => models::cached(),
         "models.refresh" => models::refresh(params["force"].as_bool().unwrap_or(false)),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "usage.query" => usage::query(),

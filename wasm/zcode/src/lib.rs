@@ -77,7 +77,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             false,
         ),
         "conversation" => {
-            chat::forward(&params)?;
+            chat::forward(params)?;
             Ok(Value::Null)
         }
         "classify" => Ok(errors::classify(

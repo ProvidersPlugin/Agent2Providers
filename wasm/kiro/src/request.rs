@@ -90,11 +90,12 @@ pub fn build(body: &Value, model: &str, profile: &str, record: &Value) -> Result
             out["additionalModelRequestFields"] = fields;
         }
     }
-    if out.to_string().len() > 10 * 1024 * 1024 {
+    if agent2api_wasm_sdk::http::json_exceeds(&out, 14 * 1024 * 1024)? {
         return Err(Error::http(
             413,
             "Kiro对话超过受控传输上限，请压缩历史或图片",
-        ));
+        )
+        .with_code("plugin_request_too_large"));
     }
     Ok(Built {
         body: out,

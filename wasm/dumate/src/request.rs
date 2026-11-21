@@ -8,8 +8,9 @@ pub struct Request {
     pub qianfan: bool,
 }
 
-pub fn build(params: &Value) -> Result<Request> {
-    let mut body = params["body"].clone();
+pub fn build(mut params: Value) -> Result<Request> {
+    let mut body = agent2api_wasm_sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     let fields = body
         .as_object_mut()
         .ok_or_else(|| Error::http(400, "对话内容必须是 JSON 对象"))?;

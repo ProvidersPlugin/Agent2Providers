@@ -190,10 +190,11 @@ fn stream_error(region: Region, value: &Value) -> Error {
     errors::http_error(region, status, value)
 }
 
-pub fn forward(region: Region, params: &Value) -> Result<()> {
+pub fn forward(region: Region, mut params: Value) -> Result<()> {
     let source = account::Snapshot::read(region)?;
     let token = &source.token;
-    let mut body = params["body"].clone();
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     let object = body
         .as_object_mut()
         .ok_or_else(|| Error::http(400, "请求体必须是 JSON 对象"))?;

@@ -4,8 +4,10 @@
 use super::{account, client, endpoints, errors, models, reasoning, refresh};
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
 
-fn body(params: &Value) -> Result<(Value, &'static str)> {
-    let mut body = params["body"].clone();
+fn body(mut params: Value) -> Result<(Value, &'static str)> {
+    let reasoning_level = params["reasoning"].as_str().unwrap_or("").to_string();
+    let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
     if !body.is_object() {
         return Err(Error::http(400, "QuWork 请求体必须是 JSON 对象"));
     }
@@ -31,7 +33,7 @@ fn body(params: &Value) -> Result<(Value, &'static str)> {
             }
         }
     }
-    reasoning::apply(&mut body, &row, params["reasoning"].as_str().unwrap_or(""));
+    reasoning::apply(&mut body, &row, &reasoning_level);
     if let Some(messages) = body["messages"].as_array_mut() {
         for message in messages {
             if compat["supportsDeveloperRole"] == false && message["role"] == "developer" {
@@ -219,7 +221,7 @@ impl Output {
     }
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(params: Value) -> Result<()> {
     let (body, origin) = body(params)?;
     let token = refresh::model_token()?;
     let record = sdk::account()?;

@@ -158,9 +158,11 @@ impl Output {
     }
 }
 
-pub fn forward(params: &Value) -> Result<()> {
+pub fn forward(mut params: Value) -> Result<()> {
     let session = format!("sess_{}", sdk::now());
-    let body = payload::build(&params["body"], &session)?;
+    let input = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    drop(params);
+    let body = payload::build(input, &session)?;
     let secret = refresh::ensure(false)?;
     let token = super::account::access(&secret)?;
     let headers = headers::chat(&token, &session)?;

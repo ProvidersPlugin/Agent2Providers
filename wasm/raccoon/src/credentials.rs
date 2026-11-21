@@ -28,10 +28,11 @@ impl Credential {
         let claims =
             jwt::claims(&token).ok_or_else(|| Error::http(400, "小浣熊凭据不是有效JWT"))?;
         let iam = jwt::iam(&token);
-        let refresh = if iam {
+        let raw_refresh = jwt::strip(&util::text(payload, &["refreshToken", "refresh_token"]));
+        let refresh = if iam || raw_refresh == token {
             String::new()
         } else {
-            jwt::strip(&util::text(payload, &["refreshToken", "refresh_token"]))
+            raw_refresh
         };
         let supplied = util::text(payload, &["userId"]);
         let extracted = jwt::uid(&claims);

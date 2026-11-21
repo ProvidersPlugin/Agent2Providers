@@ -76,7 +76,8 @@ pub fn send(params: &Value) -> Result<Value> {
             if payload["data"]["result"] != true { return Err(Error::http(502, "AutoClaw 未确认验证码已发送，请稍后重试")); }
             Ok(()) });
     if let Err(error) = result {
-        let _ = save(&reserved, json!({ "phase": "send_failed", "retryAt": now + 60_000 }));
+        let retry_at = if error.status == Some(429) { now + 60_000 } else { 0 };
+        let _ = save(&reserved, json!({ "phase": "send_failed", "retryAt": retry_at }));
         return Err(error);
     }
     let ticket = util::random_hex(16)?;

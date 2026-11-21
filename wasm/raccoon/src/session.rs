@@ -131,7 +131,7 @@ fn renew(current: Session) -> Result<Session> {
         for key in ["access_token", "token", "auth_token", "refresh_token"] {
             fields.remove(key);
         }
-        if jwt::iam(&next.token) {
+        if jwt::iam(&next.token) || next.refresh.is_empty() || next.refresh == next.token {
             fields.remove("refreshToken");
         } else {
             fields.insert("refreshToken".into(), json!(next.refresh));

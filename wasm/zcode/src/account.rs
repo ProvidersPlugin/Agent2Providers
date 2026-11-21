@@ -99,6 +99,10 @@ pub fn identity(secret: &Value) -> String {
     }
 }
 
+pub fn token_expired(token: &str) -> bool {
+    expiry(token).is_some_and(|at| at <= sdk::now())
+}
+
 fn expiry(token: &str) -> Option<i64> {
     let payload = token.split('.').nth(1)?.trim_end_matches('=');
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -126,9 +130,25 @@ pub fn view(secret: &Value) -> Result<Value> {
         name
     };
     if [&name, &uid].iter().any(|public| {
-        [&access, &jwt]
-            .iter()
-            .any(|token| token.len() >= 8 && public.contains(token.as_str()))
+        [
+            &access,
+            &jwt,
+            &strip_bearer(&text(
+                secret,
+                &["oauthAccessToken", "oauth_access_token", "bizToken", "biz_token"],
+            )),
+            &strip_bearer(&text(
+                secret,
+                &[
+                    "oauthRefreshToken",
+                    "oauth_refresh_token",
+                    "refreshToken",
+                    "refresh_token",
+                ],
+            )),
+        ]
+        .iter()
+        .any(|token| token.len() >= 8 && public.contains(token.as_str()))
     }) {
         return Err(Error::http(400, "ZCode 公开账号字段不能包含完整凭据"));
     }
@@ -142,6 +162,7 @@ pub fn view(secret: &Value) -> Result<Value> {
         .collect();
     let mut view = json!({ "name": name, "userId": uid, "edition": "国内版", "zcodePlan": plan(secret),
         "plan": plan(secret), "planLabel": label(plan(secret)), "tokenTail": tail,
+        "desktopLaunchAvailable": super::desktop_launch::is_available(secret),
         "hasSession": !token.is_empty(), "canRefresh": false, "canClaim": !jwt.is_empty() });
     if let Some(expires) = expiry(token) {
         view["expiresAt"] = json!(expires);
@@ -194,6 +215,8 @@ pub fn normalize(params: &Value) -> Result<Value> {
         for group in [
             &["accessToken", "access_token", "apiKey", "api_key"][..],
             &["jwt", "token"][..],
+            &["oauthAccessToken", "oauth_access_token", "bizToken", "biz_token"][..],
+            &["oauthRefreshToken", "oauth_refresh_token", "refreshToken", "refresh_token"][..],
             &["userId", "user_id"][..],
             &["deviceMid", "device_mid"][..],
             &["zcodePlan"][..],
@@ -249,8 +272,37 @@ pub fn normalize(params: &Value) -> Result<Value> {
     if !network::uuid_shape(&mid) {
         return Err(Error::http(400, "ZCode 设备标识必须是 UUID"));
     }
+    let mut uid = user(&payload);
+    if uid.is_empty() && !jwt.is_empty() {
+        uid = super::desktop_launch::jwt_user_id(&jwt);
+    }
     let mut secret = json!({ "accessToken": access, "jwt": jwt, "deviceMid": mid,
-        "userId": user(&payload), "idPrefix": "zcode-user-", "zcodePlan": plan(&payload) });
+        "userId": uid, "idPrefix": "zcode-user-", "zcodePlan": plan(&payload) });
+    let oauth_access = strip_bearer(&text(
+        &payload,
+        &["oauthAccessToken", "oauth_access_token", "bizToken", "biz_token"],
+    ));
+    if !oauth_access.is_empty()
+        && oauth_access.len() <= 32 * 1024
+        && !oauth_access.contains(['\r', '\n', '\0'])
+    {
+        secret["oauthAccessToken"] = json!(oauth_access);
+    }
+    let oauth_refresh = strip_bearer(&text(
+        &payload,
+        &[
+            "oauthRefreshToken",
+            "oauth_refresh_token",
+            "refreshToken",
+            "refresh_token",
+        ],
+    ));
+    if !oauth_refresh.is_empty()
+        && oauth_refresh.len() <= 32 * 1024
+        && !oauth_refresh.contains(['\r', '\n', '\0'])
+    {
+        secret["oauthRefreshToken"] = json!(oauth_refresh);
+    }
     let name = text(params, &["name"]);
     let name = if name.is_empty() {
         text(&payload, &["name"])

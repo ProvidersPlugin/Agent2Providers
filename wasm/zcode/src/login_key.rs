@@ -149,10 +149,15 @@ pub fn advance(state: &mut Value) -> Result<Option<Value>> {
                 Err(error) => return Err(error),
             };
             let secret = text(&data, &["secretKey", "secret_key"]);
-            let account = json!({ "accessToken": if secret.is_empty() { key } else { format!("{key}.{secret}") },
+            let mut account = json!({ "accessToken": if secret.is_empty() { key } else { format!("{key}.{secret}") },
+                "oauthAccessToken": oauth,
                 "jwt": state["jwt"], "deviceMid": state["deviceMid"], "userId": state["userId"],
                 "name": state["name"], "email": state["email"],
                 "idPrefix": "zcode-user-", "zcodePlan": account::CODING });
+            let refresh = text(state, &["refreshToken"]);
+            if !refresh.is_empty() {
+                account["oauthRefreshToken"] = json!(refresh);
+            }
             return Ok(Some(account));
         }
         _ => return Err(Error::new("ZCode 登录流程阶段无效")),

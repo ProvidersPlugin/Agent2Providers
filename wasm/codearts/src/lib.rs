@@ -61,7 +61,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.view" => account::view(&params["secret"]),
         "account.identity" => Ok(json!(account::identity(&params["secret"])?)),
         "token.ensure" => Ok(json!(refresh::ensure(false)?)),
-        "token.refresh" => agent2api_wasm_sdk::host("credential.codearts.refresh", json!({})),
+        "token.refresh" => Ok(json!(refresh::ensure(true)?)),
         "token.expiring" => Ok(json!(refresh::expiring()?)),
         "models.list" => catalog::list(&params),
         "models.refresh" => catalog::refresh(&params),

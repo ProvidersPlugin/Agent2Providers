@@ -43,9 +43,7 @@ pub fn normalize(params: &Value) -> Result<Value> {
     } else {
         "credential_snapshot"
     });
-    let mut public = view(&secret)?;
-    // 手工材料存在不代表已完成本次宿主登记；登记成功后的公开字段由真实保存事务更新。
-    public["canRefresh"] = json!(false);
+    let public = view(&secret)?;
     Ok(json!({ "identity": identity, "secret": secret, "public": public, "desktop": false }))
 }
 

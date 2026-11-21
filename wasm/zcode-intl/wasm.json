@@ -5,9 +5,86 @@
     "http.v1", "resources.v1", "http.timeout.v1", "accounts.cas.v1", "settings.v1", "settings.schema.v1",
     "clock.v1", "random.v1", "locks.v1", "state.v1", "chat.stream.v1", "catalog.v1", "catalog.accounts.v1",
     "login.forms.v1", "login.interaction.v1", "errors.v1", "checkin.rolling.v1",
-    "protocol.convert.v1", "verification.account.v1", "verification.claim.v1"
+    "protocol.convert.v1", "verification.account.v1", "verification.claim.v1", "desktop.launch.v1"
   ],
   "origins": ["https://zcode.z.ai", "https://api.z.ai", "https://chat.z.ai", "https://raw.githubusercontent.com"],
+  "desktop_launch": {
+    "version": 1,
+    "clients": [
+      {
+        "id": "zcode",
+        "label": "ZCode",
+        "platform": "windows",
+        "executables": ["ZCode.exe", "zcode.exe"],
+        "locations": [
+          {"root": "local_app_data", "path": "Programs/ZCode/ZCode.exe"},
+          {"root": "local_app_data", "path": "ZCode/ZCode.exe"},
+          {"root": "program_files", "path": "ZCode/ZCode.exe"},
+          {"root": "program_files_x86", "path": "ZCode/ZCode.exe"}
+        ],
+        "identity": {
+          "kind": "pe_product",
+          "values": ["ZCode"],
+          "minimum_version": [3, 0, 0],
+          "absent": ["resources/app/product.json"]
+        },
+        "resources": [
+          {
+            "id": "credentials",
+            "label": "ZCode 登录凭证",
+            "storage": {
+              "kind": "json_file",
+              "location": {"root": "home", "path": ".zcode/v2/credentials.json"},
+              "base_from": {"location": {"root": "home", "path": ".zcode/v2/setting.json"}, "field": "dataBaseDir"},
+              "create": true,
+              "fields": [
+                "zcodejwttoken",
+                "oauth:active_provider",
+                "oauth:login_attribution",
+                "oauth:bigmodel:access_token",
+                "oauth:bigmodel:refresh_token",
+                "oauth:bigmodel:user_info",
+                "oauth:zai:access_token",
+                "oauth:zai:refresh_token",
+                "oauth:zai:user_info"
+              ],
+              "prefixes": [
+                "account-provider:",
+                "project-key-location:"
+              ]
+            }
+          },
+          {
+            "id": "config",
+            "label": "ZCode 套餐提供商配置",
+            "storage": {
+              "kind": "json_file",
+              "location": {"root": "home", "path": ".zcode/v2/config.json"},
+              "base_from": {"location": {"root": "home", "path": ".zcode/v2/setting.json"}, "field": "dataBaseDir"},
+              "create": true,
+              "fields": ["provider"]
+            }
+          },
+          {
+            "id": "settings",
+            "label": "ZCode 账号域与套餐设置",
+            "storage": {
+              "kind": "json_file",
+              "location": {"root": "home", "path": ".zcode/v2/setting.json"},
+              "create": true,
+              "fields": [
+                "providerFamilyDomain",
+                "providerFamilyDomainUpdatedAt",
+                "providerFamilyConnectionSelections",
+                "modelProviderFamilyModes",
+                "modelProviderFamilySelectedKeys"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
   "memory_mib": 128,
   "concurrency": 8
 }

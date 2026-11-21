@@ -53,7 +53,9 @@ pub fn call(previous: &Credential) -> Result<Credential> {
         String::new()
     } else {
         let refresh = jwt::strip(&util::text(&data, &["refresh_token"]));
-        if refresh.is_empty() {
+        if refresh == token {
+            String::new()
+        } else if refresh.is_empty() {
             previous.refresh.clone()
         } else {
             refresh

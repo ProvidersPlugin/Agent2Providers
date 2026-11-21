@@ -32,10 +32,11 @@ pub fn view(secret: &Value) -> Value {
     } else {
         name
     };
+    let raw_refresh = jwt::strip(&util::text(secret, &["refreshToken", "refresh_token"]));
     let refreshable = if desktop {
         secret["canRefresh"] == true && secret["desktopReadOnly"] != true
     } else {
-        !jwt::iam(&token) && !util::text(secret, &["refreshToken", "refresh_token"]).is_empty()
+        !jwt::iam(&token) && !raw_refresh.is_empty() && raw_refresh != token
     };
     let has_refresh = if desktop {
         secret["canRefresh"] == true

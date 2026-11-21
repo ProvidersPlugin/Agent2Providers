@@ -183,9 +183,18 @@ pub fn advance(state: &mut Value) -> Result<Option<Value>> {
             credential(&secret)?;
             let access = format!("{key}.{secret}");
             credential(&access)?;
-            return Ok(Some(json!({ "accessToken": access, "jwt": state["jwt"],
+            let mut account = json!({ "accessToken": access, "oauthAccessToken": biz, "jwt": state["jwt"],
                 "deviceMid": state["deviceMid"], "userId": state["userId"], "idPrefix": ID_PREFIX,
-                "zcodePlan": account::CODING })));
+                "zcodePlan": account::CODING });
+            let name = text(state, &["name"]);
+            if !name.is_empty() {
+                account["name"] = json!(name);
+            }
+            let email = text(state, &["email"]);
+            if !email.is_empty() {
+                account["email"] = json!(email);
+            }
+            return Ok(Some(account));
         }
         _ => return Err(Error::new("ZCode 国际版登录流程阶段无效")),
     }

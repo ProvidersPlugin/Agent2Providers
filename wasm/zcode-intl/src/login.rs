@@ -270,6 +270,8 @@ fn step(state: &mut Value) -> Result<Option<Value>> {
         state["oauth"] = json!(oauth);
         state["jwt"] = json!(jwt);
         state["userId"] = json!(account::user(&data["user"]));
+        state["name"] = data["user"]["name"].clone();
+        state["email"] = data["user"]["email"].clone();
         state["phase"] = json!("business-login");
         state["pollToken"] = Value::Null;
         return Ok(None);

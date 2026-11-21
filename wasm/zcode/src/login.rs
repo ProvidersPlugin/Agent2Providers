@@ -218,6 +218,10 @@ fn step(state: &mut Value) -> Result<Option<Value>> {
             return Err(Error::http(502, "ZCode 国内版登录结果缺少访问令牌"));
         }
         state["oauth"] = json!(oauth);
+        state["refreshToken"] = json!(account::strip_bearer(&text(
+            &data["bigmodel"],
+            &["refresh_token", "refreshToken"]
+        )));
         state["jwt"] = json!(account::strip_bearer(&text(data, &["token"])));
         state["userId"] = json!(account::user(&data["user"]));
         state["name"] = data["user"]["name"].clone();

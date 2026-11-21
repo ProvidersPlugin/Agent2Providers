@@ -213,12 +213,33 @@ pub fn cancel(params: &Value) -> Result<Value> {
 
 pub fn browser_instructions(locale: &str) -> &'static str {
     match locale {
-        "en" => "Finish sign-in on the official Raccoon page. Desktop users can choose the embedded window or system browser. Web callbacks require an HTTP loopback panel address with an explicit port; forward the remote gateway port locally before signing in. Paste the full callback URL if automatic return fails.",
-        "zh-Hant" => "請在小浣熊官方頁面完成登入；桌面可選內置視窗或系統瀏覽器。網頁回跳需 HTTP 回環面板位址及顯式連接埠，遠端部署請先將連接埠轉發到本機。未自動返回時可貼上完整回呼網址。",
-        "ja" => "公式 Raccoon ページでログインしてください。デスクトップでは内蔵ウィンドウまたはシステムブラウザーを選べます。Web の戻り先には HTTP のループバックアドレスと明示的なポートが必要です。リモート接続では先にポートをローカルへ転送してください。自動で戻らない場合は完全なコールバック URL を貼り付けられます。",
-        "ko" => "Raccoon 공식 페이지에서 로그인하세요. 데스크톱에서는 내장 창이나 시스템 브라우저를 선택할 수 있습니다. 웹 콜백에는 명시적 포트가 있는 HTTP 루프백 패널 주소가 필요합니다. 원격 연결에서는 먼저 포트를 로컬로 전달하세요. 자동 반환이 실패하면 전체 콜백 URL을 붙여넣을 수 있습니다.",
-        "pt-BR" => "Conclua o login na página oficial do Raccoon. No desktop, escolha a janela integrada ou o navegador do sistema. O retorno web exige um endereço HTTP local com porta explícita; encaminhe a porta do gateway remoto para sua máquina antes de entrar. Se não retornar automaticamente, cole a URL completa de retorno.",
-        _ => "请在小浣熊官方页面完成登录；桌面可选择内置窗口或系统浏览器。网页回跳需要 HTTP 回环面板地址和显式端口，远程部署请先将端口转发到本机。未自动返回时可粘贴完整回调地址。",
+        "en" => "Finish sign-in on the official Raccoon page. Desktop users can choose the embedded window or system browser. Web callbacks require an HTTP loopback panel address with an explicit port; forward the remote gateway port locally before signing in. Paste the full callback URL if automatic return fails. Current official sign-in issues IAM credentials that do not support automatic renewal and require signing in again after expiry.",
+        "zh-Hant" => "請在小浣熊官方頁面完成登入；桌面可選內置視窗或系統瀏覽器。網頁回跳需 HTTP 回環面板位址及顯式連接埠，遠端部署請先將連接埠轉發到本機。未自動返回時可貼上完整回呼網址。目前官方網頁登入簽發的 IAM 憑據不支援自動續期，到期後需重新登入。",
+        "ja" => "公式 Raccoon ページでログインしてください。デスクトップでは内蔵ウィンドウまたはシステムブラウザーを選べます。Web の戻り先には HTTP のループバックアドレスと明示的なポートが必要です。リモート接続では先にポートをローカルへ転送してください。自動で戻らない場合は完全なコールバック URL を貼り付けられます。現在の公式ブラウザーログインで発行される IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
+        "ko" => "Raccoon 공식 페이지에서 로그인하세요. 데스크톱에서는 내장 창이나 시스템 브라우저를 선택할 수 있습니다. 웹 콜백에는 명시적 포트가 있는 HTTP 루프백 패널 주소가 필요합니다. 원격 연결에서는 먼저 포트를 로컬로 전달하세요. 자동 반환이 실패하면 전체 콜백 URL을 붙여넣을 수 있습니다. 현재 공식 브라우저 로그인으로 발급되는 IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
+        "pt-BR" => "Conclua o login na página oficial do Raccoon. No desktop, escolha a janela integrada ou o navegador do sistema. O retorno web exige um endereço HTTP local com porta explícita; encaminhe a porta do gateway remoto para sua máquina antes de entrar. Se não retornar automaticamente, cole a URL completa de retorno. O login oficial atual emite credenciais IAM sem renovação automática; ao expirar, será necessário entrar novamente.",
+        _ => "请在小浣熊官方页面完成登录；桌面可选择内置窗口或系统浏览器。网页回跳需要 HTTP 回环面板地址和显式端口，远程部署请先将端口转发到本机。未自动返回时可粘贴完整回调地址。当前官方网页登录签发的 IAM 凭据不支持自动续期，到期后需重新登录。",
+    }
+}
+
+pub fn token_instructions(locale: &str, json_mode: bool) -> &'static str {
+    if json_mode {
+        return match locale {
+            "en" => "Paste auth.json or exported credentials JSON; IAM credentials do not support automatic renewal and require signing in again after expiry.",
+            "zh-Hant" => "貼上 auth.json 或匯出的登入態 JSON；若為 IAM 憑據則不支援自動續期，到期後需重新登入。",
+            "ja" => "auth.json またはエクスポートした認証 JSON を貼り付けてください。IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
+            "ko" => "auth.json 또는 내보낸 인증 JSON을 붙여넣으세요. IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
+            "pt-BR" => "Cole o auth.json ou o JSON exportado de credenciais; credenciais IAM não têm renovação automática e exigem novo login ao expirar.",
+            _ => "粘贴 auth.json 或导出的登录态 JSON；若为 IAM 凭据则不支持自动续期，到期后需重新登录。",
+        };
+    }
+    match locale {
+        "en" => "Refresh Token applies only to legacy credentials; IAM credentials do not support automatic renewal and require signing in again after expiry.",
+        "zh-Hant" => "Refresh Token 僅舊版憑據有效；IAM 憑據不支援自動續期，到期後需重新登入。",
+        "ja" => "Refresh Token は旧認証情報でのみ有効です。IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
+        "ko" => "Refresh Token은 기존 자격 증명에서만 유효합니다. IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
+        "pt-BR" => "O Refresh Token vale apenas para credenciais antigas; credenciais IAM não têm renovação automática e exigem novo login ao expirar.",
+        _ => "Refresh Token 仅旧版凭据有效；IAM 凭据不支持自动续期，到期后需重新登录。",
     }
 }
 
@@ -267,12 +288,12 @@ pub fn methods(locale: &str) -> Value {
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": labels[0], "instructions": browser_instructions(locale), "prompts": [], "browserMode": "choice",
             "manualCallback": true, "callbackInput": "url", "validatesCallback": true },
-        { "methodIndex": 1, "type": "api", "label": labels[1], "prompts": [
+        { "methodIndex": 1, "type": "api", "label": labels[1], "instructions": token_instructions(locale, false), "prompts": [
             { "key": "accessToken", "label": "Access Token", "type": "text", "secret": true },
             { "key": "refreshToken", "label": "Refresh Token", "type": "text", "secret": true, "optional": true },
             { "key": "officeIdentity", "label": "Office Identity", "type": "text", "optional": true }
         ] },
-        { "methodIndex": 2, "type": "api", "label": labels[2], "prompts": [
+        { "methodIndex": 2, "type": "api", "label": labels[2], "instructions": token_instructions(locale, true), "prompts": [
             { "key": "credentialJson", "label": labels[3], "type": "text", "secret": true }
         ] },
         desktop,

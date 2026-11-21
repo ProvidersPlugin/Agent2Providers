@@ -14,6 +14,7 @@ mod claim_sources;
 mod claim_state;
 mod claim_types;
 mod config;
+mod desktop_launch;
 mod errors;
 mod login;
 mod login_key;
@@ -41,6 +42,7 @@ fn metadata() -> Value {
         "login_methods": [{ "kind": "browser", "button": "网页登录", "hint": "在 ZCode 授权页完成国内版账号登录" }],
         "account_features": { "usage": true, "credit_detail": true, "claim": true,
             "plan_channel": true, "edition": true, "identifier": ["userId"], "expiry": ["expiresAt"] },
+        "desktop_launch": desktop_launch::summary(),
         "admin_panels": ["captcha_pool"],
         "checkin": { "description": "每日赠送套餐领取（每天 19:00 起可领）· 国内版",
             "modes": ["checkin"], "daily": true, "plans": true },
@@ -54,6 +56,8 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "init" => Ok(json!([metadata()])),
         "ping" => Ok(json!(true)),
         "provider.info" => Ok(metadata()),
+        "desktop.launch.check" => desktop_launch::check(),
+        "desktop.launch.prepare" => desktop_launch::prepare(),
         "account.normalize" => account::normalize(&params),
         "account.view" => account::view(&account::decode(&params["secret"])?),
         "account.identity" => Ok(json!(account::identity(&account::decode(

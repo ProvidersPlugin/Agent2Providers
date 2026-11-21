@@ -19,7 +19,7 @@ pub struct Account {
     pub credential: Credential,
     pub binding: Binding,
     pub needs_relogin: bool,
-    raw_secret: Value,
+    pub(crate) raw_secret: Value,
 }
 
 fn needs_relogin(record: &Value) -> bool {

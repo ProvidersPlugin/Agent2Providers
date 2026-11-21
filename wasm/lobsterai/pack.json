@@ -2,12 +2,19 @@
   "id": "agent2api-wasm-lobsterai",
   "name": "LobsterAI",
   "description": "独立的有道龙虾提供商，支持浏览器登录与凭证导入、自动续期、对话、模型目录、积分查询和每日签到。",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "protocol": 1,
   "providers": [
-    { "id": "lobsterai", "label": "LobsterAI", "order": 6, "default_enabled": true }
+    {
+      "id": "lobsterai",
+      "label": "LobsterAI",
+      "order": 6,
+      "default_enabled": true
+    }
   ],
-  "entry": { "wasm32-unknown-unknown": "lobsterai.wasm" },
+  "entry": {
+    "wasm32-unknown-unknown": "lobsterai.wasm"
+  },
   "icons": "assets",
   "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
 }

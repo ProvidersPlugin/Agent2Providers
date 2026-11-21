@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-orcaterm",
   "name": "OrcaTerm",
   "description": "独立的 OrcaTerm 提供商，支持微信授权、凭据文本与只读本机导入、自动续期、动态客户端模型目录、图文对话及额度查询；工具由网关文本模拟并交给原客户端执行。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [
     { "id": "orcaterm", "label": "OrcaTerm", "order": 4, "default_enabled": true }

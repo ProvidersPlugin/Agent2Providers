@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-autoclaw",
   "name": "AutoClaw 国内版",
   "description": "独立 AutoClaw 国内版，包含手机验证码登录、凭据导入与续期、实时模型目录、对话、积分和每日签到；本机引用经独立授权后续期并安全写回，另有显式旧环境凭据导入入口，未经真实账号验收。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [
     { "id": "autoclaw", "label": "AutoClaw 国内版", "order": 10, "default_enabled": true }

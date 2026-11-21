@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-officeace",
   "name": "OfficeAce 果办",
   "description": "独立 OfficeAce 提供商，包含华为云授权登录、DPoP 凭据续期、对话、账号模型目录、积分、每日奖励和经确认的体验套餐。账号服务器访问需授权当前账号的固定官方来源与路由，沿用账号代理；新人奖励与每日签到共用结算，未经真实账号验收。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [
     { "id": "officeace", "label": "OfficeAce 果办", "order": 12, "default_enabled": true }

@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-monkeycode",
   "name": "MonkeyCode 国内版",
   "description": "账号校验、独立模型目录、钱包、流水和订阅、受控远程对话与客户端工具桥、官方网页登录及每日签到。发送对话仅授权本次固定远端任务，无需额外权限设置；不购买或自动兑换，尚未进行真实账号验收。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

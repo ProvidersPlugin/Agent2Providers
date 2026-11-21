@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-modelscope-intl",
   "name": "ModelScope 国际版",
   "description": "独立的 ModelScope 国际版提供商，使用独立账号与目录，支持令牌导入、对话、魔粒余额与流水、每日签到和异步图片生成及编辑。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [
     { "id": "modelscope-intl", "label": "ModelScope 国际版", "order": 3, "default_enabled": true }

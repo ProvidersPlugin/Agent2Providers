@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-catpaw",
   "name": "CatPaw",
   "description": "对话与跨请求工具续接、图片输入及有界压缩、官方网页登录、明确导入后的本机实时关联、账号隔离的模型目录与积分查询。本机令牌不保存为快照；尚未进行真实账号验收。",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

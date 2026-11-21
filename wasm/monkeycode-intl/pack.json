@@ -2,13 +2,20 @@
   "id": "agent2api-wasm-monkeycode-intl",
   "name": "MonkeyCode 国际版",
   "description": "独立的 MonkeyCode 国际版提供商，支持桌面网页登录、凭据导入、独立模型目录、受控远程对话与工具调用、额度流水查询和每日签到。",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [
-    { "id": "monkeycode-intl", "label": "MonkeyCode 国际版", "order": 21, "default_enabled": false }
+    {
+      "id": "monkeycode-intl",
+      "label": "MonkeyCode 国际版",
+      "order": 21,
+      "default_enabled": false
+    }
   ],
-  "entry": { "wasm32-unknown-unknown": "monkeycode-intl.wasm" },
+  "entry": {
+    "wasm32-unknown-unknown": "monkeycode-intl.wasm"
+  },
   "icons": "assets",
   "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
 }

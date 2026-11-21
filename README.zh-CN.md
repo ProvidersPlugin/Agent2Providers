@@ -52,6 +52,7 @@ WASM 迁移补齐状态：
 | Antigravity（Google，Gemini / Claude / GPT-OSS） | ✓（对话 / 生图 / 参考图编辑） | ✓ | ✓ | 已实现，待实测（WASM：分组与逐模型配额、AI Credits） | — | — |
 | OfficeAce（华为云果办 / OfficeClaw） | ✓ | ✓ | ✓ | ✓ | ✓ | 已实现，未验收（新人奖励与每日签到共用结算） |
 | OrcaTerm（腾讯云遨驰终端） | ✓ | ✓ | ✓ | ✓ | — | — |
+| Jev AI（jev-ai.pro，判决模型） | — | — | — | ✓ | ✓ | — |
 | ModelScope（魔搭，国内版 / 国际版） | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode（AtomGit / GitCode） | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI（网易有道「有道龙虾」） | ✓ | ✓ | ✓ | ✓ | ✓ | — |

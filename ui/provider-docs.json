@@ -317,6 +317,24 @@
         "ko": "EchoBird의 MIT 구현을 기반으로 Doubao Work를 연동합니다. 공식 페이지 로그인 또는 전체 Cookie, 계정별 온라인 모델 목록, 스트리밍 대화 및 추론, 이미지 입력, 구독 기간과 보너스 할당량 조회, 일일 체크인 및 조건을 충족한 보상 수령을 지원합니다. 로컬 로그인 상태는 클라이언트의 Cookie 데이터베이스와 장치 ID를 직접 읽어 가져오며 디버그 포트가 필요 없습니다. 채팅 작업으로 이미지 생성을 실행할 수 있습니다(작업당 1장, 참조 이미지 편집은 지원하지 않음). 도구 호출은 텍스트 연결이며 네이티브 function calling이 아닙니다. 토큰 사용량을 꾸며내지 않습니다. Cookie가 만료되면 다시 로그인해야 합니다. 실제 계정으로 검증하지 않았으며 API와 이벤트는 상위 서비스 응답에 따릅니다.",
         "pt-BR": "Integra o Doubao Work com a implementação MIT do EchoBird: login na página oficial ou cookies completos, modelos online por conta, chat e raciocínio em streaming, entrada de imagens, janelas da assinatura e cota bônus, check-in diário e resgate de recompensas elegíveis. A importação do login local lê diretamente o banco de cookies e o ID do dispositivo do cliente, sem porta de depuração. A geração de imagens roda como uma tarefa de chat (uma imagem por tarefa); a edição com imagem de referência não é suportada. Ferramentas usam uma ponte de texto, não function calling nativo; o uso de tokens não é inventado. Cookies expirados exigem novo login. Não validado com conta real; APIs e campanhas dependem das respostas upstream."
       }]
+    },
+    "jev-ai": {
+      "capabilities": {
+        "chat": { "status": "unsupported" },
+        "refresh": { "status": "not_applicable" },
+        "model_refresh": { "status": "not_applicable" },
+        "usage": { "status": "supported" },
+        "checkin": { "status": "supported" },
+        "claims": { "status": "not_applicable" }
+      },
+      "notes": [{
+        "zh-CN": "上游是 System One 判决模型接口（POST /api/v1/systemone，返回概率与选项），没有 chat/completions，所以不提供对话转发，也不广告模型目录。本插件只做每日签到与余额：签到是 GET /api/daily-checkin，调用即触发，同一响应带可用额度；凭证只认会话 Cookie（jev-ai-session），没有续期接口，失效后需重新登录再粘贴。上游按 UTC 日结算，即北京时间 08:00 翻页，窗口未到时自动等到点重试。重新登录会换新 Cookie，账号会被认成新的一条。",
+        "zh-Hant": "上游是 System One 判決模型介面（POST /api/v1/systemone，回傳機率與選項），沒有 chat/completions，因此不提供對話轉發，也不廣告模型目錄。本外掛只做每日簽到與餘額：簽到是 GET /api/daily-checkin，呼叫即觸發，同一回應帶可用額度；憑證只認工作階段 Cookie（jev-ai-session），沒有續期介面，失效後需重新登入再貼上。上游依 UTC 日結算，即台北時間 08:00 換日，視窗未到時自動等到點重試。重新登入會換新 Cookie，帳號會被視為新的一筆。",
+        "en": "The upstream is a System One decision API (POST /api/v1/systemone returning probabilities and choices) with no chat/completions, so this plugin does not forward chat and does not advertise a model catalog. It provides daily check-in and balance only: check-in is GET /api/daily-checkin, which claims on call and returns the available credits in the same response. Credentials are session cookies only (jev-ai-session); there is no renewal endpoint, so an expired cookie requires signing in again and pasting a new one. The upstream settles by UTC day, which rolls over at 08:00 Beijing time; when the window is closed the plugin schedules a retry for the opening time. Signing in again yields a new cookie, and the account is then recorded as a new entry.",
+        "ja": "上流は System One 判定 API（POST /api/v1/systemone、確率と選択肢を返す）で chat/completions は無いため、対話の転送もモデル一覧の広告も行いません。本プラグインは毎日のチェックインと残量のみを提供します。チェックインは GET /api/daily-checkin で、呼び出し自体が受領処理となり、同じ応答に利用可能なクレジットが含まれます。認証はセッション Cookie（jev-ai-session）のみで、更新 API は無いため、失効時は再ログインして貼り直す必要があります。上流は UTC 日で区切られ、北京時間 08:00 に切り替わります。時間外のときは開始時刻に再試行するよう予約します。再ログインすると Cookie が変わり、新しいアカウントとして記録されます。",
+        "ko": "상위 서비스는 System One 판정 API(POST /api/v1/systemone, 확률과 선택지 반환)이며 chat/completions가 없으므로 대화 전달과 모델 목록 광고를 제공하지 않습니다. 이 플러그인은 일일 체크인과 잔액만 담당합니다. 체크인은 GET /api/daily-checkin이며 호출 자체가 수령 동작이고 같은 응답에 사용 가능한 크레딧이 포함됩니다. 자격 증명은 세션 Cookie(jev-ai-session)만 인정하며 갱신 API가 없어 만료 시 다시 로그인해 붙여넣어야 합니다. 상위 서비스는 UTC 일 단위로 정산하며 베이징 시간 08:00에 넘어갑니다. 시간대가 아니면 시작 시각에 재시도하도록 예약합니다. 다시 로그인하면 Cookie가 바뀌고 새 계정으로 기록됩니다.",
+        "pt-BR": "O serviço upstream é uma API de decisão System One (POST /api/v1/systemone, que retorna probabilidades e escolhas) sem chat/completions, portanto este plugin não encaminha chat nem anuncia catálogo de modelos. Ele oferece apenas check-in diário e saldo: o check-in é GET /api/daily-checkin, que resgata na própria chamada e devolve os créditos disponíveis na mesma resposta. As credenciais são apenas cookies de sessão (jev-ai-session); não há endpoint de renovação, então um cookie expirado exige novo login e nova colagem. O upstream fecha o dia em UTC, o que ocorre às 08:00 de Pequim; fora da janela o plugin agenda nova tentativa para a abertura. Um novo login gera outro cookie e a conta passa a ser registrada como um novo item."
+      }]
     }
   }
 }

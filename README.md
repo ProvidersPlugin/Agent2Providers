@@ -54,6 +54,7 @@ All additions are implemented but unverified. Compilation, packaging and signatu
 | Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | Implemented; unverified (WASM: group & per-model quotas, AI Credits) | — | — |
 | OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | Implemented; unverified (new-user rewards share daily settlement) |
 | OrcaTerm (Tencent Cloud) | ✓ | ✓ | ✓ | ✓ | — | — |
+| Jev AI (jev-ai.pro, verdict models) | — | — | — | ✓ | ✓ | — |
 | ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
 | AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |

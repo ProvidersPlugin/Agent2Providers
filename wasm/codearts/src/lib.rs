@@ -19,6 +19,7 @@ mod gates;
 mod login_methods;
 mod models;
 mod network;
+mod pending;
 mod refresh;
 mod signer;
 mod tool_names;

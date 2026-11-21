@@ -62,7 +62,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.identity" => Ok(json!(account::identity(&params["secret"])?)),
         "token.ensure" => Ok(json!(refresh::ensure(false)?)),
         "token.refresh" => Ok(json!(refresh::ensure(true)?)),
-        "token.expiring" => Ok(json!(refresh::expiring()?)),
+        "token.expiring" => Ok(json!(refresh::expiring(agent2api_wasm_sdk::expiring_lead(&params, 0))?)),
         "models.list" => catalog::list(&params),
         "models.refresh" => catalog::refresh(&params),
         "usage.query" => balance::query(),

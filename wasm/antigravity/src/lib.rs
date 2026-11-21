@@ -87,7 +87,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
                 &record["secret"]
             )?)?))
         }
-        "token.expiring" => Ok(json!(refresh::expiring()?)),
+        "token.expiring" => Ok(json!(refresh::expiring(sdk::expiring_lead(&params, 0))?)),
         "models.list" => models::list(&params),
         "models.refresh" => models::refresh(&params),
         "usage.query" => usage::query(),

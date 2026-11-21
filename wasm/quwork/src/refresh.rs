@@ -86,10 +86,15 @@ pub fn snapshot() -> Result<Value> {
     Ok(read()?.secret)
 }
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let window = endpoints::REFRESH_WINDOW.max(min_lead_ms.max(0));
     !account::text(secret, &["accessToken"]).is_empty()
         && client::timestamp(&secret["expiresAt"])
-            .is_some_and(|expiry| expiry <= sdk::now().saturating_add(endpoints::REFRESH_WINDOW))
+            .is_some_and(|expiry| expiry <= sdk::now().saturating_add(window))
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn refresh(force: bool) -> Result<Value> {

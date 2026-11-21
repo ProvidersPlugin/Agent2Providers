@@ -14,26 +14,14 @@ pub fn locale(value: &str) -> &'static str {
 pub fn methods(locale: &str) -> Value {
     let locale = self::locale(locale);
     let text = match locale {
-        "en" => ["Browser sign-in", "Open the Cline device authorization page and confirm its code. No local callback is required.", "Enter tokens", "Keep the workos: prefix. Without a refresh token, sign in again after expiry.", "Import credentials JSON", "Credentials JSON", "Paste a Cline account JSON or providers.json. Only the Cline auth section is imported; other providers are ignored."],
-        "ja" => ["ブラウザーでログイン", "Cline のデバイス認証ページでコードを確認します。本機コールバックは不要です。", "トークンを入力", "workos: 接頭辞を保持します。更新トークンがない場合は期限後に再ログインが必要です。", "認証 JSON を取り込む", "認証情報 JSON", "Cline アカウント JSON または providers.json を貼り付けます。Cline の認証部分だけを取り込みます。"],
-        "ko" => ["브라우저 로그인", "Cline 장치 인증 페이지에서 코드를 확인하세요. 로컬 콜백은 필요하지 않습니다.", "토큰 직접 입력", "workos: 접두사를 유지합니다. 갱신 토큰이 없으면 만료 후 다시 로그인해야 합니다.", "인증 JSON 가져오기", "인증 정보 JSON", "Cline 계정 JSON 또는 providers.json을 붙여넣으세요. Cline 인증 부분만 가져옵니다."],
-        "pt-BR" => ["Entrar pelo navegador", "Abra a autorização de dispositivo do Cline e confirme o código. Não exige retorno local.", "Inserir tokens", "Mantenha o prefixo workos:. Sem refresh token, entre novamente após expirar.", "Importar credenciais JSON", "Credenciais JSON", "Cole um JSON de conta Cline ou providers.json. Apenas a seção de autenticação do Cline é importada."],
-        "zh-Hant" => ["瀏覽器登入", "開啟 Cline 裝置授權頁並確認授權碼，不需要本機回呼。", "手動填寫權杖", "保留 workos: 前綴；沒有續期權杖時，到期後需重新登入。", "匯入憑證 JSON", "憑證 JSON", "貼上單一 Cline 帳號 JSON 或 providers.json，只匯入 Cline auth，不讀其他提供商。"],
-        _ => ["浏览器登录", "打开 Cline 设备授权页并确认授权码，不需要本机回调。", "手动填写令牌", "保留 workos: 前缀；没有续期令牌时，到期后需重新登录。", "导入凭证 JSON", "凭证 JSON", "粘贴单个 Cline 账号 JSON 或 providers.json，只导入 Cline auth，不读取其他提供商。"],
+        "en" => ["Browser sign-in", "Open the Cline device authorization page and confirm its code. No local callback is required.", "Enter tokens", "Keep the workos: prefix. Without a refresh token, sign in again after expiry.", "Import credentials JSON", "Credentials JSON", "Select or paste a Cline credential file to import the account."],
+        "ja" => ["ブラウザーでログイン", "Cline のデバイス認証ページでコードを確認します。本機コールバックは不要です。", "トークンを入力", "workos: 接頭辞を保持します。更新トークンがない場合は期限後に再ログインが必要です。", "認証 JSON を取り込む", "認証情報 JSON", "Cline の認証ファイルを選択または貼り付けてアカウントを取り込めます。"],
+        "ko" => ["브라우저 로그인", "Cline 장치 인증 페이지에서 코드를 확인하세요. 로컬 콜백은 필요하지 않습니다.", "토큰 직접 입력", "workos: 접두사를 유지합니다. 갱신 토큰이 없으면 만료 후 다시 로그인해야 합니다.", "인증 JSON 가져오기", "인증 정보 JSON", "Cline 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있습니다."],
+        "pt-BR" => ["Entrar pelo navegador", "Abra a autorização de dispositivo do Cline e confirme o código. Não exige retorno local.", "Inserir tokens", "Mantenha o prefixo workos:. Sem refresh token, entre novamente após expirar.", "Importar credenciais JSON", "Credenciais JSON", "Selecione ou cole um arquivo de credenciais do Cline para importar a conta."],
+        "zh-Hant" => ["瀏覽器登入", "開啟 Cline 裝置授權頁並確認授權碼，不需要本機回呼。", "手動填寫權杖", "保留 workos: 前綴；沒有續期權杖時，到期後需重新登入。", "匯入憑證 JSON", "憑證 JSON", "選擇或貼上 Cline 憑據檔案即可匯入帳號。"],
+        _ => ["浏览器登录", "打开 Cline 设备授权页并确认授权码，不需要本机回调。", "手动填写令牌", "保留 workos: 前缀；没有续期令牌时，到期后需重新登录。", "导入凭证 JSON", "凭证 JSON", "选择或粘贴 Cline 凭据文件即可导入账号。"],
     };
-    let readonly = match locale {
-        "en" => "Stores a live local reference, not a token snapshot. Local renewal and writing rotated credentials back require separate permission in plugin settings; otherwise, sign in again in the official client.",
-        "ja" => "トークンのコピーではなく本機ログインの参照を保存します。本機の更新と認証情報の書き戻しにはプラグイン設定で別途許可が必要です。許可しない場合は公式クライアントで再ログインしてください。",
-        "ko" => "토큰 사본이 아닌 로컬 로그인 참조를 저장합니다. 로컬 갱신과 새 인증 정보 저장은 플러그인 설정에서 별도로 허용해야 합니다. 허용하지 않으면 공식 클라이언트에 다시 로그인하세요.",
-        "pt-BR" => "Salva uma referência ao login local, não uma cópia dos tokens. Renovar e gravar credenciais atualizadas exige permissão separada no plugin; sem ela, entre novamente no cliente oficial.",
-        "zh-Hant" => "保存本機即時引用，不保存令牌快照。本機續期及寫回新憑據需在插件設定中另外授權；未授權時請在官方用戶端重新登入。",
-        _ => "保存本机实时引用，不保存令牌快照。本机续期及写回新凭据需在插件设置中另外授权；未授权时请在官方客户端重新登录。",
-    };
-    let mut desktop = agent2api_wasm_sdk::login::desktop_method(3, "Cline", locale);
-    desktop["instructions"] = json!(format!(
-        "{}\n{readonly}",
-        desktop["instructions"].as_str().unwrap_or("")
-    ));
+    let desktop = agent2api_wasm_sdk::login::desktop_method(3, "Cline", locale);
     let methods = vec![
         json!({ "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [], "browserMode": "choice", "manualCallback": false }),
         json!({ "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[3], "prompts": [

@@ -256,20 +256,25 @@ pub fn confirm(expected: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let margin = endpoints::REFRESH_MARGIN.max(min_lead_ms.max(0));
     account::expiry(secret)
-        .is_some_and(|at| at.saturating_sub(endpoints::REFRESH_MARGIN) <= sdk::now())
+        .is_some_and(|at| at.saturating_sub(margin) <= sdk::now())
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn renewable(secret: &Value) -> bool {
     !account::text(secret, &["refreshToken", "refresh_token"]).is_empty()
 }
 
-pub fn due() -> Result<bool> {
+pub fn due(min_lead_ms: i64) -> Result<bool> {
     let snapshot = read()?;
     if account::local(&snapshot.record["secret"]) {
         let status = sdk::desktop_refresh::status(crate::PROVIDER_ID)?;
-        return Ok(status["authorized"] == true && status["refreshable"] == true && expiring(&snapshot.secret));
+        return Ok(status["authorized"] == true && status["refreshable"] == true && expiring_within(&snapshot.secret, min_lead_ms));
     }
     if !renewable(&snapshot.secret) { return Ok(false); }
     let control = sdk::state::get(Scope::Account, CONTROL, 1)?;
@@ -279,7 +284,7 @@ pub fn due() -> Result<bool> {
     if control.value["stamp"] == refresh_stamp(&snapshot) {
         return Ok(false);
     }
-    Ok(expiring(&snapshot.secret))
+    Ok(expiring_within(&snapshot.secret, min_lead_ms))
 }
 
 fn completion_stamp(current: &Snapshot, secret: &Value, overlay_revision: u64) -> String {

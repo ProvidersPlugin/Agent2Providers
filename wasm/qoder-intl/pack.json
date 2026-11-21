@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-qoder-intl",
   "name": "Qoder 国际版",
-  "description": "独立 Qoder 国际版，包含设备授权、PAT 与 JSON 导入、续期、静态及在线目录、COSY 对话、额度、每日签到和活动；设备标识读取与官方 UMID 验证组件需独立授权，不绕过资格或设备限领，未经真实账号验收。",
+  "description": "独立的 Qoder 国际版提供商，支持网页设备授权、PAT 与凭据导入、自动续期、模型目录、流式对话、额度查询、每日签到和活动领取。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

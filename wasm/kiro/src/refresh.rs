@@ -297,17 +297,18 @@ pub fn after_rejection(rejected: &Credentials) -> Result<Session> {
 pub fn force() -> Result<Session> {
     after_rejection(&read()?.credentials)
 }
-pub fn expiring() -> Result<bool> {
+pub fn expiring(min_lead_ms: i64) -> Result<bool> {
     // 本机续期只在独立授权有效且来源仍一致时参与后台维护。
+    let lead = endpoints::LEAD.max(min_lead_ms.max(0));
     let account = sdk::account()?;
     let credentials = Credentials::parse(&account["secret"])?;
     if credentials.local() {
         let current = read()?;
         let status = sdk::native_call("desktop.refresh.kiro.v1", "status", json!({}))?;
         return Ok(status["authorized"] == true && status["refreshable"] == true
-            && !current.credentials.fresh(util::now()?, endpoints::LEAD));
+            && !current.credentials.fresh(util::now()?, lead));
     }
     Ok(credentials.refreshable()
         && sdk::refresh_guard::available("credential-refresh", &credentials.refresh)?
-        && !credentials.fresh(util::now()?, endpoints::LEAD))
+        && !credentials.fresh(util::now()?, lead))
 }

@@ -101,8 +101,11 @@ pub fn forward(mut params: Value) -> Result<Value> {
     }
     let bytes = serde_json::to_vec(&body).map_err(|_| errors::invalid("CodeArts 请求无法编码"))?;
     drop(body);
-    if bytes.len() > 8 * 1024 * 1024 {
-        return Err(errors::invalid("CodeArts 请求超过 8 MiB"));
+    if bytes.len() > 10 * 1024 * 1024 {
+        let size_mib = ((bytes.len() as f64 / (1024.0 * 1024.0)) * 10.0).ceil() / 10.0;
+        return Err(errors::invalid(&format!(
+            "CodeArts 请求约 {size_mib:.1} MiB，超过上游 10 MiB 上限；请压缩上下文或新建会话后重试"
+        )));
     }
     account.unchanged()?;
     let session = sdk::host("codearts.session.open", json!({}))?;

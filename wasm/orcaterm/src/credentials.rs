@@ -16,9 +16,19 @@ pub struct Credentials {
 }
 
 impl Credentials {
-    pub fn is_expiring(&self) -> bool {
+    pub fn is_expiring_within(&self, min_lead_ms: i64) -> bool {
+        let min_seconds = if min_lead_ms > 0 {
+            min_lead_ms.saturating_add(999) / 1000
+        } else {
+            0
+        };
+        let window = EXPIRY_WINDOW_SECONDS.max(min_seconds);
         self.expires_at > 0
-            && self.expires_at.saturating_sub(sdk::now() / 1000) < EXPIRY_WINDOW_SECONDS
+            && self.expires_at.saturating_sub(sdk::now() / 1000) < window
+    }
+
+    pub fn is_expiring(&self) -> bool {
+        self.is_expiring_within(0)
     }
 
     pub fn identity_tail(&self) -> String {

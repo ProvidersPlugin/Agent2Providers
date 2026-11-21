@@ -90,7 +90,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
                 .cloned()
                 .map(Ok)
                 .unwrap_or_else(|| account::current().map(|current| current.secret))?;
-            Ok(json!(token::expiring(&secret)))
+            Ok(json!(token::expiring_within(&secret, sdk::expiring_lead(&params, 0))))
         }
         "models.list" => models::list(&params),
         "models.refresh" => models::refresh(),

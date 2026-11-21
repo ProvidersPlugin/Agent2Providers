@@ -4,17 +4,22 @@ use crate::{account, credentials, desktop, endpoints, errors, network, util};
 
 const BEFORE: i64 = 48 * 60 * 60 * 1000;
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
     if secret["source"] == "desktop" {
         // 只读本机关联不消费客户端的续期材料；到实际过期才提示客户端重登。
         return secret["expiresAt"]
             .as_i64()
             .is_some_and(|at| at <= sdk::now());
     }
+    let lead = BEFORE.max(min_lead_ms.max(0));
     let expires = account::access(secret)
         .ok()
         .and_then(|token| credentials::expires(&token));
-    expires.is_some_and(|at| at.saturating_sub(sdk::now()) <= BEFORE)
+    expires.is_some_and(|at| at.saturating_sub(sdk::now()) <= lead)
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn ensure(force: bool) -> Result<String> {

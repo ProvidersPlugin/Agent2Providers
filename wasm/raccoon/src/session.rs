@@ -154,9 +154,9 @@ fn renew(current: Session) -> Result<Session> {
     Err(Error::http(409, "小浣熊续期结果未能落盘，请重新登录该账号"))
 }
 
-pub fn expiring() -> Result<bool> {
+pub fn expiring(min_lead_ms: i64) -> Result<bool> {
     let session = snapshot()?;
-    if !session.credential.can_refresh() || !session.credential.expiring() {
+    if !session.credential.can_refresh() || !session.credential.expiring_within(min_lead_ms) {
         return Ok(false);
     }
     if session.source.is_some() {

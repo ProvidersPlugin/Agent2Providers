@@ -53,7 +53,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         )?))),
         "token.ensure" => refresh::ensure().map(|token| json!(token)),
         "token.refresh" => refresh::force().map(|token| json!(token)),
-        "token.expiring" => refresh::due().map(|due| json!(due)),
+        "token.expiring" => refresh::due(sdk::expiring_lead(&params, 0)).map(|due| json!(due)),
         "models.list" => models::cached(),
         "models.refresh" => models::refresh(&params),
         "usage.query" => usage::query(),

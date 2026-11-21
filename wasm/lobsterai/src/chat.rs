@@ -3,6 +3,7 @@
 
 use super::{account, errors, models, reasoning, upstream, version};
 use agent2api_wasm_sdk::{self as sdk, http, json, Error, Result, Value};
+use base64::{engine::general_purpose::STANDARD, Engine};
 
 #[derive(Default)]
 struct Output {
@@ -312,14 +313,141 @@ fn body(mut params: Value) -> Result<Value> {
     Ok(body)
 }
 
+fn incoming_header(headers: &Value, name: &str) -> Option<String> {
+    let value = headers
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))?
+        .1
+        .as_str()?
+        .trim();
+    (!value.is_empty()
+        && value.len() <= 256
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_string())
+}
+
+fn parse_traceparent(raw: &str) -> Option<(String, String)> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let parts: Vec<&str> = normalized.split('-').collect();
+    let valid_hex = |part: &str, len: usize| {
+        part.len() == len
+            && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && part.bytes().any(|byte| byte != b'0')
+    };
+    if parts.len() == 4
+        && parts[0] == "00"
+        && valid_hex(parts[1], 32)
+        && valid_hex(parts[2], 16)
+        && parts[3].len() == 2
+        && parts[3].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        let trace_id = parts[1].to_string();
+        let span_id = parts[2];
+        Some((trace_id.clone(), format!("00-{trace_id}-{span_id}-01")))
+    } else {
+        None
+    }
+}
+
+fn trace_context(client_headers: &Value) -> Result<(String, String)> {
+    if let Some((trace_id, traceparent)) =
+        incoming_header(client_headers, "traceparent").and_then(|raw| parse_traceparent(&raw))
+    {
+        return Ok((trace_id, traceparent));
+    }
+    let raw = sdk::host("random.bytes", json!({ "length": 24 }))?;
+    let mut bytes = STANDARD
+        .decode(raw.as_str().unwrap_or(""))
+        .map_err(|_| Error::new("安全随机数回应无效"))?;
+    if bytes.len() != 24 {
+        return Err(Error::new("安全随机数长度无效"));
+    }
+    if bytes[..16].iter().all(|byte| *byte == 0) {
+        bytes[0] = 1;
+    }
+    if bytes[16..].iter().all(|byte| *byte == 0) {
+        bytes[16] = 1;
+    }
+    let trace_id: String = bytes[..16].iter().map(|byte| format!("{byte:02x}")).collect();
+    let span_id: String = bytes[16..].iter().map(|byte| format!("{byte:02x}")).collect();
+    let traceparent = format!("00-{trace_id}-{span_id}-01");
+    Ok((trace_id, traceparent))
+}
+
+fn content_text(content: Option<&Value>) -> Option<String> {
+    match content? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let mut joined = String::new();
+            for part in parts {
+                let piece = match part {
+                    Value::String(text) => Some(text.as_str()),
+                    Value::Object(entry) => entry.get("text").and_then(Value::as_str),
+                    _ => None,
+                };
+                if let Some(piece) = piece {
+                    joined.push_str(piece);
+                }
+            }
+            (!joined.is_empty()).then_some(joined)
+        }
+        _ => None,
+    }
+}
+
+fn user_messages(payload: &Value) -> Vec<String> {
+    payload["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| {
+            message["role"]
+                .as_str()
+                .is_some_and(|role| role.eq_ignore_ascii_case("user"))
+        })
+        .filter_map(|message| content_text(message.get("content")))
+        .filter(|text| !text.trim().is_empty())
+        .collect()
+}
+
 pub fn forward(params: Value) -> Result<()> {
     let account = account::prepared()?;
+    let client_headers = params.get("headers").cloned().unwrap_or(Value::Null);
     let payload = body(params)?;
+    let (trace_id, traceparent) = trace_context(&client_headers)?;
+    let client_version = version::resolve();
     account::validate_current(&account)?;
     let token = account::access(&account["secret"])?;
-    let mut headers = upstream::headers(Some(&token), Some(&version::resolve()));
+    let mut headers = upstream::headers(Some(&token), Some(&client_version), true);
+    headers["content-type"] = json!(incoming_header(&client_headers, "content-type")
+        .unwrap_or_else(|| "application/json".to_string()));
+    headers["accept"] = json!(incoming_header(&client_headers, "accept")
+        .unwrap_or_else(|| "text/event-stream, application/json".to_string()));
+    let messages = user_messages(&payload);
+    let account_key = account["id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .or_else(|| account["identity"].as_str().map(str::trim))
+        .unwrap_or("");
+    let first_user = messages.first().map(String::as_str).unwrap_or("").trim();
+    let session_id: String = account::fingerprint(&format!("{account_key}\x1f{first_user}"))
+        .chars()
+        .take(32)
+        .collect();
+    headers["traceparent"] = json!(traceparent);
+    headers["x-lobster-session-id"] = json!(session_id);
+    headers["x-lobster-turn-id"] = json!(trace_id);
+    if let Some(last_user) = messages.last() {
+        let truncated: String = last_user.trim().chars().take(200).collect();
+        let encoded = upstream::query(&truncated);
+        if !encoded.is_empty() {
+            headers["x-lobster-user-message"] = json!(encoded);
+        }
+    }
     account::validate_current(&account)?;
-    headers["accept"] = json!("text/event-stream, application/json");
     let response = http::open(
         "POST",
         &format!("{}/api/proxy/v1/chat/completions", upstream::API),

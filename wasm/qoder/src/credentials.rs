@@ -84,9 +84,13 @@ impl Credentials {
         if self.pat().is_some() { "" } else { self.refresh.split('|').next().unwrap_or("") }
     }
     pub fn can_refresh(&self) -> bool { self.pat().is_some() || !self.oauth_refresh().is_empty() }
-    pub fn expiring(&self) -> Result<bool> {
+    pub fn expiring_within(&self, min_lead_ms: i64) -> Result<bool> {
         let now = util::now()?;
-        Ok(self.can_refresh() && self.expires.is_some_and(|expires| expires <= now.saturating_add(endpoints::REFRESH_MARGIN)))
+        let margin = endpoints::REFRESH_MARGIN.max(min_lead_ms.max(0));
+        Ok(self.can_refresh() && self.expires.is_some_and(|expires| expires <= now.saturating_add(margin)))
+    }
+    pub fn expiring(&self) -> Result<bool> {
+        self.expiring_within(0)
     }
     pub fn validate_public(&self) -> Result<()> {
         if self.name.chars().count() > 100 || self.email.chars().count() > 320

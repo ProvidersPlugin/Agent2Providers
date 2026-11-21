@@ -1,7 +1,7 @@
 //! 使用 profile-summary 的总积分及积分包；/user/quota 不含活动奖励，不能替代。
 //! 缺失读数不补零。仅输出白名单计量字段，原始 payload 不透传到管理界面。
 
-use super::{account, upstream};
+use super::{account, upstream, version};
 use agent2api_wasm_sdk::{json, Result, Value};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone};
 
@@ -128,7 +128,19 @@ pub fn sources(report: &Value) -> Value {
 pub fn query() -> Result<Value> {
     let account = account::prepared()?;
     let token = account::access(&account["secret"])?;
-    let payload = upstream::get("/api/user/profile-summary", &token, "积分查询")?;
+    let version = version::resolve();
+    account::validate_current(&account)?;
+    let query = account::keyfrom_fields(&account["secret"], &version)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", upstream::query(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let payload = upstream::get(
+        &format!("/api/user/profile-summary?{query}"),
+        &token,
+        &version,
+        "积分查询",
+    )?;
     account::validate_current(&account)?;
     Ok(shape(&payload))
 }

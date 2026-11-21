@@ -127,7 +127,7 @@ pub fn generate(params: &Value, edit: bool) -> Result<Value> {
         }
     })?;
     let reply = network::read(response, 8 * 1024 * 1024)
-        .map_err(|_| errors::image_uncertain("无法读取有效响应"))?;
+        .map_err(|error| errors::image_uncertain(&error.message))?;
     if errors::failed(reply.status, &reply.value) {
         return Err(errors::upstream(
             reply.status,

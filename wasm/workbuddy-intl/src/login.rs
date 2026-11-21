@@ -46,17 +46,17 @@ pub fn methods(locale: &str) -> Value {
         ],
         _ => ["网页登录", "导入国际登录态JSON", "登录态JSON"],
     };
-    let instructions = match locale {
-        "en" => "Complete authorization on the official international site. The gateway polls automatically; no callback code is required. JSON import accepts the official international .info file, not China-region credentials.",
-        "zh-Hant" => "請在官方國際站完成授權，閘道會自動輪詢，無需填入回呼碼。JSON 匯入接受官方國際版 .info 登入檔案，不接受國內版憑據。",
-        "ja" => "公式の国際サイトで認証を完了してください。ゲートウェイが自動確認するため、コールバックコードは不要です。JSON 取り込みは国際版の公式 .info ファイルを使用し、中国版の認証情報は使えません。",
-        "ko" => "공식 국제 사이트에서 인증을 완료하세요. 게이트웨이가 자동 확인하므로 콜백 코드가 필요하지 않습니다. JSON 가져오기는 국제판 공식 .info 파일만 사용하며 중국판 인증 정보는 사용할 수 없습니다.",
-        "pt-BR" => "Conclua a autorização no site internacional oficial. O gateway consulta o resultado automaticamente, sem código de retorno. A importação JSON aceita o arquivo .info internacional oficial, não credenciais da região China.",
-        _ => "请在官方国际站完成授权，网关会自动轮询，无需回填授权码。JSON 导入接受官方国际版 .info 登录文件，不接受国内版凭据。",
+    let (browser_hint, file_hint) = match locale {
+        "en" => ("Complete authorization on the official international site; the account will be added automatically.", "Select or paste a WorkBuddy International credential file (such as .info) to import the account."),
+        "zh-Hant" => ("在官方國際站完成授權即可自動新增帳號，無需貼上回呼碼。", "選擇或貼上 WorkBuddy 國際版憑據檔案（如 .info）即可匯入帳號。"),
+        "ja" => ("公式の国際サイトで認証を完了すると自動でアカウントが追加されます。", "WorkBuddy 国際版の認証ファイル（.info など）を選択または貼り付けてアカウントを取り込めます。"),
+        "ko" => ("공식 국제 사이트에서 인증을 완료하면 계정이 자동으로 추가됩니다.", "WorkBuddy 국제판 인증 파일(.info 등)을 선택하거나 붙여넣어 계정을 가져올 수 있습니다."),
+        "pt-BR" => ("Conclua a autorização no site internacional oficial para adicionar a conta automaticamente.", "Selecione ou cole um arquivo de credenciais do WorkBuddy International (como .info) para importar a conta."),
+        _ => ("在官方国际站完成授权即可自动添加账号，无需回填授权码。", "选择或粘贴 WorkBuddy 国际版凭据文件（如 .info）即可导入账号。"),
     };
-    json!({ "instructions": instructions, "methods": [
-        { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false },
-        { "methodIndex": 1, "type": "api", "label": labels[1], "prompts": [{ "key": "credentialJson", "type": "text", "secret": true, "label": labels[2] }] },
+    json!({ "methods": [
+        { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false, "instructions": browser_hint },
+        { "methodIndex": 1, "type": "api", "label": labels[1], "instructions": file_hint, "prompts": [{ "key": "credentialJson", "type": "text", "secret": true, "label": labels[2] }] },
         sdk::login::desktop_method(2, "WorkBuddy International", locale),
         sdk::legacy_credentials::method(3, locale)
     ] })

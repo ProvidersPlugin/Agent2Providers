@@ -39,8 +39,8 @@ pub fn object(text: &str) -> Result<Value> {
     if text.len() > 128 * 1024 {
         return Err(errors::invalid("CodeArts 凭据文本超过 128 KiB"));
     }
-    let value: Value = serde_json::from_str(text.trim())
-        .map_err(|_| errors::invalid("请粘贴完整的单账号凭据 JSON，不接受文件路径或单独的令牌"))?;
+    let value: Value = serde_json::from_str(text.trim().trim_start_matches('\u{feff}').trim())
+        .map_err(|_| errors::invalid("请导入或粘贴完整的单账号凭据 JSON，不接受文件路径或单独的令牌"))?;
     if !value.is_object() {
         return Err(errors::invalid("CodeArts 凭据必须是单个 JSON 对象"));
     }

@@ -67,7 +67,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "token.expiring" => Ok(json!(credentials::Credentials::parse(
             &sdk::account()?["secret"]
         )?
-        .expiring(util::now()?))),
+        .expiring_within(util::now()?, sdk::expiring_lead(&params, 0)))),
         "models.list" => catalog::list(&params),
         "models.refresh" => catalog::refresh(&params),
         "login.start" => login::start(&params),

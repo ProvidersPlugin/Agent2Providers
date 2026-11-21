@@ -5,31 +5,19 @@ use crate::{account, endpoints};
 
 fn captions(locale: &str) -> [&'static str; 8] {
     match locale {
-        "en" => ["Paste DuMate cookies", "Paste the complete Cookie header from one signed-in DuMate account. Model access tokens can be renewed, but an expired Baidu web session requires signing in again.", "Import one credential JSON", "Accepts a cookie-editor export or one account's JSON containing cookie/cookies. An entire account pool or binary database is not imported.", "Sign in to DuMate", "Complete the official QR or phone-code sign-in in the desktop app's private window. Only that window's cookies are read and the account is verified before saving. Web/mobile panels can paste cookies instead.", "Note", "Credential JSON"],
-        "ja" => ["DuMate Cookie を貼り付け", "ログイン済みの単一 DuMate アカウントの完全な Cookie ヘッダーを貼り付けます。モデル用トークンは更新できますが、百度の Web セッションが切れた場合は再ログインが必要です。", "単一アカウントの認証 JSON", "Cookie エディターの出力または cookie/cookies を含む単一アカウント JSON に対応します。アカウントプールやバイナリ DB は取り込みません。", "DuMate にログイン", "デスクトップアプリの専用公式画面で QR または SMS ログインを完了します。その画面の Cookie のみ読み、保存前にアカウントを確認します。Web・モバイルでは Cookie を貼り付けてください。", "メモ", "認証 JSON"],
-        "ko" => ["DuMate 쿠키 붙여넣기", "로그인된 DuMate 계정 하나의 전체 Cookie 헤더를 붙여 넣으세요. 모델 토큰은 갱신할 수 있지만 Baidu 웹 세션이 만료되면 다시 로그인해야 합니다.", "계정 하나의 인증 JSON", "쿠키 편집기 내보내기나 cookie/cookies를 포함한 단일 계정 JSON을 지원합니다. 계정 풀이나 이진 DB는 가져오지 않습니다.", "DuMate 로그인", "데스크톱 앱의 공식 전용 창에서 QR 또는 문자 코드 로그인을 완료하세요. 이 창의 쿠키만 읽고 저장 전 계정을 확인합니다. 웹·모바일에서는 쿠키를 붙여 넣으세요.", "메모", "인증 JSON"],
-        "pt-BR" => ["Colar cookies do DuMate", "Cole o cabeçalho Cookie completo de uma única conta DuMate conectada. Tokens do modelo podem ser renovados, mas uma sessão web Baidu expirada exige novo login.", "Importar JSON de uma conta", "Aceita exportação do editor de cookies ou JSON de uma conta com cookie/cookies. Não importa o conjunto de contas nem bancos binários.", "Entrar no DuMate", "Conclua o login oficial por QR ou SMS na janela privada do aplicativo desktop. Só os cookies dessa janela são lidos e a conta é verificada antes de salvar. No painel web/celular, cole cookies.", "Nota", "JSON de credenciais"],
-        "zh-Hant" => ["貼上百度搭子 Cookie", "貼上單一百度搭子帳號的完整 Cookie。模型令牌可自動換發，百度網頁登入態過期後仍需重新登入。", "匯入單帳號憑據 JSON", "接受 Cookie 編輯器匯出，或包含 cookie/cookies 的單帳號 JSON；不匯入整個帳號池或二進位資料庫。", "百度搭子網頁登入", "請在桌面應用的獨立官方視窗完成掃碼或手機驗證碼登入；只讀取本次視窗的 Cookie，儲存前核對帳號。網頁及手機面板可貼上 Cookie。", "備註名", "憑據 JSON"],
-        _ => ["粘贴百度搭子 Cookie", "粘贴单个百度搭子账号的完整 Cookie。模型令牌可自动换发，百度网页登录态过期后仍需重新登录。", "导入单账号凭据 JSON", "接受 Cookie 编辑器导出，或包含 cookie/cookies 的单账号 JSON；不导入整个账号池或二进制数据库。", "百度搭子网页登录", "请在桌面应用的独立官方窗口完成扫码或手机验证码登录；只读取本次窗口的 Cookie，保存前核对账号。网页和手机面板可粘贴 Cookie。", "备注名", "凭据 JSON"],
+        "en" => ["Paste DuMate cookies", "Paste the Cookie header from a signed-in DuMate account.", "Import one credential JSON", "Select or paste a DuMate credential file to import the account.", "Sign in to DuMate", "Complete QR or SMS sign-in in the desktop window to add the account automatically; web and mobile panels can paste cookies.", "Note", "Credential JSON"],
+        "ja" => ["DuMate Cookie を貼り付け", "ログイン済みの DuMate アカウントの Cookie を貼り付けてください。", "単一アカウントの認証 JSON", "DuMate の認証ファイルを選択または貼り付けてアカウントを取り込めます。", "DuMate にログイン", "デスクトップの画面で QR または SMS ログインを完了するとアカウントを追加できます。Web・モバイルでは Cookie を貼り付けてください。", "メモ", "認証 JSON"],
+        "ko" => ["DuMate 쿠키 붙여넣기", "로그인된 DuMate 계정의 Cookie를 붙여넣으세요.", "계정 하나의 인증 JSON", "DuMate 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있습니다.", "DuMate 로그인", "데스크톱 창에서 QR 또는 문자 코드 로그인을 완료하면 계정이 추가됩니다. 웹·모바일에서는 Cookie를 붙여넣으세요.", "메모", "인증 JSON"],
+        "pt-BR" => ["Colar cookies do DuMate", "Cole o Cookie de uma conta DuMate conectada.", "Importar JSON de uma conta", "Selecione ou cole um arquivo de credenciais do DuMate para importar a conta.", "Entrar no DuMate", "Conclua o login por QR ou SMS na janela do aplicativo desktop para adicionar a conta; no painel web/celular, cole os cookies.", "Nota", "JSON de credenciais"],
+        "zh-Hant" => ["貼上百度搭子 Cookie", "貼上已登入百度搭子帳號的 Cookie 即可新增帳號。", "匯入單帳號憑據 JSON", "選擇或貼上百度搭子憑據檔案即可匯入帳號。", "百度搭子網頁登入", "在桌面視窗完成掃碼或手機驗證碼登入即可新增帳號；網頁及手機面板可貼上 Cookie。", "備註名", "憑據 JSON"],
+        _ => ["粘贴百度搭子 Cookie", "粘贴已登录百度搭子账号的 Cookie 即可添加账号。", "导入单账号凭据 JSON", "选择或粘贴百度搭子凭据文件即可导入账号。", "百度搭子网页登录", "在桌面窗口完成扫码或手机验证码登录即可添加账号；网页和手机面板可粘贴 Cookie。", "备注名", "凭据 JSON"],
     }
 }
 
 pub fn methods(locale: &str) -> Value {
     let [cookie, cookie_hint, file, file_hint, browser, browser_hint, note, credential] =
         captions(locale);
-    let mut desktop = sdk::login::desktop_method(3, "百度搭子 DuMate", locale);
-    let snapshot = match locale {
-        "en" => "Saves a one-time snapshot of the active personal account, not a live client link; enterprise/custom servers are not imported.",
-        "ja" => "現在の個人アカウントのスナップショットを保存します。継続連携や企業・独自サーバーの取り込みは行いません。",
-        "ko" => "현재 개인 계정의 일회성 스냅샷을 저장합니다. 실시간 연결이나 기업·사용자 지정 서버 가져오기는 지원하지 않습니다.",
-        "pt-BR" => "Salva uma cópia única da conta pessoal ativa, não um vínculo em tempo real; servidores empresariais/personalizados não são importados.",
-        "zh-Hant" => "只保存目前個人帳號的一次性快照，不持續連結官方用戶端；不匯入企業或自訂伺服器。",
-        _ => "只保存当前个人账号的一次性快照，不持续关联官方客户端；不导入企业或自定义服务器。",
-    };
-    desktop["instructions"] = json!(format!(
-        "{}\n{snapshot}",
-        desktop["instructions"].as_str().unwrap_or("")
-    ));
+    let desktop = sdk::login::desktop_method(3, "百度搭子 DuMate", locale);
     json!({"loginUrl":endpoints::LOGIN,"methods":[
         {"methodIndex":0,"type":"api","label":cookie,"instructions":cookie_hint,"prompts":[
             {"key":"cookie","type":"text","label":"Cookie","secret":true,"placeholder":"BDUSS=…; STOKEN=…; bce-long-term-sessionid=…"},

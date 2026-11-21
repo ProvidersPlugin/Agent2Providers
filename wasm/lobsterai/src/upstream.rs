@@ -1,23 +1,44 @@
 //! 地址来自旧 LobsterAI 实现。所有请求交给宿主，既不读环境变量，也不另建出网通道。
 
-use super::errors;
+use super::{errors, version};
 use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 
 pub const API: &str = "https://lobsterai-server.youdao.com";
 pub const PORTAL: &str = "https://lobsterai.youdao.com";
 pub const VERSION_URL: &str =
     "https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update";
-pub const USER_AGENT: &str = "LobsterAI/0.1.0";
-pub const CAPABILITIES: &str = "kimi-k3-agentic-v1,thinking-level-control-v1";
+pub const OFFICIAL_KEYFROM: &str = "official";
+pub const ELECTRON_VERSION: &str = "43.5.0";
+pub const CHROMIUM_VERSION: &str = "150.0.0.0";
+pub const PLATFORM_TOKEN: &str = "Windows NT 10.0; Win64; x64";
+pub const CAPABILITIES: &str =
+    "virtual-models-v1,kimi-k3-agentic-v1,thinking-level-control-v1,upstream-error-details-v1";
 
-pub fn headers(token: Option<&str>, version: Option<&str>) -> Value {
-    let mut headers = json!({ "accept": "application/json", "content-type": "application/json", "user-agent": USER_AGENT });
+pub fn user_agent(client_version: Option<&str>) -> String {
+    let resolved = client_version
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(version::FALLBACK);
+    format!(
+        "Mozilla/5.0 ({PLATFORM_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) \
+         LobsterAI/{resolved} Chrome/{CHROMIUM_VERSION} Electron/{ELECTRON_VERSION} Safari/537.36"
+    )
+}
+
+pub fn headers(token: Option<&str>, client_version: Option<&str>, include_capabilities: bool) -> Value {
+    let mut headers = json!({
+        "accept": "application/json",
+        "content-type": "application/json",
+        "user-agent": user_agent(client_version)
+    });
     if let Some(token) = token {
         headers["authorization"] = json!(format!("Bearer {token}"));
     }
-    if let Some(version) = version {
-        headers["x-lobsterai-client-capabilities"] = json!(CAPABILITIES);
-        headers["x-lobsterai-client-version"] = json!(version);
+    if include_capabilities {
+        if let Some(version) = client_version.map(str::trim).filter(|text| !text.is_empty()) {
+            headers["x-lobsterai-client-capabilities"] = json!(CAPABILITIES);
+            headers["x-lobsterai-client-version"] = json!(version);
+        }
     }
     headers
 }
@@ -51,12 +72,13 @@ pub fn request(
     path: &str,
     token: Option<&str>,
     version: Option<&str>,
+    include_capabilities: bool,
     body: Option<&Value>,
 ) -> Result<Value> {
     let response = http::open_timeout(
         method,
         &format!("{API}{path}"),
-        headers(token, version),
+        headers(token, version, include_capabilities),
         body,
         30_000,
     )
@@ -64,8 +86,8 @@ pub fn request(
     read_json(response)
 }
 
-pub fn anonymous(path: &str, body: &Value) -> Result<Value> {
-    request("POST", path, None, None, Some(body))
+pub fn anonymous(path: &str, body: &Value, version: &str) -> Result<Value> {
+    request("POST", path, None, Some(version), false, Some(body))
 }
 
 pub fn envelope(value: &Value, operation: &str) -> Result<Value> {
@@ -88,13 +110,16 @@ pub fn envelope(value: &Value, operation: &str) -> Result<Value> {
         .ok_or_else(|| errors::session("LobsterAI 登录状态已失效，请重新登录"))
 }
 
-pub fn get(path: &str, token: &str, operation: &str) -> Result<Value> {
-    envelope(&request("GET", path, Some(token), None, None)?, operation)
+pub fn get(path: &str, token: &str, version: &str, operation: &str) -> Result<Value> {
+    envelope(
+        &request("GET", path, Some(token), Some(version), false, None)?,
+        operation,
+    )
 }
 
-pub fn post(path: &str, token: &str, body: &Value, operation: &str) -> Result<Value> {
+pub fn post(path: &str, token: &str, version: &str, body: &Value, operation: &str) -> Result<Value> {
     envelope(
-        &request("POST", path, Some(token), None, Some(body))?,
+        &request("POST", path, Some(token), Some(version), false, Some(body))?,
         operation,
     )
 }

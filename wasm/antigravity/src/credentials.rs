@@ -53,9 +53,13 @@ pub fn expiry(value: &Value) -> Option<i64> {
         .find_map(|key| util::integer(&value[*key]))
         .filter(|at| *at > 0)
 }
-pub fn needs_refresh(secret: &Value, now: i64) -> bool {
+pub fn needs_refresh_within(secret: &Value, now: i64, min_lead_ms: i64) -> bool {
+    let lead = 900_000_i64.max(min_lead_ms.max(0));
     util::text(secret, &["accessToken"]).is_empty()
-        || expiry(secret).is_some_and(|at| at.saturating_sub(900_000) <= now)
+        || expiry(secret).is_some_and(|at| at.saturating_sub(lead) <= now)
+}
+pub fn needs_refresh(secret: &Value, now: i64) -> bool {
+    needs_refresh_within(secret, now, 0)
 }
 pub fn token(secret: &Value) -> Result<String> {
     let token = util::header(&util::text(secret, &["accessToken"]), 16_384)?;

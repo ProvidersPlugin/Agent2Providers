@@ -77,7 +77,8 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             }
             let (record, credential) = account::snapshot()?;
             Ok(json!(
-                credentials::can_refresh(&record["secret"]) && credential.expiring()
+                credentials::can_refresh(&record["secret"])
+                    && credential.expiring_within(sdk::expiring_lead(&params, 0))
             ))
         }
         "login.start" => login::start(&params),

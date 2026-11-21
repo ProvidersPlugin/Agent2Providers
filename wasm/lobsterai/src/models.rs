@@ -69,7 +69,11 @@ fn model(item: &Value) -> Option<Value> {
         return None;
     }
     let id = item["modelId"].as_str()?.trim();
-    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
+    if id.is_empty()
+        || id.len() > 512
+        || id.chars().any(char::is_control)
+        || matches!(id.to_ascii_lowercase().as_str(), "yd-fast" | "yd-ultra")
+    {
         return None;
     }
     let name = item["modelName"]
@@ -134,6 +138,7 @@ pub fn fetch() -> Result<Value> {
         &format!("/api/models/available?{query}"),
         Some(&token),
         Some(&version),
+        true,
         None,
     )?;
     let data = upstream::envelope(&value, "模型目录")?;

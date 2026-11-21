@@ -79,7 +79,7 @@ pub fn read(response: http::Response, limit: usize) -> Result<Reply> {
             } else {
                 502
             },
-            "小浣熊未返回有效JSON",
+            format!("小浣熊未返回有效JSON（HTTP {status}）"),
         )
     })?;
     Ok(Reply { status, value })

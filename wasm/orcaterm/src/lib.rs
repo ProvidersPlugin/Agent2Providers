@@ -63,7 +63,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "token.ensure" => Ok(json!(account::ensure()?.access_token)),
         "token.refresh" => Ok(json!(account::refresh()?.access_token)),
         "token.expiring" => Ok(json!(account::snapshot()
-            .map(|value| value.is_expiring())
+            .map(|value| value.is_expiring_within(sdk::expiring_lead(&params, 0)))
             .unwrap_or(false))),
         "models.list" => models::snapshot(),
         "models.refresh" => models::refresh(params["force"] == true),

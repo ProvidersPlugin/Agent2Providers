@@ -1,6 +1,6 @@
 use agent2api_wasm_sdk::{json, Error, Value};
 
-pub const SUMMARY:&str="MonkeyCode 国际版已接通独立账号校验、目录、钱包、流水和订阅、受控远程对话与客户端工具桥、网页登录和每日签到；只访问国际站，发送对话仅授权本次固定任务，无需额外权限设置，未执行真实账号验收。";
+pub const SUMMARY:&str="MonkeyCode 国际版已接通独立账号校验、目录、钱包、流水和订阅、受控远程对话与客户端工具桥、网页登录和每日签到。";
 pub fn web_login() -> Error {
     Error::http(
         400,

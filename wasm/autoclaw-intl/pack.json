@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-autoclaw-intl",
   "name": "AutoClaw 国际版",
-  "description": "独立 AutoClaw 国际版，包含 Google / Zai 官方授权、凭据导入与续期、实时模型目录、对话、订阅、积分和签到。本机引用经独立授权后续期并安全写回，另有显式旧环境凭据导入入口，未经真实账号验收。",
+  "description": "独立的 AutoClaw 国际版提供商，支持 Google / Zai 网页登录、凭据导入与自动续期、本机登录态导入、实时模型目录、对话、积分查询和每日签到。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

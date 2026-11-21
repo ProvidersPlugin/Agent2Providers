@@ -270,18 +270,18 @@ pub fn ensure() -> Result<String> {
 
 pub fn methods(locale: &str) -> Value {
     let labels = match locale {
-        "en" => ["Paste API Key", "Paste a user_ API Key from commandcode.ai/studio. Authorization header lines are accepted. The official key has no automatic renewal.",
-            "Import credentials text", "Credentials text", "Paste a raw API Key or credential JSON. Manual input does not read local files."],
-        "zh-Hant" => ["貼上 API Key", "從 commandcode.ai/studio 複製 user_ 開頭的 API Key；也接受完整 Authorization 標頭。官方密鑰不需要自動續期。",
-            "匯入憑證文字", "憑證文字", "貼上純 API Key 或憑證 JSON；手動輸入不會讀取本機檔案。"],
-        "ja" => ["API Key を貼り付け", "commandcode.ai/studio の user_ で始まる API Key を貼り付けてください。Authorization ヘッダーにも対応します。公式キーの自動更新はありません。",
-            "認証情報テキストを取り込む", "認証情報テキスト", "API Key または認証情報 JSON を貼り付けてください。手動入力でローカルファイルは読み取りません。"],
-        "ko" => ["API Key 붙여넣기", "commandcode.ai/studio의 user_ API Key를 붙여넣으세요. Authorization 헤더도 지원합니다. 공식 키는 자동 갱신하지 않습니다.",
-            "인증 정보 텍스트 가져오기", "인증 정보 텍스트", "API Key 또는 인증 정보 JSON을 붙여넣으세요. 수동 입력으로 로컬 파일을 읽지 않습니다."],
-        "pt-BR" => ["Colar API Key", "Cole a API Key user_ de commandcode.ai/studio. Cabeçalhos Authorization completos também são aceitos. A chave oficial não é renovada automaticamente.",
-            "Importar texto de credenciais", "Texto de credenciais", "Cole a API Key ou o JSON de credenciais. A entrada manual não lê arquivos locais."],
-        _ => ["粘贴 API Key", "从 commandcode.ai/studio 复制 user_ 开头的 API Key；也接受完整 Authorization 请求头。官方静态密钥没有自动续期流程。",
-            "导入凭证文本", "凭证文本", "粘贴纯 API Key 或凭证 JSON；手工输入不会读取本机文件。"],
+        "en" => ["Paste API Key", "Paste a user_ API Key from commandcode.ai/studio.",
+            "Import credentials text", "Credentials text", "Select or paste a Command Code credential file or API Key to import the account."],
+        "zh-Hant" => ["貼上 API Key", "從 commandcode.ai/studio 複製 user_ 開頭的 API Key 貼上即可。",
+            "匯入憑證文字", "憑證文字", "選擇或貼上 Command Code 憑據檔案或 API Key 即可匯入帳號。"],
+        "ja" => ["API Key を貼り付け", "commandcode.ai/studio の user_ で始まる API Key を貼り付けてください。",
+            "認証情報テキストを取り込む", "認証情報テキスト", "Command Code の認証ファイルまたは API Key を選択・貼り付けてアカウントを取り込めます。"],
+        "ko" => ["API Key 붙여넣기", "commandcode.ai/studio의 user_로 시작하는 API Key를 붙여넣으세요.",
+            "인증 정보 텍스트 가져오기", "인증 정보 텍스트", "Command Code 인증 파일 또는 API Key를 선택하거나 붙여넣어 계정을 가져올 수 있습니다."],
+        "pt-BR" => ["Colar API Key", "Cole a API Key iniciada por user_ de commandcode.ai/studio.",
+            "Importar texto de credenciais", "Texto de credenciais", "Selecione ou cole um arquivo de credenciais ou API Key do Command Code para importar a conta."],
+        _ => ["粘贴 API Key", "从 commandcode.ai/studio 复制 user_ 开头的 API Key 粘贴即可。",
+            "导入凭证文本", "凭证文本", "选择或粘贴 Command Code 凭据文件或 API Key 即可导入账号。"],
     };
     let mut result = json!({ "methods": [
         { "methodIndex": 0, "type": "api", "label": labels[0], "prompts": [
@@ -292,20 +292,7 @@ pub fn methods(locale: &str) -> Value {
         ], "instructions": labels[4] }
     ] });
     if let Some(methods) = result["methods"].as_array_mut() {
-        let mut desktop = sdk::login::desktop_method(2, "Command Code", locale);
-        let note = match locale {
-            "en" => "Imports a one-time copy of the official CLI key. Later CLI sign-in changes do not update this account.",
-            "zh-Hant" => "匯入官方 CLI 密鑰的一次性快照；之後在 CLI 切換登入不會自動改動此帳號。",
-            "ja" => "公式 CLI キーを一度だけコピーします。その後 CLI のログインを変更しても、このアカウントは自動変更されません。",
-            "ko" => "공식 CLI 키를 한 번만 복사합니다. 이후 CLI 로그인이 바뀌어도 이 계정은 자동으로 변경되지 않습니다.",
-            "pt-BR" => "Importa uma cópia única da chave da CLI oficial. Mudanças posteriores no login da CLI não atualizam esta conta.",
-            _ => "导入官方 CLI 密钥的一次快照；之后在 CLI 切换登录不会自动改动这个账号。",
-        };
-        desktop["instructions"] = json!(format!(
-            "{}\n{note}",
-            desktop["instructions"].as_str().unwrap_or("")
-        ));
-        methods.push(desktop);
+        methods.push(sdk::login::desktop_method(2, "Command Code", locale));
     }
     result
 }

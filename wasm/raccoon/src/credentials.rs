@@ -62,11 +62,18 @@ impl Credential {
             org,
         })
     }
-    pub fn expiring(&self) -> bool {
-        // 只有真正能续期的来源才提前五分钟处理；单 accessToken 在实际到期前仍可使用。
-        let margin = if self.can_refresh() { 300_000 } else { 0 };
+    pub fn expiring_within(&self, min_lead_ms: i64) -> bool {
+        // 只有真正能续期的来源才提前处理；单 accessToken 在实际到期前仍可使用。
+        let margin = if self.can_refresh() {
+            300_000_i64.max(min_lead_ms.max(0))
+        } else {
+            0
+        };
         self.expires
             .is_some_and(|at| at.saturating_sub(margin) <= sdk::now())
+    }
+    pub fn expiring(&self) -> bool {
+        self.expiring_within(0)
     }
     pub fn can_refresh(&self) -> bool {
         !self.refresh.is_empty() && !jwt::iam(&self.token)

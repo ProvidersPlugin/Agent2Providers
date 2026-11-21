@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-commandcode",
   "name": "Command Code",
-  "description": "独立的 Command Code 提供商，支持 API Key、JSON 文本与固定本机快照导入、流式对话、工具与思考内容、公共模型目录和只读额度查询；当前均未做真实账号验收。",
+  "description": "独立的 Command Code 提供商，支持 API Key、凭据文件与本机登录态导入、流式对话、工具与思考内容、模型目录和额度查询。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

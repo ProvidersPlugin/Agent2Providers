@@ -15,12 +15,28 @@ pub fn identity(secret: &Value) -> Result<String> {
 pub fn normalize(params: &Value) -> Result<Value> {
     credentials::own_provider(params)?;
     let source = &params["source"];
-    if source["kind"].as_str() != Some("manual") {
-        return Err(errors::invalid(
-            "手工导入请粘贴完整凭据 JSON；网页登录应从官方授权入口发起，不接受任意本机文件",
-        ));
-    }
-    let (input, form_name) = manual(&source["payload"])?;
+    let (input, form_name, import_source) = match source["kind"].as_str() {
+        Some("manual") => {
+            let (input, form_name) = manual(&source["payload"])?;
+            (input, form_name, "manual")
+        }
+        Some("file_text") => {
+            let text = source["content"]
+                .as_str()
+                .ok_or_else(|| errors::invalid("CodeArts 凭据文件内容必须是文本"))?;
+            (util::object(text)?, None, "file")
+        }
+        Some("file_base64") => {
+            return Err(errors::invalid(
+                "请选择 CodeArts 文本凭据 JSON 文件，不接受二进制文件",
+            ));
+        }
+        _ => {
+            return Err(errors::invalid(
+                "手工导入请导入或粘贴完整凭据 JSON；网页登录应从官方授权入口发起",
+            ));
+        }
+    };
     let c = Credential::parse(&input)?;
     let identity = c.identity();
     let mut secret = c.secret()?;
@@ -34,7 +50,7 @@ pub fn normalize(params: &Value) -> Result<Value> {
     if !name.is_empty() {
         secret["name"] = json!(errors::public_text(&name, &c.secrets(), 100));
     }
-    secret["source"] = json!("manual");
+    secret["source"] = json!(import_source);
     secret["desktop"] = json!(false);
     // 每次显式导入是一代新的快照。只从宿主随机数生成，不能让输入自行指定绑定代次。
     secret["codeartsImportGeneration"] = json!(util::hex(&util::random::<32>()?));

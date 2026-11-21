@@ -213,50 +213,38 @@ pub fn cancel(params: &Value) -> Result<Value> {
 
 pub fn browser_instructions(locale: &str) -> &'static str {
     match locale {
-        "en" => "Finish sign-in on the official Raccoon page. Desktop users can choose the embedded window or system browser. Web callbacks require an HTTP loopback panel address with an explicit port; forward the remote gateway port locally before signing in. Paste the full callback URL if automatic return fails. Current official sign-in issues IAM credentials that do not support automatic renewal and require signing in again after expiry.",
-        "zh-Hant" => "請在小浣熊官方頁面完成登入；桌面可選內置視窗或系統瀏覽器。網頁回跳需 HTTP 回環面板位址及顯式連接埠，遠端部署請先將連接埠轉發到本機。未自動返回時可貼上完整回呼網址。目前官方網頁登入簽發的 IAM 憑據不支援自動續期，到期後需重新登入。",
-        "ja" => "公式 Raccoon ページでログインしてください。デスクトップでは内蔵ウィンドウまたはシステムブラウザーを選べます。Web の戻り先には HTTP のループバックアドレスと明示的なポートが必要です。リモート接続では先にポートをローカルへ転送してください。自動で戻らない場合は完全なコールバック URL を貼り付けられます。現在の公式ブラウザーログインで発行される IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
-        "ko" => "Raccoon 공식 페이지에서 로그인하세요. 데스크톱에서는 내장 창이나 시스템 브라우저를 선택할 수 있습니다. 웹 콜백에는 명시적 포트가 있는 HTTP 루프백 패널 주소가 필요합니다. 원격 연결에서는 먼저 포트를 로컬로 전달하세요. 자동 반환이 실패하면 전체 콜백 URL을 붙여넣을 수 있습니다. 현재 공식 브라우저 로그인으로 발급되는 IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
-        "pt-BR" => "Conclua o login na página oficial do Raccoon. No desktop, escolha a janela integrada ou o navegador do sistema. O retorno web exige um endereço HTTP local com porta explícita; encaminhe a porta do gateway remoto para sua máquina antes de entrar. Se não retornar automaticamente, cole a URL completa de retorno. O login oficial atual emite credenciais IAM sem renovação automática; ao expirar, será necessário entrar novamente.",
-        _ => "请在小浣熊官方页面完成登录；桌面可选择内置窗口或系统浏览器。网页回跳需要 HTTP 回环面板地址和显式端口，远程部署请先将端口转发到本机。未自动返回时可粘贴完整回调地址。当前官方网页登录签发的 IAM 凭据不支持自动续期，到期后需重新登录。",
+        "en" => "Sign in on the official Raccoon page to add the account; when accessing the panel remotely, paste the callback URL if it does not return automatically.",
+        "zh-Hant" => "在小浣熊官方頁面完成登入即可新增帳號；遠端存取面板且未自動返回時，按提示貼上回呼網址即可。",
+        "ja" => "Raccoon の公式ページでログインするとアカウントを追加できます。リモート画面で自動的に戻らない場合はコールバック URL を貼り付けてください。",
+        "ko" => "Raccoon 공식 페이지에서 로그인하면 계정이 추가됩니다. 원격 패널에서 자동으로 돌아오지 않으면 콜백 URL을 붙여넣으세요.",
+        "pt-BR" => "Conclua o login na página oficial do Raccoon para adicionar a conta; no acesso remoto ao painel, cole a URL de callback caso não retorne automaticamente.",
+        _ => "在小浣熊官方页面完成登录即可添加账号；远程访问面板且未自动返回时，按提示粘贴回调地址即可。",
     }
 }
 
 pub fn token_instructions(locale: &str, json_mode: bool) -> &'static str {
     if json_mode {
         return match locale {
-            "en" => "Paste auth.json or exported credentials JSON; IAM credentials do not support automatic renewal and require signing in again after expiry.",
-            "zh-Hant" => "貼上 auth.json 或匯出的登入態 JSON；若為 IAM 憑據則不支援自動續期，到期後需重新登入。",
-            "ja" => "auth.json またはエクスポートした認証 JSON を貼り付けてください。IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
-            "ko" => "auth.json 또는 내보낸 인증 JSON을 붙여넣으세요. IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
-            "pt-BR" => "Cole o auth.json ou o JSON exportado de credenciais; credenciais IAM não têm renovação automática e exigem novo login ao expirar.",
-            _ => "粘贴 auth.json 或导出的登录态 JSON；若为 IAM 凭据则不支持自动续期，到期后需重新登录。",
+            "en" => "Select or paste a Raccoon credential file (such as auth.json) to import the account.",
+            "zh-Hant" => "選擇或貼上小浣熊憑據檔案（如 auth.json）即可匯入帳號。",
+            "ja" => "Raccoon の認証ファイル（auth.json など）を選択または貼り付けてアカウントを取り込めます。",
+            "ko" => "Raccoon 인증 파일(auth.json 등)을 선택하거나 붙여넣어 계정을 가져올 수 있습니다.",
+            "pt-BR" => "Selecione ou cole um arquivo de credenciais do Raccoon (como auth.json) para importar a conta.",
+            _ => "选择或粘贴小浣熊凭据文件（如 auth.json）即可导入账号。",
         };
     }
     match locale {
-        "en" => "Refresh Token applies only to legacy credentials; IAM credentials do not support automatic renewal and require signing in again after expiry.",
-        "zh-Hant" => "Refresh Token 僅舊版憑據有效；IAM 憑據不支援自動續期，到期後需重新登入。",
-        "ja" => "Refresh Token は旧認証情報でのみ有効です。IAM 認証情報は自動更新に対応しておらず、期限切れ後は再ログインが必要です。",
-        "ko" => "Refresh Token은 기존 자격 증명에서만 유효합니다. IAM 자격 증명은 자동 갱신을 지원하지 않으며 만료 후 다시 로그인해야 합니다.",
-        "pt-BR" => "O Refresh Token vale apenas para credenciais antigas; credenciais IAM não têm renovação automática e exigem novo login ao expirar.",
-        _ => "Refresh Token 仅旧版凭据有效；IAM 凭据不支持自动续期，到期后需重新登录。",
-    }
-}
-
-pub fn desktop_instructions(locale: &str) -> &'static str {
-    match locale {
-        "en" => "Reads the official Raccoon login on the connected gateway computer. Refresh sign-in synchronizes the current login. Automatic renewal and writing rotated tokens back to the original file require separate permission in the plugin settings; IAM credentials require sign-in again.",
-        "zh-Hant" => "讀取所連接閘道電腦上的小浣熊官方登入態。「重新整理登入態」可同步目前登入；自動續期及將新憑據寫回原檔案需在外掛權限中另外授權。IAM 憑據仍需重新登入。",
-        "ja" => "接続先ゲートウェイのコンピューターにある Raccoon の公式ログイン情報を読み取ります。ログイン更新で現在の情報を同期できます。自動更新と元ファイルへの書き戻しはプラグイン設定で別途許可が必要です。IAM 認証情報は再ログインが必要です。",
-        "ko" => "연결된 게이트웨이 컴퓨터의 공식 Raccoon 로그인 정보를 읽습니다. 로그인 새로고침으로 현재 정보를 동기화할 수 있습니다. 자동 갱신과 원본 파일에 새 자격 증명 저장은 플러그인 권한에서 별도로 허용해야 합니다. IAM 자격 증명은 다시 로그인해야 합니다.",
-        "pt-BR" => "Lê o login oficial do Raccoon no computador do gateway conectado. Atualizar login sincroniza as credenciais atuais. A renovação automática e a gravação dos novos tokens no arquivo original exigem permissão separada nas configurações do plugin. Credenciais IAM exigem novo login.",
-        _ => "读取所连接网关电脑上的小浣熊官方登录态。「刷新登录态」可同步当前登录；自动续期及将新凭据写回原文件需在插件权限中另外授权。IAM 凭据仍需重新登录。",
+        "en" => "Enter an Access Token to add the account; legacy credentials with a Refresh Token support automatic renewal.",
+        "zh-Hant" => "填寫 Access Token 即可新增帳號；包含 Refresh Token 的舊版憑據支援自動續期。",
+        "ja" => "Access Token を入力してアカウントを追加できます。Refresh Token を含む旧認証情報は自動更新に対応します。",
+        "ko" => "Access Token을 입력해 계정을 추가할 수 있으며, Refresh Token이 포함된 기존 자격 증명은 자동 갱신을 지원합니다.",
+        "pt-BR" => "Informe o Access Token para adicionar a conta; credenciais antigas com Refresh Token suportam renovação automática.",
+        _ => "填写 Access Token 即可添加账号；包含 Refresh Token 的旧版凭据支持自动续期。",
     }
 }
 
 pub fn methods(locale: &str) -> Value {
-    let mut desktop = sdk::login::desktop_method(3, "办公小浣熊 / Raccoon", locale);
-    desktop["instructions"] = json!(desktop_instructions(locale));
+    let desktop = sdk::login::desktop_method(3, "办公小浣熊 / Raccoon", locale);
     let labels = match locale {
         "en" => [
             "Browser sign-in",

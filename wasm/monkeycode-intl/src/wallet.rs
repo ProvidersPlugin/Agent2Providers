@@ -61,7 +61,7 @@ fn token_view(remaining: &Value, limit: &Value) -> String {
         .as_f64()
         .map(|value| value.to_string())
         .unwrap_or_else(|| "未知".into());
-    format!("剩余 {remaining} / 上限 {limit} tokens（国际未验收）")
+    format!("剩余 {remaining} / 上限 {limit} tokens")
 }
 
 pub fn query() -> Result<Value> {
@@ -125,8 +125,8 @@ pub fn query() -> Result<Value> {
     let daily = &wallet["dailyTokens"];
     let mut credits = vec![
         json!({ "key": "wallet-raw", "name": "钱包原始余额（单位待确认）", "balance": raw, "unit": "单位待确认", "snapshot": true }),
-        json!({ "key": "daily-token-balance", "name": "每日 Token 剩余（国际未验收）", "balance": daily["remaining"], "unit": "tokens", "snapshot": true }),
-        json!({ "key": "daily-token-limit", "name": "每日 Token 上限（国际未验收）", "balance": daily["limit"], "unit": "tokens", "snapshot": true }),
+        json!({ "key": "daily-token-balance", "name": "每日 Token 剩余", "balance": daily["remaining"], "unit": "tokens", "snapshot": true }),
+        json!({ "key": "daily-token-limit", "name": "每日 Token 上限", "balance": daily["limit"], "unit": "tokens", "snapshot": true }),
     ];
     if let Some(ledger) = &ledger {
         credits.extend(
@@ -143,13 +143,13 @@ pub fn query() -> Result<Value> {
         "balanceView": raw_view(raw), "wallet": wallet, "dailyTokens": daily,
         "windows": [
             { "key": "wallet-raw", "label": "钱包原始余额", "window": "单位待确认", "view": raw_view(raw), "aside": true },
-            { "key": "daily-tokens", "label": "每日 Token（国际未验收）", "window": "每日 Token（国际未验收）",
+            { "key": "daily-tokens", "label": "每日 Token", "window": "每日 Token",
               "view": token_view(&daily["remaining"], &daily["limit"]), "aside": true }
         ],
         "wallets": [
             { "type": "wallet-raw", "displayName": "钱包原始余额（单位待确认）", "balance": raw,
               "unit": "单位待确认", "balanceView": raw_view(raw), "snapshot": true },
-            { "type": "daily-tokens", "displayName": "每日 Token（国际未验收）", "balance": daily["remaining"],
+            { "type": "daily-tokens", "displayName": "每日 Token", "balance": daily["remaining"],
               "limit": daily["limit"], "unit": "tokens", "balanceView": token_view(&daily["remaining"], &daily["limit"]), "snapshot": true }
         ],
         "credits": credits, "transactions": ledger.as_ref().map(|ledger| &ledger["transactions"]),

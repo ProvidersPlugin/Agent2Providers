@@ -34,8 +34,8 @@ pub fn ensure(force: bool, observed: Option<&Value>) -> Result<Value> {
     locked(latest, force)
 }
 
-pub fn expiring() -> Result<bool> {
+pub fn expiring(min_lead_ms: i64) -> Result<bool> {
     let record = account::current()?;
     let secret = credentials::parse(&record["secret"])?;
-    Ok(credentials::needs_refresh(&secret, util::now()?))
+    Ok(credentials::needs_refresh_within(&secret, util::now()?, min_lead_ms))
 }

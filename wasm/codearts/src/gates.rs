@@ -1,10 +1,10 @@
 use agent2api_wasm_sdk::{json, Error, Value};
 
-pub const SUMMARY: &str = "CodeArts 已接通对话与会话心跳、网页登录、完整材料自动续期、模型目录、余额、每日福利和新手礼；未执行真实账号验收。";
+pub const SUMMARY: &str = "CodeArts 已接通对话与会话心跳、网页登录、完整材料自动续期、模型目录、余额、每日福利和新手礼。";
 pub const REFRESH: &str = "当账号包含完整 refresh_token、PKCE verifier 与 DPoP 密钥材料时，由插件在临期或强制刷新时单次轮换并 CAS 写回；无论网页登录或凭据 JSON 导入均支持自动续期。";
 pub const HTTP_BUDGET: &str = "余额和福利请求总期限 20 秒，目录 30 秒；每次请求同时受原调用总预算约束。";
 pub const IDENTITY: &str = "CodeArts 账号需要完整 domain_id 和 user_id；缺失时不按 AK 尾号合并账号。";
-pub const IMPORT: &str = "粘贴完整凭据 JSON 或使用官方网页登录；保留 OAuth 长期材料即可全平台自动续期。";
+pub const IMPORT: &str = "导入或粘贴完整凭据 JSON 或使用官方网页登录；保留 OAuth 长期材料即可全平台自动续期。";
 
 pub fn chat() -> Error { Error::http(400,"CodeArts 当前通道仅提供模型对话，不提供独立图片生成或编辑接口").with_code("unsupported_parameter") }
 pub fn claim() -> Error { Error::http(400,"CodeArts 福利请从每日签到或新手礼入口领取；不购买套餐或代做认证任务").with_code("unsupported") }

@@ -3,56 +3,62 @@ use agent2api_wasm_sdk::{json, Value};
 pub fn methods(locale: &str) -> Value {
     let text = match locale {
         "en" => [
-            "CodeArts chat, sign-in, account-specific models, usage and free rewards are implemented but not verified with a real account. Temporary access remains usable until expiry; automatic renewal works across all platforms when original OAuth material is present.",
             "Paste CodeArts credential JSON",
-            "Accepts a flat account or one credential/codearts_provider_credential object. Keep AK/SK/security_token, RFC3339 expiry, domain/user identity, and include refresh_token plus original oauth_context (PKCE/DPoP) to enable automatic renewal.",
-            "Complete credential JSON", "Account note", "CodeArts web sign-in",
-            "Sign in on Huawei Cloud's official page. The gateway receives this flow's callback and saves its complete renewal material. In a remote panel, paste the browser's final loopback callback URL; follow any returned official continuation link, then paste the final URL. A temporary ticket fallback cannot renew automatically.",
+            "Select or paste a CodeArts credential file to import the account; automatic renewal is supported when complete sign-in details are included.",
+            "Complete credential JSON",
+            "Account note",
+            "CodeArts web sign-in",
+            "Sign in on the official Huawei Cloud page to add the account; when accessing the panel remotely, paste the callback URL after signing in.",
         ],
         "zh-Hant" => [
-            "CodeArts 對話、登入、帳號獨立模型、用量及免費福利已接通，尚未經真實帳號驗收。臨時憑據到期前可用，帶有完整原 OAuth 材料時全平台均可自動續期。",
             "貼上 CodeArts 憑據 JSON",
-            "接受平鋪單帳號或唯一 credential/codearts_provider_credential 物件。保留 AK/SK/security_token、RFC3339 到期時間、域與使用者身份；連同 refresh_token 與原 oauth_context（PKCE/DPoP）一併貼入即可自動續期。",
-            "完整憑據 JSON", "備註名", "CodeArts 網頁登入",
-            "在華為雲官方頁面登入。主程式接收本次回呼並儲存完整續期材料；遠端面板可貼上瀏覽器最終本機回呼網址。若返回官方繼續連結，完成後再貼上最終網址。臨時 ticket 兜底無法自動續期。",
+            "選擇或貼上 CodeArts 憑據檔案即可匯入帳號；包含完整登入資訊時支援自動續期。",
+            "完整憑據 JSON",
+            "備註名",
+            "CodeArts 網頁登入",
+            "在華為雲官方頁面完成登入即可新增帳號；遠端存取面板時，按提示貼上登入後的回呼網址即可。",
         ],
         "ja" => [
-            "CodeArts の会話、ログイン、アカウント別モデル、使用量、無料特典は実装済みですが、実アカウントでは未検証です。一時認証情報は期限まで利用でき、元の OAuth 情報が揃っていれば全プラットフォームで自動更新できます。",
             "CodeArts 認証 JSON を貼り付け",
-            "単一アカウントのフラットなオブジェクト、または credential/codearts_provider_credential を受け付けます。AK/SK/security_token、RFC3339 有効期限、ドメインとユーザー ID、および refresh_token と元の oauth_context（PKCE/DPoP）を含めると自動更新が有効になります。",
-            "完全な認証 JSON", "メモ名", "CodeArts Web ログイン",
-            "Huawei Cloud の公式ページでログインします。ゲートウェイが今回のコールバックを受信して更新情報を保存します。リモート画面ではブラウザーの最終ローカル URL を貼り付けてください。公式の続行リンクが表示された場合は完了後に最終 URL を再度貼り付けます。一時 ticket 方式は自動更新できません。",
+            "CodeArts の認証ファイルを選択または貼り付けてアカウントを取り込めます。完全なログイン情報が含まれていれば自動更新に対応します。",
+            "完全な認証 JSON",
+            "メモ名",
+            "CodeArts Web ログイン",
+            "Huawei Cloud の公式ページでログインするとアカウントを追加できます。リモート画面から操作する場合は、ログイン後にコールバック URL を貼り付けてください。",
         ],
         "ko" => [
-            "CodeArts 대화, 로그인, 계정별 모델, 사용량과 무료 보상은 구현되었지만 실제 계정으로 검증되지 않았습니다. 임시 자격 증명은 만료 전까지 사용할 수 있으며 원래 OAuth 자료가 있으면 모든 플랫폼에서 자동 갱신됩니다.",
             "CodeArts 자격 증명 JSON 붙여넣기",
-            "단일 계정의 일반 객체 또는 하나의 credential/codearts_provider_credential 객체를 받습니다. AK/SK/security_token, RFC3339 만료 시각, 도메인/사용자 ID와 함께 refresh_token 및 원래 oauth_context(PKCE/DPoP)를 포함하면 자동 갱신할 수 있습니다.",
-            "완전한 자격 증명 JSON", "계정 메모", "CodeArts 웹 로그인",
-            "Huawei Cloud 공식 페이지에서 로그인합니다. 게이트웨이가 이번 콜백을 받고 갱신 자료를 저장합니다. 원격 화면에서는 브라우저의 최종 로컬 콜백 URL을 붙여넣으세요. 공식 계속 링크가 반환되면 진행을 완료한 후 최종 URL을 다시 붙여넣으세요. 임시 ticket 방식은 자동 갱신할 수 없습니다.",
+            "CodeArts 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 전체 로그인 정보가 포함되어 있으면 자동 갱신을 지원합니다.",
+            "완전한 자격 증명 JSON",
+            "계정 메모",
+            "CodeArts 웹 로그인",
+            "Huawei Cloud 공식 페이지에서 로그인하면 계정이 추가됩니다. 원격 패널에서 접속한 경우 로그인 후 콜백 URL을 붙여넣으세요.",
         ],
         "pt-BR" => [
-            "Conversa, login, modelos por conta, uso e benefícios gratuitos do CodeArts estão implementados, mas não foram validados com uma conta real. As credenciais temporárias funcionam até expirar; com o material OAuth original completo, a renovação automática funciona em todas as plataformas.",
             "Colar credenciais JSON do CodeArts",
-            "Aceita uma conta em objeto simples ou um único objeto credential/codearts_provider_credential. Preserve AK/SK/security_token, validade RFC3339, IDs de domínio e usuário e inclua refresh_token mais oauth_context original (PKCE/DPoP) para ativar a renovação automática.",
-            "Credenciais JSON completas", "Nome de observação", "Login web do CodeArts",
-            "Entre na página oficial da Huawei Cloud. O gateway recebe o callback deste fluxo e salva o material de renovação. No painel remoto, cole a URL local final do navegador. Se surgir um link oficial para continuar, conclua-o e cole a URL final novamente. O fallback temporário por ticket não permite renovação automática.",
+            "Selecione ou cole um arquivo de credenciais do CodeArts para importar a conta; a renovação automática é suportada quando os dados completos de login estão incluídos.",
+            "Credenciais JSON completas",
+            "Nome de observação",
+            "Login web do CodeArts",
+            "Conclua o login na página oficial da Huawei Cloud para adicionar a conta; no acesso remoto ao painel, cole a URL de callback após o login.",
         ],
         _ => [
-            "CodeArts 对话、登录、账号独立模型、用量与免费福利已接通，尚未经过真实账号验收。临时凭据到期前可用，携带完整原 OAuth 材料时全平台均可自动续期。",
             "粘贴 CodeArts 凭据 JSON",
-            "接受平铺单账号或唯一 credential/codearts_provider_credential 对象。保留 AK/SK/security_token、RFC3339 到期时间、域与用户身份，并一并保留 refresh_token 与原 oauth_context（PKCE/DPoP）即可自动续期。",
-            "完整凭据 JSON", "备注名", "CodeArts 网页登录",
-            "在华为云官方页面登录。主程序接收本次回调并保存完整续期材料；远程面板可粘贴浏览器最终本机回调地址。若返回官方继续链接，完成后再粘贴最终地址。临时 ticket 兜底无法自动续期。",
+            "选择或粘贴 CodeArts 凭据文件即可导入账号；包含完整登录信息时支持自动续期。",
+            "完整凭据 JSON",
+            "备注名",
+            "CodeArts 网页登录",
+            "在华为云官方页面完成登录即可添加账号；远程访问面板时，按提示粘贴登录后的回调地址即可。",
         ],
     };
-    json!({ "instructions": text[0], "methods": [
-        { "methodIndex": 0, "type": "api", "label": text[1], "instructions": text[2],
+    json!({ "methods": [
+        { "methodIndex": 0, "type": "api", "label": text[0], "instructions": text[1],
             "prompts": [
-                { "key": "credentialJson", "type": "text", "label": text[3], "secret": true },
-                { "key": "name", "type": "text", "label": text[4], "optional": true }
+                { "key": "credentialJson", "type": "text", "label": text[2], "secret": true },
+                { "key": "name", "type": "text", "label": text[3], "optional": true }
             ] },
-        { "methodIndex": 1, "type": "oauth", "label": text[5], "prompts": [],
+        { "methodIndex": 1, "type": "oauth", "label": text[4], "prompts": [],
             "browserMode": "choice", "manualCallback": true, "callbackInput": "url", "validatesCallback": true,
-            "instructions": text[6] }
+            "instructions": text[5] }
     ] })
 }

@@ -11,10 +11,10 @@ pub fn methods() -> Value {
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": "Refresh Token", "secret": true, "optional": true },
             { "key": "userId", "type": "text", "label": "用户 ID", "optional": true }
-          ], "instructions": "Refresh Token 可选；未填写时无法自动续期。用户 ID 未填时会通过官方只读资料接口补全；未取得身份前不会发送对话。" },
+          ], "instructions": "填写 Access Token 即可添加账号；填写 Refresh Token 后支持自动续期。" },
         { "methodIndex": 2, "type": "api", "label": "导入凭证 JSON", "prompts": [
             { "key": "credentialJson", "type": "text", "label": "凭证 JSON", "secret": true }
-          ], "instructions": "粘贴 AtomCode 登录输出的 JSON，支持 access_token / refresh_token 与 user.id 字段；缺少用户身份时会只读补全。" }
+          ], "instructions": "选择或粘贴 AtomCode 凭据文件即可导入账号；包含完整登录信息时支持自动续期。" }
     ] })
 }
 

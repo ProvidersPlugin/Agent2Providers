@@ -16,17 +16,17 @@ pub fn methods() -> Value {
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": "Accio 国际版网页登录", "browserMode": "choice",
             "manualCallback": true, "callbackInput": "url", "validatesCallback": true,
-            "instructions": "在 www.accio.com 完成授权；同机自动接收，远程部署可粘贴最后的完整回调地址。",
+            "instructions": "在 www.accio.com 完成登录即可添加账号；远程访问面板时，按提示粘贴登录后的回调地址即可。",
             "prompts": [{ "key": "name", "type": "text", "label": "备注名", "optional": true }] },
         { "methodIndex": 1, "type": "api", "label": "手工填写凭据",
-            "instructions": "请填写国际版凭据，国内账号不能共用；不提供刷新凭据时无法自动续期。",
+            "instructions": "填写国际版访问令牌；填写刷新令牌后支持自动续期。",
             "prompts": [
                 { "key": "accessToken", "type": "text", "label": "访问令牌", "secret": true },
                 { "key": "refreshToken", "type": "text", "label": "刷新令牌", "optional": true, "secret": true },
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
             ] },
         { "methodIndex": 2, "type": "api", "label": "导入凭据 JSON",
-            "instructions": "接受国际版 accessToken、refreshToken、expiresAt、userId、deviceId 和 sgcookie；不会读取本机文件。",
+            "instructions": "选择或粘贴 Accio 国际版凭据文件即可导入账号；包含完整登录信息时支持自动续期。",
             "prompts": [
                 { "key": "credentialJson", "type": "text", "label": "凭据 JSON", "secret": true },
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
@@ -38,11 +38,11 @@ pub fn methods_for(locale: &str) -> Value {
     let mut value = methods();
     let rows = [
         (["Accio 国际版网页登录", "Accio international web sign-in", "Accio 國際版網頁登入", "Accio 国際版のウェブログイン", "Accio 국제판 웹 로그인", "Login web do Accio internacional"],
-         ["在 www.accio.com 完成授权；同机自动接收，远程部署可粘贴本次完整回调地址。", "Authorize at www.accio.com. On the gateway computer the callback is received automatically; remote users can paste this flow's complete callback URL.", "在 www.accio.com 完成授權；同機自動接收，遠端部署可貼上本次完整回呼位址。", "www.accio.com で認証します。ゲートウェイのコンピューターでは自動受信し、リモートでは今回の完全なコールバック URL を貼り付けられます。", "www.accio.com에서 인증하세요. 게이트웨이 컴퓨터에서는 자동 수신하며, 원격 사용자는 이번 흐름의 전체 콜백 URL을 붙여넣을 수 있습니다.", "Autorize em www.accio.com. No computador do gateway o retorno é automático; remotamente, cole a URL completa de retorno deste login."]),
+         ["在 www.accio.com 完成登录即可添加账号；远程访问面板时，按提示粘贴登录后的回调地址即可。", "Sign in at www.accio.com to add the account; when accessing the panel remotely, paste the callback URL after signing in.", "在 www.accio.com 完成登入即可新增帳號；遠端存取面板時，按提示貼上登入後的回呼網址即可。", "www.accio.com でログインするとアカウントを追加できます。リモート画面ではログイン後にコールバック URL を貼り付けてください。", "www.accio.com에서 로그인하면 계정이 추가됩니다. 원격 패널에서는 로그인 후 콜백 URL을 붙여넣으세요.", "Conclua o login em www.accio.com para adicionar a conta; no acesso remoto ao painel, cole a URL de callback após o login."]),
         (["手工填写凭据", "Enter credentials", "手動填寫憑據", "認証情報を入力", "인증 정보 입력", "Inserir credenciais"],
-         ["请填写国际版访问令牌；国内账号不能共用。刷新令牌可选，未提供时无法自动续期。", "Enter an international access token; mainland accounts are separate. The refresh token is optional and is required for automatic renewal.", "請填寫國際版存取權杖；國內帳號不能共用。更新權杖可選，未提供時無法自動續期。", "国際版のアクセストークンを入力してください。中国国内版のアカウントとは別です。自動更新には任意の更新トークンが必要です。", "국제판 액세스 토큰을 입력하세요. 중국 국내판 계정과는 별개입니다. 자동 갱신에는 선택 사항인 갱신 토큰이 필요합니다.", "Insira o token de acesso internacional; as contas da China são separadas. O token de renovação é opcional e necessário para renovação automática."]),
+         ["填写国际版访问令牌；填写刷新令牌后支持自动续期。", "Enter an international access token; include a refresh token to enable automatic renewal.", "填寫國際版存取權杖；填寫更新權杖後支援自動續期。", "国際版のアクセストークンを入力してください。更新トークンを入力すると自動更新に対応します。", "국제판 액세스 토큰을 입력하세요. 갱신 토큰을 함께 입력하면 자동 갱신을 지원합니다.", "Insira o token de acesso internacional; informe o token de renovação para ativar a renovação automática."]),
         (["导入凭据 JSON", "Import credential JSON", "匯入憑據 JSON", "認証情報 JSON を取り込む", "인증 JSON 가져오기", "Importar JSON de credenciais"],
-         ["接受国际版 accessToken、refreshToken、expiresAt、userId、deviceId、utdid 和 sgcookie，以及 secret/pluginSecret 包装；不会读取本机文件。", "Accepts international accessToken, refreshToken, expiresAt, userId, deviceId, utdid and sgcookie, including secret/pluginSecret wrappers. No local files are read.", "接受國際版 accessToken、refreshToken、expiresAt、userId、deviceId、utdid 和 sgcookie，以及 secret/pluginSecret 包裝；不讀取本機檔案。", "国際版の accessToken、refreshToken、expiresAt、userId、deviceId、utdid、sgcookie と secret/pluginSecret 形式を受け付けます。ローカルファイルは読みません。", "국제판 accessToken, refreshToken, expiresAt, userId, deviceId, utdid, sgcookie 및 secret/pluginSecret 형식을 지원합니다. 로컬 파일은 읽지 않습니다.", "Aceita accessToken, refreshToken, expiresAt, userId, deviceId, utdid e sgcookie internacionais, inclusive em secret/pluginSecret. Não lê arquivos locais."]),
+         ["选择或粘贴 Accio 国际版凭据文件即可导入账号；包含完整登录信息时支持自动续期。", "Select or paste an Accio international credential file to import the account; automatic renewal is supported when complete sign-in details are included.", "選擇或貼上 Accio 國際版憑據檔案即可匯入帳號；包含完整登入資訊時支援自動續期。", "Accio 国際版の認証ファイルを選択または貼り付けてアカウントを取り込めます。完全なログイン情報が含まれていれば自動更新に対応します。", "Accio 국제판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 전체 로그인 정보가 포함되어 있으면 자동 갱신을 지원합니다.", "Selecione ou cole um arquivo de credenciais do Accio internacional para importar a conta; a renovação automática é suportada quando os dados completos de login estão incluídos."]),
     ];
     for (row, (labels, instructions)) in value["methods"]
         .as_array_mut()

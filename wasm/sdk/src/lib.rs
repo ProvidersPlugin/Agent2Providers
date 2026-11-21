@@ -124,6 +124,20 @@ pub fn stream_event(value: &Value) -> Result<()> {
     stream_bytes(format!("data: {value}\n\n").as_bytes())
 }
 
+/// 从 `token.expiring` 入参提取维护链路传入的最小提前量（毫秒），并与提供商默认窗口取较大值。
+pub fn expiring_lead(params: &Value, default_lead_ms: i64) -> i64 {
+    let requested = params
+        .get("minLeadMs")
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_f64().filter(|n| n.is_finite()).map(|n| n as i64))
+        })
+        .unwrap_or(0)
+        .max(0);
+    default_lead_ms.max(0).max(requested)
+}
+
 #[macro_export]
 macro_rules! export_provider {
     ($handler:path) => {

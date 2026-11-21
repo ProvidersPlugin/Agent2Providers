@@ -107,7 +107,7 @@ pub fn verify(params: &Value) -> Result<Value> {
     if !save(&before, working)? { return Err(Error::http(409, "AutoClaw 短信流程已变化")); }
     let reserved = load(params)?;
     if reserved.value["phase"] != "verifying" || reserved.value["ticket"] != before.value["ticket"] { return Err(Error::http(409, "AutoClaw 短信流程已取消")); }
-    let result = client::post("/userapi/v1/agent-login/", "", &json!({ "phone": phone, "code": code,
+    let result = client::post("/userapi/v1/agent-login", "", &json!({ "phone": phone, "code": code,
         "platform": "web", "source_id": "autoclaw", "device_id": device }), "验证码登录")
         .and_then(|payload| {
             success(&payload)?;

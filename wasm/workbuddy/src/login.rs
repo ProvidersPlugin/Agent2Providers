@@ -46,20 +46,18 @@ pub fn methods(locale: &str) -> Value {
         ],
         _ => ["网页登录", "导入登录态JSON", "登录态JSON"],
     };
-    let (browser_hint, desktop_hint) = match locale {
-        "en" => ("Complete sign-in on the official page. The gateway continues automatically; no callback needs to be pasted.", "Imports a one-time credential snapshot. Encrypted WorkBuddy 5.6+ sign-in files cannot be imported; use browser sign-in instead."),
-        "zh-Hant" => ("在官方頁面完成登入後會自動繼續，不需貼上回呼。", "匯入一次性登入快照；WorkBuddy 5.6 及以後的加密登入檔案無法直接匯入，請改用網頁登入。"),
-        "ja" => ("公式ページでログインすると自動的に続行します。コールバックの貼り付けは不要です。", "認証情報を一度だけ取り込みます。WorkBuddy 5.6 以降の暗号化されたログインファイルは取り込めません。ブラウザーでログインしてください。"),
-        "ko" => ("공식 페이지에서 로그인하면 자동으로 계속됩니다. 콜백 주소를 붙여 넣을 필요가 없습니다.", "로그인 정보를 한 번만 가져옵니다. WorkBuddy 5.6 이후의 암호화된 파일은 가져올 수 없으니 브라우저 로그인을 사용하세요."),
-        "pt-BR" => ("Conclua o login na página oficial. O gateway continua automaticamente; não é preciso colar um retorno.", "Importa uma cópia das credenciais uma única vez. Arquivos criptografados do WorkBuddy 5.6 ou posterior não podem ser importados; use o login pelo navegador."),
-        _ => ("在官方页面完成登录后会自动继续，不需要粘贴回调。", "导入一次性登录快照；WorkBuddy 5.6 及以后的加密登录文件无法直接导入，请改用网页登录。"),
+    let (browser_hint, file_hint) = match locale {
+        "en" => ("Complete sign-in on the official page. The gateway continues automatically; no callback needs to be pasted.", "Select or paste a WorkBuddy credential file to import the account; encrypted WorkBuddy 5.6+ files require browser sign-in."),
+        "zh-Hant" => ("在官方頁面完成登入後會自動繼續，不需貼上回呼。", "選擇或貼上 WorkBuddy 憑據檔案即可匯入帳號；5.6 及以後的加密登入檔案請改用網頁登入。"),
+        "ja" => ("公式ページでログインすると自動的に続行します。コールバックの貼り付けは不要です。", "WorkBuddy の認証ファイルを選択または貼り付けてアカウントを取り込めます。5.6 以降の暗号化ファイルはブラウザーでログインしてください。"),
+        "ko" => ("공식 페이지에서 로그인하면 자동으로 계속됩니다. 콜백 주소를 붙여 넣을 필요가 없습니다.", "WorkBuddy 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있습니다. 5.6 이후 암호화된 파일은 브라우저 로그인을 사용하세요."),
+        "pt-BR" => ("Conclua o login na página oficial. O gateway continua automaticamente; não é preciso colar um retorno.", "Selecione ou cole um arquivo de credenciais do WorkBuddy para importar a conta; arquivos criptografados do WorkBuddy 5.6+ exigem login pelo navegador."),
+        _ => ("在官方页面完成登录后会自动继续，不需要粘贴回调。", "选择或粘贴 WorkBuddy 凭据文件即可导入账号；5.6 及以后的加密登录文件请改用网页登录。"),
     };
-    let mut desktop = sdk::login::desktop_method(2, "WorkBuddy", locale);
-    let general = desktop["instructions"].as_str().unwrap_or("");
-    desktop["instructions"] = json!(format!("{general}\n{desktop_hint}"));
+    let desktop = sdk::login::desktop_method(2, "WorkBuddy", locale);
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false, "instructions": browser_hint },
-        { "methodIndex": 1, "type": "api", "label": labels[1], "instructions": desktop_hint, "prompts": [{ "key": "credentialJson", "label": labels[2], "type": "text", "secret": true }] },
+        { "methodIndex": 1, "type": "api", "label": labels[1], "instructions": file_hint, "prompts": [{ "key": "credentialJson", "label": labels[2], "type": "text", "secret": true }] },
         desktop,
         sdk::legacy_credentials::method(3, locale)
     ] })

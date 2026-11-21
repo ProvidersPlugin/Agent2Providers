@@ -71,8 +71,12 @@ impl Credentials {
         }
         Ok(())
     }
+    pub fn expiring_within(&self, min_lead_ms: i64) -> bool {
+        let margin = MARGIN_MS.max(min_lead_ms.max(0));
+        self.expires_at > 0 && self.expires_at.saturating_sub(margin) <= sdk::now()
+    }
     pub fn expiring(&self) -> bool {
-        self.expires_at > 0 && self.expires_at.saturating_sub(MARGIN_MS) <= sdk::now()
+        self.expiring_within(0)
     }
     pub fn same_model(&self, other: &Self) -> bool {
         self.base_url == other.base_url

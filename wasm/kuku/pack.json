@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-kuku",
   "name": "KukuAI 库库",
-  "description": "独立库库提供商，包含桌面网页登录 Cookie 回收、本机客户端快照、凭据及用户选定的 Cookie SQLite 数据库导入、产品 STOKEN 换发、会话式对话、在线目录、积分、30 天签到和已完成每日任务领奖；加密-only 数据库仍需对应本机解密材料，未经真实账号验收。",
+  "description": "独立的库库提供商，支持桌面网页登录、Cookie / 凭据文件与本机登录态导入、自动换证、会话对话、在线模型目录、积分查询、每日签到和任务领奖。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",

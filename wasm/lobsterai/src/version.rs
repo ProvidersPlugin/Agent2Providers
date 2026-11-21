@@ -4,7 +4,7 @@
 use super::{account, upstream};
 use agent2api_wasm_sdk::{self as sdk, http, json, state::Scope, Value};
 
-const FALLBACK: &str = "2026.9.4";
+pub const FALLBACK: &str = "2026.11.16";
 const TTL: i64 = 12 * 60 * 60 * 1000;
 const KEY: &str = "client-version";
 
@@ -42,7 +42,7 @@ pub fn resolve() -> String {
     let value = http::open(
         "GET",
         upstream::VERSION_URL,
-        upstream::headers(None, None),
+        upstream::headers(None, None, false),
         None,
     )
     .and_then(upstream::read_json)

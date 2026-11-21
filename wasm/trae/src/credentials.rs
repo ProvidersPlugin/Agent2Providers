@@ -170,15 +170,20 @@ pub fn expiry(secret: &Value) -> Option<i64> {
         .or_else(|| util::millis(&secret["expiresAt"]))
 }
 
-pub fn needs_refresh(secret: &Value, now: i64) -> bool {
+pub fn needs_refresh_within(secret: &Value, now: i64, min_lead_ms: i64) -> bool {
     if util::text(secret, &["accessToken"]).is_empty() {
         return true;
     }
-    expiry(secret).is_some_and(|at| at.saturating_sub(now) <= LEAD_MS)
+    let lead = LEAD_MS.max(min_lead_ms.max(0));
+    expiry(secret).is_some_and(|at| at.saturating_sub(now) <= lead)
         || jwt(secret)
             .and_then(|claims| util::integer(&claims["iat"]))
             .filter(|at| *at > 0)
             .is_some_and(|at| now.saturating_sub(at.saturating_mul(1000)) >= MAX_AGE_MS)
+}
+
+pub fn needs_refresh(secret: &Value, now: i64) -> bool {
+    needs_refresh_within(secret, now, 0)
 }
 
 pub fn token(secret: &Value) -> Result<String> {

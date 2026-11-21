@@ -289,12 +289,12 @@ fn pending(locale: &str, state: &Value) -> Value {
 
 pub fn methods(locale: &str) -> Value {
     let labels = match locale {
-        "en" => ["Browser sign-in", "Sign in to the international Z.AI edition. A complete coding API key is resolved after authorization.", "Enter credentials", "Import credentials JSON", "Credentials JSON"],
-        "ja" => ["ブラウザーでログイン", "国際版 Z.AI にログインすると、認証後に完全なコーディング用 API Key を取得します。", "認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON"],
-        "ko" => ["브라우저 로그인", "국제판 Z.AI 인증 후 완전한 코딩 API Key를 가져옵니다.", "인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON"],
-        "pt-BR" => ["Entrar pelo navegador", "Entre na edição internacional Z.AI. A chave completa de programação é obtida após a autorização.", "Inserir credenciais", "Importar credenciais JSON", "Credenciais JSON"],
-        "zh-Hant" => ["網頁登入", "登入 ZCode 國際版（Z.AI），授權後自動取得完整編碼套餐密鑰。", "手動填寫憑證", "匯入憑證 JSON", "憑證 JSON"],
-        _ => ["网页登录", "登录 ZCode 国际版（Z.AI），授权后自动取得完整编码套餐密钥。", "手动填写凭据", "导入凭据 JSON", "凭据 JSON"],
+        "en" => ["Browser sign-in", "Sign in to the international Z.AI edition. A complete coding API key is resolved after authorization.", "Enter credentials", "Import credentials JSON", "Credentials JSON", "Select or paste a ZCode International credential file to import the account."],
+        "ja" => ["ブラウザーでログイン", "国際版 Z.AI にログインすると、認証後に完全なコーディング用 API Key を取得します。", "認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON", "ZCode 国際版の認証ファイルを選択または貼り付けてアカウントを取り込めます。"],
+        "ko" => ["브라우저 로그인", "국제판 Z.AI 인증 후 완전한 코딩 API Key를 가져옵니다.", "인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON", "ZCode 국제판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있습니다."],
+        "pt-BR" => ["Entrar pelo navegador", "Entre na edição internacional Z.AI. A chave completa de programação é obtida após a autorização.", "Inserir credenciais", "Importar credenciais JSON", "Credenciais JSON", "Selecione ou cole um arquivo de credenciais do ZCode International para importar a conta."],
+        "zh-Hant" => ["網頁登入", "登入 ZCode 國際版（Z.AI），授權後自動取得完整編碼套餐密鑰。", "手動填寫憑證", "匯入憑證 JSON", "憑證 JSON", "選擇或貼上 ZCode 國際版憑據檔案即可匯入帳號。"],
+        _ => ["网页登录", "登录 ZCode 国际版（Z.AI），授权后自动取得完整编码套餐密钥。", "手动填写凭据", "导入凭据 JSON", "凭据 JSON", "选择或粘贴 ZCode 国际版凭据文件即可导入账号。"],
     };
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false, "instructions": labels[1] },
@@ -306,7 +306,7 @@ pub fn methods(locale: &str) -> Value {
             { "key": "zcodePlan", "type": "select", "label": super::i18n::text(locale, "plan"), "default": "coding-plan", "optional": true,
                 "options": [{ "value": "coding-plan", "label": super::i18n::text(locale, "coding") }, { "value": "start-plan", "label": super::i18n::text(locale, "start") }] }
         ], "instructions": super::i18n::text(locale, "manual") },
-        { "methodIndex": 2, "type": "api", "label": labels[3], "prompts": [
+        { "methodIndex": 2, "type": "api", "label": labels[3], "instructions": labels[5], "prompts": [
             { "key": "credentialJson", "type": "text", "label": labels[4], "secret": true }
         ] }
     ] })

@@ -102,7 +102,7 @@ pub fn claim() -> Result<Value> {
 
     let slot_path = format!("/api/client-activities/slot?placement=desktop_sidebar&clientVersion={}&containerApiVersion=2&platform=win32",
         upstream::query(&client_version));
-    let slot = upstream::get(&slot_path, &token, "活动查询")?;
+    let slot = upstream::get(&slot_path, &token, &client_version, "活动查询")?;
     account::validate_current(&account)?;
     let activity = account::text(&slot["activity"], &["activityCode"]);
     if activity.len() > 512
@@ -131,7 +131,7 @@ pub fn claim() -> Result<Value> {
         upstream::query(&activity),
         upstream::query(&revision_query)
     );
-    let context = upstream::get(&context_path, &token, "活动上下文查询")?;
+    let context = upstream::get(&context_path, &token, &client_version, "活动上下文查询")?;
     account::validate_current(&account)?;
     validate_context(&context)?;
     if let Some(value) = context.get("configRevision") {
@@ -176,10 +176,10 @@ pub fn claim() -> Result<Value> {
         "/api/client-activities/{}/actions/check_in",
         upstream::query(&activity)
     );
-    let posted = upstream::post(&path, &token, &body, "签到");
+    let posted = upstream::post(&path, &token, &client_version, &body, "签到");
     account::validate_current(&account)?;
     // 传输或业务结果不明也只能回查；不会再生成新幂等键。
-    let after = upstream::get(&context_path, &token, "签到后复核")?;
+    let after = upstream::get(&context_path, &token, &client_version, "签到后复核")?;
     account::validate_current(&account)?;
     validate_context(&after)?;
     if after["state"]["claimedToday"] != true {

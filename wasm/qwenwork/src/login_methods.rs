@@ -3,12 +3,12 @@ use agent2api_wasm_sdk::{json, Value};
 
 pub fn instructions(locale: &str) -> &'static str {
     match locale {
-        "en" => "Authorize your QwenWork China account on the official page; it is added automatically when the device poll completes. No local callback is used. When importing credentials, retain the original machine ID. A missing ID is generated once and saved; this fallback is not verified on a real account.",
-        "ja" => "公式ページで千問辦公の中国版アカウントを認証すると、デバイス確認の完了後に自動追加されます。ローカルコールバックは不要です。認証情報の取り込みでは元のデバイス ID を保持してください。未指定の場合は一度生成して保存しますが、実アカウントでは未検証です。",
-        "ko" => "공식 페이지에서 QwenWork 중국판 계정을 인증하면 기기 확인이 끝난 뒤 자동 추가됩니다. 로컬 콜백은 필요하지 않습니다. 인증 정보를 가져올 때 기존 기기 ID를 유지하세요. ID가 없으면 한 번 생성해 저장하며 실제 계정에서 검증되지는 않았습니다.",
-        "pt-BR" => "Autorize sua conta QwenWork China na página oficial; a conta é adicionada automaticamente ao concluir a consulta do dispositivo, sem callback local. Preserve o ID original da máquina ao importar credenciais. Se ausente, ele é gerado uma vez e salvo; esse padrão não foi validado com uma conta real.",
-        "zh-Hant" => "請在官方頁面授權千問辦公國內版帳號，裝置輪詢完成後會自動添加，不需要本機回呼。匯入憑證時請保留原裝置編號；缺少時只生成並保存一次，這條預設路徑尚未真實帳號驗收。",
-        _ => "请在官方页面授权千问办公国内版账号，设备轮询完成后会自动添加，不需要本机回调。导入凭据时请保留原设备编号；缺少时只生成并保存一次，这条默认路径尚未真实账号验收。",
+        "en" => "Authorize your QwenWork China account on the official page to add the account automatically.",
+        "ja" => "公式ページで千問辦公の中国版アカウントを認証すると自動で追加されます。",
+        "ko" => "공식 페이지에서 QwenWork 중국판 계정을 인증하면 자동으로 추가됩니다.",
+        "pt-BR" => "Autorize sua conta QwenWork China na página oficial para adicionar a conta automaticamente.",
+        "zh-Hant" => "在官方頁面授權千問辦公國內版帳號即可自動新增帳號。",
+        _ => "在官方页面授权千问办公国内版账号即可自动添加账号。",
     }
 }
 
@@ -37,12 +37,12 @@ pub fn progress(locale: &str, step: &str) -> &'static str {
 
 pub fn methods(locale: &str) -> Value {
     let text = match locale {
-        "en" => ["Browser device authorization", "Authorize your QwenWork China account on the official page. No local callback is used. A missing machine ID uses a single persisted UUID, whose compatibility has not been verified.", "Enter device credentials", "Import credentials JSON", "Credentials JSON"],
-        "ja" => ["ブラウザーでデバイス認証", "公式ページで千問辦公の中国版アカウントを認証します。ローカルコールバックは不要です。デバイス ID がない場合は一度だけ UUID を生成して保存しますが、その互換性は未検証です。", "デバイス認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON"],
-        "ko" => ["브라우저 기기 인증", "공식 페이지에서 QwenWork 중국판 계정을 인증합니다. 로컬 콜백은 사용하지 않습니다. 기기 ID가 없으면 UUID를 한 번 생성해 저장하며 이 기본값의 호환성은 검증되지 않았습니다.", "기기 인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON"],
-        "pt-BR" => ["Autorizar dispositivo no navegador", "Autorize sua conta QwenWork China na página oficial, sem callback local. Na ausência de ID da máquina, um UUID é gerado uma única vez e salvo; a compatibilidade desse padrão não foi verificada.", "Inserir credenciais do dispositivo", "Importar credenciais JSON", "Credenciais JSON"],
-        "zh-Hant" => ["網頁裝置授權", "請在官方頁面授權千問辦公國內版帳號，不需要本機回呼。缺少既有裝置編號時只生成並保存一次 UUID，該預設路徑相容性尚未實測。", "手動填寫裝置憑證", "匯入憑證 JSON", "憑證 JSON"],
-        _ => ["网页设备授权", instructions(locale), "手工填写设备凭据", "导入凭据 JSON", "凭据 JSON"],
+        "en" => ["Browser device authorization", "Enter an Access Token to add the account; include a Refresh Token to enable automatic renewal.", "Enter device credentials", "Import credentials JSON", "Credentials JSON", "Select or paste a QwenWork China credential file to import the account; automatic renewal is supported when complete sign-in details are included."],
+        "ja" => ["ブラウザーでデバイス認証", "Access Token を入力してアカウントを追加できます。Refresh Token を入力すると自動更新に対応します。", "デバイス認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON", "千問辦公（中国版）の認証ファイルを選択または貼り付けてアカウントを取り込めます。完全なログイン情報が含まれていれば自動更新に対応します。"],
+        "ko" => ["브라우저 기기 인증", "Access Token을 입력해 계정을 추가할 수 있으며, Refresh Token을 함께 입력하면 자동 갱신을 지원합니다.", "기기 인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON", "QwenWork 중국판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 전체 로그인 정보가 포함되어 있으면 자동 갱신을 지원합니다."],
+        "pt-BR" => ["Autorizar dispositivo no navegador", "Informe o Access Token para adicionar a conta; inclua o Refresh Token para ativar a renovação automática.", "Inserir credenciais do dispositivo", "Importar credenciais JSON", "Credenciais JSON", "Selecione ou cole um arquivo de credenciais do QwenWork China para importar a conta; a renovação automática é suportada quando os dados completos de login estão incluídos."],
+        "zh-Hant" => ["網頁裝置授權", "填寫 Access Token 即可新增帳號；填寫 Refresh Token 後支援自動續期。", "手動填寫裝置憑證", "匯入憑證 JSON", "憑證 JSON", "選擇或貼上千問辦公國內版憑據檔案即可匯入帳號；包含完整登入資訊時支援自動續期。"],
+        _ => ["网页设备授权", "填写 Access Token 即可添加账号；填写 Refresh Token 后支持自动续期。", "手工填写设备凭据", "导入凭据 JSON", "凭据 JSON", "选择或粘贴千问办公国内版凭据文件即可导入账号；包含完整登录信息时支持自动续期。"],
     };
     let id_labels = match locale {
         "en" => ["User ID", "Expires at", "Original machine ID"],
@@ -55,14 +55,14 @@ pub fn methods(locale: &str) -> Value {
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": instructions(locale), "prompts": [],
             "browserMode": "choice", "manualCallback": false, "callbackInput": "url" },
-        { "methodIndex": 1, "type": "api", "label": text[2], "instructions": instructions(locale), "prompts": [
+        { "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[1], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": "Refresh Token", "secret": true, "optional": true },
             { "key": "userId", "type": "text", "label": id_labels[0], "optional": true },
             { "key": "expiresAt", "type": "text", "label": id_labels[1], "optional": true },
             { "key": "machineId", "type": "text", "label": id_labels[2], "optional": true }
         ] },
-        { "methodIndex": 2, "type": "api", "label": text[3], "instructions": instructions(locale), "prompts": [
+        { "methodIndex": 2, "type": "api", "label": text[3], "instructions": text[5], "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[4], "secret": true }
         ] }
     ] })

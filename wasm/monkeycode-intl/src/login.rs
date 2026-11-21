@@ -15,25 +15,36 @@ fn text(locale: &str, items: [&'static str; 6]) -> &'static str {
     }]
 }
 
-fn instructions(locale: &str) -> &'static str {
+fn manual_hint(locale: &str) -> &'static str {
     text(locale, [
-        "添加前只在 monkeycode-ai.net 校验账号；国际账号、目录与固定任务和国内站隔离。发送对话仅授权本次固定远端任务，无需额外权限设置。镜像留空使用官方默认环境，不购买或兑换；真实业务未验收。",
-        "The account is verified only on monkeycode-ai.net before saving. International accounts, catalogs and fixed tasks stay separate from the Chinese site. Sending a chat authorizes only that fixed remote task, without extra permission setup. Leave the image ID empty for the official default environment. No purchases or exchanges are performed; live behavior is unverified.",
-        "儲存前只在 monkeycode-ai.net 驗證帳號；國際帳號、目錄與固定任務和國內站隔離。傳送對話僅授權本次固定遠端任務，無需額外權限設定。鏡像留空使用官方預設環境，不購買或兌換；實際業務未驗收。",
-        "保存前に monkeycode-ai.net のみでアカウントを確認します。国際版のアカウント、モデル一覧、固定タスクは中国サイトと分離されます。会話の送信はその固定リモートタスクだけを許可し、追加の権限設定は不要です。イメージ ID が空の場合は公式の既定環境を使います。購入や交換は行いません。実際の動作は未検証です。",
-        "저장 전에 monkeycode-ai.net에서만 계정을 확인합니다. 국제 계정, 모델 목록 및 고정 작업은 중국 사이트와 분리됩니다. 대화를 보내면 해당 고정 원격 작업만 허용되며 별도 권한 설정은 필요하지 않습니다. 이미지 ID를 비우면 공식 기본 환경을 사용합니다. 구매나 교환은 하지 않으며 실제 동작은 검증되지 않았습니다.",
-        "A conta é validada somente em monkeycode-ai.net antes de salvar. Contas, catálogos e tarefas fixas internacionais ficam separados do site chinês. Enviar uma conversa autoriza apenas essa tarefa remota fixa, sem configuração extra de permissões. Deixe o ID da imagem vazio para usar o ambiente oficial padrão. Nenhuma compra ou troca é realizada; o funcionamento real não foi validado.",
+        "粘贴 MonkeyCode 国际站的 Session 或 Cookie 即可添加账号。",
+        "Paste a Session or Cookie from MonkeyCode International to add the account.",
+        "貼上 MonkeyCode 國際站的 Session 或 Cookie 即可新增帳號。",
+        "MonkeyCode 国際サイトの Session または Cookie を貼り付けてアカウントを追加できます。",
+        "MonkeyCode 국제 사이트의 Session 또는 Cookie를 붙여넣어 계정을 추가할 수 있습니다.",
+        "Cole uma Session ou Cookie do MonkeyCode International para adicionar a conta.",
+    ])
+}
+
+fn file_hint(locale: &str) -> &'static str {
+    text(locale, [
+        "选择或粘贴 MonkeyCode 国际版凭据文件即可导入账号。",
+        "Select or paste a MonkeyCode International credential file to import the account.",
+        "選擇或貼上 MonkeyCode 國際版憑據檔案即可匯入帳號。",
+        "MonkeyCode 国際版の認証ファイルを選択または貼り付けてアカウントを取り込めます。",
+        "MonkeyCode 국제판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있습니다.",
+        "Selecione ou cole um arquivo de credenciais do MonkeyCode International para importar a conta.",
     ])
 }
 
 fn web_hint(locale: &str) -> &'static str {
     text(locale, [
-        "在桌面应用的独立窗口完成国际站官方登录，成功后自动接回并校验账号，无需粘贴回调。网页面板和手机可导入国际 Session／Cookie 或完整 JSON。",
-        "Complete official international sign-in in the app's separate desktop window. Credentials are captured and verified automatically, with no callback to paste. Web and mobile panels can import an international Session / Cookie or complete JSON.",
-        "請在桌面應用的獨立視窗完成國際站官方登入，成功後自動接回並驗證帳號，無需貼上回調。網頁面板和手機可匯入國際 Session／Cookie 或完整 JSON。",
-        "デスクトップアプリの独立した画面で国際サイトの公式ログインを完了してください。認証情報を自動取得してアカウントを確認するため、コールバックの貼り付けは不要です。Web・モバイルでは国際版 Session／Cookie または完全な JSON を取り込めます。",
-        "데스크톱 앱의 별도 창에서 국제 사이트의 공식 로그인을 완료하세요. 인증 정보를 자동으로 가져와 계정을 확인하므로 콜백을 붙여넣을 필요가 없습니다. 웹과 모바일에서는 국제 Session / Cookie 또는 전체 JSON을 가져올 수 있습니다.",
-        "Conclua o login oficial internacional na janela separada do aplicativo desktop. As credenciais são capturadas e verificadas automaticamente, sem colar um callback. Os painéis web e móvel podem importar Session / Cookie internacional ou JSON completo.",
+        "在桌面窗口完成国际站官方登录即可自动添加账号；网页和手机面板可导入国际版 Session 或凭据文件。",
+        "Sign in on the international site in the desktop window to add the account automatically; web and mobile panels can import an international Session or credential file.",
+        "在桌面視窗完成國際站官方登入即可自動新增帳號；網頁及手機面板可匯入國際版 Session 或憑據檔案。",
+        "デスクトップの画面で国際サイトの公式ログインを完了すると自動でアカウントを追加します。Web・モバイルでは国際版 Session または認証ファイルを取り込めます。",
+        "데스크톱 창에서 국제 사이트 공식 로그인을 완료하면 계정이 자동 추가됩니다. 웹과 모바일에서는 국제판 Session 또는 인증 파일을 가져올 수 있습니다.",
+        "Conclua o login oficial internacional na janela desktop para adicionar a conta automaticamente; os painéis web e móvel podem importar Session ou arquivo de credenciais internacional.",
     ])
 }
 
@@ -83,14 +94,14 @@ pub fn methods(locale: &str) -> Value {
             "Importar JSON internacional completo",
         ],
     );
-    json!({"instructions":instructions(locale),"readiness":gates::status(),"methods":[
-        {"methodIndex":0,"type":"api","label":manual,"instructions":instructions(locale),"prompts":[
+    json!({"readiness":gates::status(),"methods":[
+        {"methodIndex":0,"type":"api","label":manual,"instructions":manual_hint(locale),"prompts":[
             {"key":"session","type":"text","label":"Session / Cookie / JSON","secret":true,"placeholder":"monkeycode_ai_session=…"},
             {"key":"name","type":"text","label":name,"optional":true},
             {"key":"imageId","type":"text","label":image,"optional":true}]},
         {"methodIndex":1,"type":"oauth","label":web,"instructions":web_hint(locale),"prompts":[],
             "browserMode":"choice","embeddedOnly":true,"desktopOnly":true,"manualCallback":false,"validatesCallback":true},
-        {"methodIndex":2,"type":"api","label":json_label,"instructions":instructions(locale),"prompts":[
+        {"methodIndex":2,"type":"api","label":json_label,"instructions":file_hint(locale),"prompts":[
             {"key":"credentialJson","type":"text","label":json_label,"secret":true},
             {"key":"name","type":"text","label":name,"optional":true}]}
     ]})

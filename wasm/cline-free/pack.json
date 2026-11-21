@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-cline-free",
   "name": "Cline 免费池",
-  "description": "独立 Cline 免费池，包含设备授权、凭据导入、模型目录、对话和 credit 查询。支持常规刷新令牌续期与经授权的本机登录态刷新，未经真实账号验收。",
+  "description": "独立的 Cline 免费池提供商，支持网页授权、凭据与本机登录态导入、自动续期、模型目录、对话和额度查询。",
   "version": "0.1.0-beta.3",
   "protocol": 1,
   "providers": [

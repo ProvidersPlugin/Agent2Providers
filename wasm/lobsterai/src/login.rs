@@ -209,13 +209,14 @@ pub fn callback(params: &Value) -> Result<Value> {
         return Err(Error::http(409, "本次授权已在处理，请勿重复提交"));
     }
     let result = (|| -> Result<Value> {
-        let keyfrom = sdk::now().to_string();
+        let keyfrom = upstream::OFFICIAL_KEYFROM;
         let uuid = uuid()?;
+        let version = version::resolve();
         let body = json!({ "authCode": code, "uuid": uuid, "firstKeyfrom": keyfrom,
-            "latestKeyfrom": keyfrom, "version": version::resolve() });
-        let value = upstream::anonymous("/api/auth/exchange", &body)?;
+            "latestKeyfrom": keyfrom, "version": version });
+        let value = upstream::anonymous("/api/auth/exchange", &body, &version)?;
         let data = upstream::envelope(&value, "授权换码")?;
-        let secret = account::login_bundle(&data, &uuid, &keyfrom)?;
+        let secret = account::login_bundle(&data, &uuid, keyfrom)?;
         Ok(json!({ "state": "done", "account": account::normalized(secret)? }))
     })();
     // 不允许取消后的换码结果覆盖新状态；flow 内不保存令牌或授权码。

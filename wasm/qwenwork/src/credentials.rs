@@ -367,12 +367,16 @@ impl Credentials {
     pub fn can_refresh(&self) -> bool {
         !self.oauth_refresh().is_empty()
     }
-    pub fn expiring(&self) -> Result<bool> {
+    pub fn expiring_within(&self, min_lead_ms: i64) -> Result<bool> {
         let now = util::now()?;
+        let margin = endpoints::REFRESH_MARGIN.max(min_lead_ms.max(0));
         Ok(self.is_biz != Some(true) && self.can_refresh()
             && self
                 .expires
-                .is_some_and(|expires| expires <= now.saturating_add(endpoints::REFRESH_MARGIN)))
+                .is_some_and(|expires| expires <= now.saturating_add(margin)))
+    }
+    pub fn expiring(&self) -> Result<bool> {
+        self.expiring_within(0)
     }
     pub fn validate_public(&self) -> Result<()> {
         util::identity(&self.user)?;

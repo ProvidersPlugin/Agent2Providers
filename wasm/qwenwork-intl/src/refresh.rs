@@ -10,9 +10,9 @@ use super::{
 use agent2api_wasm_sdk::{json, AccountLock, Error, Result, Value};
 
 const CONTROL: &str = "refresh-control";
-pub fn due() -> Result<bool> {
+pub fn due(min_lead_ms: i64) -> Result<bool> {
     let current = account::read()?;
-    Ok(current.credentials.is_biz != Some(true) && current.credentials.expiring()?
+    Ok(current.credentials.is_biz != Some(true) && current.credentials.expiring_within(min_lead_ms)?
         && agent2api_wasm_sdk::refresh_guard::available("credential-refresh", current.credentials.oauth_refresh())?)
 }
 pub fn ensure(force: bool) -> Result<Snapshot> {

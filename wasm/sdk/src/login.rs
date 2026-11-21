@@ -35,12 +35,12 @@ pub struct Interaction {
 
 pub fn desktop_method(index: u64, client: &str, locale: &str) -> Value {
     let (label, instructions) = match locale {
-        "en" => ("Import local sign-in", format!("Reads only the official {client} sign-in files on the computer running the connected gateway, not this phone or other clients. Files are never changed; no extra helper installation or permission setup is needed. Sign in to the official client first.")),
-        "ja" => ("ローカルログインを取り込む", format!("接続先ゲートウェイのコンピューターにある公式 {client} のログインファイルだけを読み取ります。このスマートフォンや他のクライアントは読み取りません。ファイルの変更、補助プラグインのインストールや追加の権限設定は不要です。先に公式クライアントにログインしてください。")),
-        "ko" => ("로컬 로그인 가져오기", format!("연결된 게이트웨이가 실행되는 컴퓨터의 공식 {client} 로그인 파일만 읽습니다. 이 휴대전화나 다른 클라이언트는 읽지 않습니다. 파일을 수정하지 않으며 추가 도우미 설치나 권한 설정이 필요하지 않습니다. 먼저 공식 클라이언트에 로그인하세요.")),
-        "pt-BR" => ("Importar login local", format!("Lê apenas os arquivos de login do cliente oficial {client} no computador do gateway conectado, não neste celular ou em outros clientes. Não altera arquivos e não exige instalar auxiliares nem configurar permissões extras. Entre primeiro no cliente oficial.")),
-        "zh-Hant" => ("匯入本機登入態", format!("只讀取所連接閘道電腦上的 {client} 官方登入檔案，不讀取這部手機或其他用戶端、不修改檔案，也不需要額外安裝或授權輔助外掛。請先在該官方用戶端登入。")),
-        _ => ("导入本机登录态", format!("只读取所连接网关电脑上的 {client} 官方登录文件，不读取这部手机或其他客户端、不修改文件，也不需要额外安装或授权辅助插件。请先在该官方客户端登录。")),
+        "en" => ("Import local sign-in", format!("Imports the signed-in {client} account from the gateway computer. Sign in to the official client first.")),
+        "ja" => ("ローカルログインを取り込む", format!("ゲートウェイのコンピューターでログイン済みの {client} クライアントからアカウントを取り込みます。先にクライアントでログインしてください。")),
+        "ko" => ("로컬 로그인 가져오기", format!("게이트웨이 컴퓨터에 로그인된 {client} 클라이언트에서 계정을 가져옵니다. 먼저 클라이언트에 로그인하세요.")),
+        "pt-BR" => ("Importar login local", format!("Importa a conta conectada no cliente {client} do computador do gateway. Entre primeiro no cliente oficial.")),
+        "zh-Hant" => ("匯入本機登入態", format!("讀取閘道所在電腦上已登入的 {client} 用戶端帳號，請先在用戶端完成登入。")),
+        _ => ("导入本机登录态", format!("读取网关所在电脑上已登录的 {client} 客户端账号，请先在客户端完成登录。")),
     };
     json!({ "methodIndex": index, "type": "desktop", "label": label, "instructions": instructions,
         "prompts": [], "localOnly": true, "browserMode": "none", "manualCallback": false, "callbackInput": "url" })

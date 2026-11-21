@@ -5,9 +5,9 @@ use agent2api_wasm_sdk::{json, Result, Value};
 use crate::{credentials, errors, gates};
 
 pub fn methods(locale: &str) -> Value {
-    let mut value = json!({ "instructions": gates::SUMMARY, "readiness": gates::status(), "methods": [
+    let mut value = json!({ "readiness": gates::status(), "methods": [
         { "methodIndex": 0, "type": "api", "label": "粘贴完整 Cookie 快照",
-            "instructions": "必须含 sessionid 或 sessionid_ss，以及原登录客户端的 deviceId；仅 Cookie 无法形成完整的豆包工作请求上下文。添加前会在线核对账号，不读取其他本机登录态。",
+            "instructions": "粘贴包含 Cookie（含 sessionid 或 sessionid_ss）和 deviceId 的登录凭据。",
             "prompts": [
                 { "key": "cookie", "type": "text", "label": "完整 Cookie 或 Cookie JSON", "secret": true,
                     "placeholder": "sessionid=…; sessionid_ss=…" },
@@ -18,14 +18,14 @@ pub fn methods(locale: &str) -> Value {
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
             ] },
         { "methodIndex": 1, "type": "api", "label": "导入文本 JSON / Cookie 快照",
-            "instructions": "粘贴含 Cookie 和原登录设备 deviceId 的单账号 JSON；已有用户身份会与在线结果核对，不自动换人。缺少设备信息时请重新导入本机登录态。",
+            "instructions": "选择或粘贴豆包工作凭据文件（含 Cookie 与 deviceId）即可导入账号。",
             "prompts": [
                 { "key": "credentialText", "type": "text", "label": "快照文本", "secret": true },
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
             ] },
         { "methodIndex": 2, "type": "oauth", "label": "豆包工作网页登录", "prompts": [],
             "browserMode": "plugin", "embeddedOnly": true, "manualCallback": true, "callbackInput": "code", "validatesCallback": true,
-            "instructions": "在官方页面完成登录，桌面窗口读取本次 Cookie、设备和客户端上下文并核对账号；网页面板可粘贴完整 Cookie JSON。" },
+            "instructions": "在官方页面完成登录即可添加账号；远程访问面板时可粘贴完整 Cookie JSON。" },
         agent2api_wasm_sdk::login::desktop_method(3, "豆包工作 / Doubao Work", locale)
     ] });
     translate(&mut value, locale);
@@ -84,41 +84,34 @@ fn translate(value: &mut Value, locale: &str) {
 }
 
 const LOGIN_TEXT: &[(&str, [&str; 5])] = &[
-    (gates::SUMMARY, [
-        "豆包工作已接通對話、思考、用戶端工具橋、圖片輸入和生圖、網頁登入、本機快照匯入、模型目錄、額度、每日簽到與已完成任務領獎；未執行真實帳號驗收。",
-        "Doubao Work implements chat, reasoning, client-side tool bridging, image input and generation, browser sign-in, local snapshot import, model catalogs, quotas, daily check-in and completed-task rewards. Real-account acceptance is pending.",
-        "Doubao Workは対話、推論、クライアント側ツール連携、画像入力と生成、ウェブログイン、ローカルスナップショットの取り込み、モデル一覧、利用枠、日次チェックインと完了タスクの報酬に対応する実装があります。実アカウントでの検証は未実施です。",
-        "Doubao Work의 대화, 추론, 클라이언트 도구 연동, 이미지 입력과 생성, 웹 로그인, 로컬 스냅샷 가져오기, 모델 목록, 사용 한도, 일일 체크인과 완료된 작업 보상이 구현되어 있습니다. 실제 계정 검증은 하지 않았습니다.",
-        "O Doubao Work implementa conversa, raciocínio, integração de ferramentas do cliente, entrada e geração de imagens, login web, importação de estado local, catálogo, cotas, check-in diário e recompensas de tarefas concluídas. Ainda sem validação com conta real.",
-    ]),
     ("粘贴完整 Cookie 快照", ["貼上完整 Cookie 快照", "Paste a complete cookie snapshot", "Cookieスナップショットを貼り付け", "전체 Cookie 스냅샷 붙여넣기", "Colar snapshot completo de cookies"]),
-    ("必须含 sessionid 或 sessionid_ss，以及原登录客户端的 deviceId；仅 Cookie 无法形成完整的豆包工作请求上下文。添加前会在线核对账号，不读取其他本机登录态。", [
-        "必須含 sessionid 或 sessionid_ss，以及原登入用戶端的 deviceId；僅 Cookie 無法形成完整的豆包工作請求。新增前會線上核對帳號，不讀取其他本機登入狀態。",
-        "Include sessionid or sessionid_ss and the original sign-in client's deviceId. Cookies alone are insufficient. The account is checked online before saving; no other local sign-in state is read.",
-        "sessionidまたはsessionid_ssと、ログインした元クライアントのdeviceIdが必要です。Cookieだけでは不十分です。保存前にオンラインでアカウントを確認し、他のローカルログイン状態は読みません。",
-        "sessionid 또는 sessionid_ss와 로그인한 원래 클라이언트의 deviceId가 필요합니다. Cookie만으로는 부족합니다. 저장 전에 온라인으로 계정을 확인하며 다른 로컬 로그인 상태는 읽지 않습니다.",
-        "Inclua sessionid ou sessionid_ss e o deviceId do cliente original de login. Só os cookies não bastam. A conta é conferida online antes de salvar; nenhum outro estado local é lido.",
+    ("粘贴包含 Cookie（含 sessionid 或 sessionid_ss）和 deviceId 的登录凭据。", [
+        "貼上包含 Cookie（含 sessionid 或 sessionid_ss）與 deviceId 的登入憑據。",
+        "Paste sign-in credentials containing cookies (sessionid or sessionid_ss) and deviceId.",
+        "Cookie（sessionid または sessionid_ss）と deviceId を含む認証情報を貼り付けてください。",
+        "Cookie(sessionid 또는 sessionid_ss)와 deviceId가 포함된 로그인 인증 정보를 붙여넣으세요.",
+        "Cole as credenciais de login contendo cookies (sessionid ou sessionid_ss) e deviceId.",
     ]),
     ("完整 Cookie 或 Cookie JSON", ["完整 Cookie 或 Cookie JSON", "Complete cookie header or JSON", "完全なCookieまたはCookie JSON", "전체 Cookie 또는 Cookie JSON", "Cookie completo ou JSON de cookies"]),
     ("完整 JSON 已包含时无需填写", ["完整 JSON 已包含時無需填寫", "Optional if already included in the JSON", "JSONに含まれていれば入力不要", "JSON에 포함되어 있으면 입력하지 않아도 됩니다", "Opcional se já estiver no JSON"]),
     ("客户端版本", ["用戶端版本", "Client version", "クライアントのバージョン", "클라이언트 버전", "Versão do cliente"]),
     ("备注名", ["備註名稱", "Account label", "表示名", "계정 표시 이름", "Nome da conta"]),
     ("导入文本 JSON / Cookie 快照", ["匯入文字 JSON / Cookie 快照", "Import JSON / cookie snapshot", "JSON / Cookieスナップショットを取り込み", "JSON / Cookie 스냅샷 가져오기", "Importar JSON / snapshot de cookies"]),
-    ("粘贴含 Cookie 和原登录设备 deviceId 的单账号 JSON；已有用户身份会与在线结果核对，不自动换人。缺少设备信息时请重新导入本机登录态。", [
-        "貼上含 Cookie 和原登入裝置 deviceId 的單帳號 JSON；既有使用者身分會與線上結果核對，不自動換人。缺少裝置資訊時請重新匯入本機登入狀態。",
-        "Paste a single-account JSON with cookies and the original sign-in deviceId. Any saved identity is checked against the online result; accounts are never silently switched. Re-import local sign-in state if device information is missing.",
-        "Cookieと元のログイン端末のdeviceIdを含む単一アカウントのJSONを貼り付けます。既存のユーザー情報はオンライン結果と照合し、勝手に別アカウントに切り替えません。端末情報がなければローカルログイン状態を再取り込みしてください。",
-        "Cookie와 원래 로그인 기기의 deviceId가 포함된 단일 계정 JSON을 붙여넣으세요. 기존 계정은 온라인 결과와 대조하며 몰래 다른 계정으로 바꾸지 않습니다. 기기 정보가 없으면 로컬 로그인 상태를 다시 가져오세요.",
-        "Cole um JSON de uma conta com cookies e o deviceId original. A identidade salva é conferida online e nunca substituída silenciosamente. Importe novamente o estado local se faltarem os dados do dispositivo.",
+    ("选择或粘贴豆包工作凭据文件（含 Cookie 与 deviceId）即可导入账号。", [
+        "選擇或貼上豆包工作憑據檔案（含 Cookie 與 deviceId）即可匯入帳號。",
+        "Select or paste a Doubao Work credential file (with cookies and deviceId) to import the account.",
+        "Doubao Work の認証ファイル（Cookie と deviceId を含む）を選択または貼り付けてアカウントを取り込めます。",
+        "Doubao Work 인증 파일(Cookie 및 deviceId 포함)을 선택하거나 붙여넣어 계정을 가져올 수 있습니다.",
+        "Selecione ou cole um arquivo de credenciais do Doubao Work (com cookies e deviceId) para importar a conta.",
     ]),
     ("快照文本", ["快照文字", "Snapshot text", "スナップショットのテキスト", "스냅샷 텍스트", "Texto do snapshot"]),
     ("豆包工作网页登录", ["豆包工作網頁登入", "Doubao Work browser sign-in", "Doubao Workウェブログイン", "Doubao Work 웹 로그인", "Login web do Doubao Work"]),
-    ("在官方页面完成登录，桌面窗口读取本次 Cookie、设备和客户端上下文并核对账号；网页面板可粘贴完整 Cookie JSON。", [
-        "在官方頁面完成登入，桌面視窗讀取本次 Cookie、裝置及用戶端資訊並核對帳號；網頁面板可貼上完整 Cookie JSON。",
-        "Sign in on the official page. The desktop window captures this session's cookies, device and client information and checks the account. On web or mobile, paste the complete cookie JSON into the callback field.",
-        "公式ページでログインします。デスクトップウィンドウが今回のCookie、端末情報とクライアント情報を取得し、アカウントを確認します。ウェブやモバイルでは完全なCookie JSONをコールバック欄に貼り付けます。",
-        "공식 페이지에서 로그인하세요. 데스크톱 창이 이번 Cookie와 기기 및 클라이언트 정보를 읽어 계정을 확인합니다. 웹이나 모바일에서는 전체 Cookie JSON을 콜백 입력란에 붙여넣으세요.",
-        "Entre na página oficial. A janela do aplicativo captura os cookies, dispositivo e contexto desta sessão e confere a conta. Na web ou no celular, cole o JSON completo de cookies no campo de retorno.",
+    ("在官方页面完成登录即可添加账号；远程访问面板时可粘贴完整 Cookie JSON。", [
+        "在官方頁面完成登入即可新增帳號；遠端存取面板時可貼上完整 Cookie JSON。",
+        "Sign in on the official page to add the account; when accessing the panel remotely, paste the complete cookie JSON.",
+        "公式ページでログインするとアカウントを追加できます。リモート画面では完全な Cookie JSON を貼り付けてください。",
+        "공식 페이지에서 로그인하면 계정이 추가됩니다. 원격 패널에서는 전체 Cookie JSON을 붙여넣으세요.",
+        "Conclua o login na página oficial para adicionar a conta; no acesso remoto ao painel, cole o JSON completo de cookies.",
     ]),
 ];
 

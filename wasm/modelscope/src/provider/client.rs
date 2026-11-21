@@ -39,8 +39,17 @@ impl Client {
     }
 
     pub fn site_json(&self, path: &str, operation: &str) -> Result<Value> {
-        self.get(&format!("{}{path}", self.region.site_base()),
-            json!({ "Cookie": format!("m_session_id={}", self.token), "Accept": "application/json" }),
+        let base = self.region.site_base();
+        self.get(&format!("{base}{path}"),
+            json!({
+                "Cookie": format!("m_session_id={}", self.token),
+                "Referer": format!("{base}/"),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Dest": "empty"
+            }),
             operation, true)
     }
 

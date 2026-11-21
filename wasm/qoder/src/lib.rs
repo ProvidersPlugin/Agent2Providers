@@ -60,7 +60,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.identity" => account::identity(&params["secret"]).map(|id| json!(id)),
         "token.ensure" => refresh::ensure(false).map(|snapshot| json!(snapshot.credentials.access)),
         "token.refresh" => refresh::ensure(true).map(|snapshot| json!(snapshot.credentials.access)),
-        "token.expiring" => refresh::due().map(|value| json!(value)),
+        "token.expiring" => refresh::due(sdk::expiring_lead(&params, 0)).map(|value| json!(value)),
         "models.list" => models::list(),
         "models.refresh" => models::refresh(&params),
         "usage.query" => usage::query(),

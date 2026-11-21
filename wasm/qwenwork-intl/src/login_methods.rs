@@ -1,14 +1,14 @@
 //! 国际设备授权和手工文本入口，方法索引与地区身份固定，说明跟随本次界面语言。
 use agent2api_wasm_sdk::{json, Value};
 
-fn text(locale: &str) -> [&'static str; 9] {
+fn text(locale: &str) -> [&'static str; 11] {
     match locale {
-        "en" => ["Browser device authorization", "Authorize your QwenWork International account on the official page; it is saved automatically without a local callback. Import access/refresh credentials or a complete JSON record from the international client. User and device IDs are checked, and a missing device ID is generated once and saved. Compatibility has not been verified with a real international account. The China and enterprise pools are not imported here; the client files are not read or changed.", "Enter device credentials", "Import credentials JSON", "Credentials JSON", "Device ID (optional; preserve the original value)", "User ID (optional; read from account information if absent)", "Refresh token (optional; access-only records cannot renew)", "Expires at (optional; Unix seconds, milliseconds or an ISO date)"],
-        "ja" => ["ブラウザーでデバイス認証", "公式ページで千問办公国際版を認証すると、自動保存されます。ローカルコールバックは不要です。国際版のアクセス・更新認証情報または完全なJSONを取り込めます。ユーザーとデバイスIDを照合し、IDがなければ一度生成して保存します。実アカウントでは未検証です。中国版・企業プールは取り込まず、公式クライアントのファイルは読み書きしません。", "デバイス認証情報を入力", "認証情報JSONを取り込む", "認証情報JSON", "デバイスID（任意・元の値を保持）", "ユーザーID（任意・未入力時は照会）", "更新トークン（任意・アクセスのみでは更新不可）", "有効期限（任意・秒、ミリ秒またはISO日時）"],
-        "ko" => ["브라우저 기기 인증", "공식 페이지에서 QwenWork 국제판을 인증하면 로컬 콜백 없이 자동 저장됩니다. 국제판의 액세스/갱신 자격 증명이나 전체 JSON을 가져올 수 있습니다. 사용자와 기기 ID를 확인하며 없으면 한 번 생성해 저장합니다. 실제 국제 계정에서는 검증되지 않았습니다. 중국판이나 기업 풀을 가져오지 않으며 공식 클라이언트 파일을 읽거나 변경하지 않습니다.", "기기 자격 증명 입력", "자격 증명 JSON 가져오기", "자격 증명 JSON", "기기 ID (선택; 원래 값 유지)", "사용자 ID (선택; 없으면 계정 조회)", "갱신 토큰 (선택; 액세스 전용은 갱신 불가)", "만료 시각 (선택; 초, 밀리초 또는 ISO 날짜)"],
-        "pt-BR" => ["Autorizar dispositivo no navegador", "Autorize a conta QwenWork International na página oficial; ela será salva automaticamente sem callback local. Importe as credenciais de acesso/renovação ou o JSON completo da edição internacional. Os IDs de usuário e dispositivo são conferidos; um ID ausente é gerado uma vez e salvo. Não foi validado com conta internacional real. Não importa contas da China ou do pool empresarial, nem lê ou altera arquivos do cliente oficial.", "Inserir credenciais do dispositivo", "Importar credenciais JSON", "Credenciais JSON", "ID do dispositivo (opcional; preserve o original)", "ID do usuário (opcional; consultar se ausente)", "Token de renovação (opcional; só acesso não permite renovar)", "Expiração (opcional; segundos, milissegundos ou data ISO)"],
-        "zh-Hant" => ["網頁裝置授權", "請在官方頁面授權千問辦公國際版帳號，完成後會自動保存，不需要本機回呼。也可匯入國際版的訪問／更新憑證或完整JSON。使用者與裝置編號會核對；缺少裝置編號時僅生成並保存一次。尚未使用真實國際帳號驗收；不匯入國內或企業額度池，不讀取或修改官方客戶端檔案。", "手動填寫裝置憑證", "匯入憑證JSON", "憑證JSON", "裝置編號（選填，請保留原值）", "使用者編號（選填，缺省查詢帳號資料）", "更新令牌（選填，僅訪問令牌不能自動續期）", "到期時刻（選填，秒／毫秒時間戳或ISO日期）"],
-        _ => ["网页设备授权", "请在官方页面授权千问办公国际版账号，完成后会自动保存，不需要本机回调。也可导入国际版的访问／刷新凭据或完整JSON。用户和设备编号会核对；缺少设备编号时仅生成并保存一次。尚未使用真实国际账号验收；不导入国内或企业额度池，不读取或修改官方客户端文件。", "手工填写设备凭据", "导入凭据JSON", "凭据JSON", "设备编号（选填，请保留原值）", "用户编号（选填，缺省查询账号资料）", "刷新令牌（选填，仅访问令牌不能自动续期）", "到期时刻（选填，秒／毫秒时间戳或ISO日期）"],
+        "en" => ["Browser device authorization", "Authorize your QwenWork International account on the official page to add the account automatically.", "Enter device credentials", "Import credentials JSON", "Credentials JSON", "Device ID (optional)", "User ID (optional)", "Refresh token (optional)", "Expires at (optional)", "Enter an Access Token to add the account; include a Refresh Token to enable automatic renewal.", "Select or paste a QwenWork International credential file to import the account; automatic renewal is supported when complete sign-in details are included."],
+        "ja" => ["ブラウザーでデバイス認証", "公式ページで千問辦公（国際版）のアカウントを認証すると自動で追加されます。", "デバイス認証情報を入力", "認証情報JSONを取り込む", "認証情報JSON", "デバイスID（任意）", "ユーザーID（任意）", "更新トークン（任意）", "有効期限（任意）", "Access Token を入力してアカウントを追加できます。Refresh Token を入力すると自動更新に対応します。", "千問辦公（国際版）の認証ファイルを選択または貼り付けてアカウントを取り込めます。完全なログイン情報が含まれていれば自動更新に対応します。"],
+        "ko" => ["브라우저 기기 인증", "공식 페이지에서 QwenWork 국제판 계정을 인증하면 자동으로 추가됩니다.", "기기 자격 증명 입력", "자격 증명 JSON 가져오기", "자격 증명 JSON", "기기 ID (선택)", "사용자 ID (선택)", "갱신 토큰 (선택)", "만료 시각 (선택)", "Access Token을 입력해 계정을 추가할 수 있으며, Refresh Token을 함께 입력하면 자동 갱신을 지원합니다.", "QwenWork 국제판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 전체 로그인 정보가 포함되어 있으면 자동 갱신을 지원합니다."],
+        "pt-BR" => ["Autorizar dispositivo no navegador", "Autorize a conta QwenWork International na página oficial para adicionar a conta automaticamente.", "Inserir credenciais do dispositivo", "Importar credenciais JSON", "Credenciais JSON", "ID do dispositivo (opcional)", "ID do usuário (opcional)", "Token de renovação (opcional)", "Expiração (opcional)", "Informe o Access Token para adicionar a conta; inclua o Refresh Token para ativar a renovação automática.", "Selecione ou cole um arquivo de credenciais do QwenWork International para importar a conta; a renovação automática é suportada quando os dados completos de login estão incluídos."],
+        "zh-Hant" => ["網頁裝置授權", "在官方頁面授權千問辦公國際版帳號即可自動新增帳號。", "手動填寫裝置憑證", "匯入憑證JSON", "憑證JSON", "裝置編號（選填）", "使用者編號（選填）", "更新令牌（選填）", "到期時刻（選填）", "填寫 Access Token 即可新增帳號；填寫 Refresh Token 後支援自動續期。", "選擇或貼上千問辦公國際版憑據檔案即可匯入帳號；包含完整登入資訊時支援自動續期。"],
+        _ => ["网页设备授权", "在官方页面授权千问办公国际版账号即可自动添加账号。", "手工填写设备凭据", "导入凭据JSON", "凭据JSON", "设备编号（选填）", "用户编号（选填）", "刷新令牌（选填）", "到期时刻（选填）", "填写 Access Token 即可添加账号；填写 Refresh Token 后支持自动续期。", "选择或粘贴千问办公国际版凭据文件即可导入账号；包含完整登录信息时支持自动续期。"],
     }
 }
 pub fn instructions(locale: &str) -> &'static str {
@@ -31,17 +31,17 @@ pub fn progress(locale: &str, kind: &str) -> &'static str {
 }
 pub fn methods(locale: &str) -> Value {
     let text = text(locale);
-    json!({ "instructions": text[1], "methods": [
+    json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": text[0], "instructions": text[1], "prompts": [],
             "browserMode": "choice", "manualCallback": false, "callbackInput": "url" },
-        { "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[1], "prompts": [
+        { "methodIndex": 1, "type": "api", "label": text[2], "instructions": text[9], "prompts": [
             { "key": "accessToken", "type": "text", "label": "Access Token", "secret": true },
             { "key": "refreshToken", "type": "text", "label": text[7], "secret": true, "optional": true },
             { "key": "userId", "type": "text", "label": text[6], "optional": true },
             { "key": "machineId", "type": "text", "label": text[5], "optional": true },
             { "key": "expiresAt", "type": "text", "label": text[8], "optional": true }
         ] },
-        { "methodIndex": 2, "type": "api", "label": text[3], "instructions": text[1], "prompts": [
+        { "methodIndex": 2, "type": "api", "label": text[3], "instructions": text[10], "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[4], "secret": true }
         ] }
     ] })

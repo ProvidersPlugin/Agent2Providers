@@ -136,11 +136,16 @@ impl Credentials {
         Ok(())
     }
 
-    pub fn expiring(&self, now: i64) -> bool {
+    pub fn expiring_within(&self, now: i64, min_lead_ms: i64) -> bool {
+        let lead = 300_000_i64.max(min_lead_ms.max(0));
         !self.refresh.is_empty()
             && self
                 .expires
-                .is_some_and(|expires| expires <= now.saturating_add(300_000))
+                .is_some_and(|expires| expires <= now.saturating_add(lead))
+    }
+
+    pub fn expiring(&self, now: i64) -> bool {
+        self.expiring_within(now, 0)
     }
 
     pub fn advanced_from(&self, old: &Self) -> bool {

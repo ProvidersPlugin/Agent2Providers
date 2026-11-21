@@ -45,10 +45,15 @@ pub fn expires(secret: &Value) -> i64 {
     if created > 0 && lifetime > 0 { created.saturating_add(lifetime).saturating_mul(1000) } else { 0 }
 }
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
     let expires = expires(secret);
+    let lead = 3_600_000_i64.max(min_lead_ms.max(0));
     !text(secret, &["refreshToken", "refresh_token"]).is_empty()
-        && expires > 0 && expires.saturating_sub(3_600_000) <= sdk::now()
+        && expires > 0 && expires.saturating_sub(lead) <= sdk::now()
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn access(secret: &Value) -> Result<String> {

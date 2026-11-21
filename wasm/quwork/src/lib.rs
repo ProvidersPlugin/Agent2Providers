@@ -30,7 +30,7 @@ fn metadata() -> Value {
             { "kind": "token", "label": "QuWork 凭证 JSON 或模型凭证", "placeholder": "llmToken", "extra_fields": [] }],
         "account_features": { "usage": true, "credit_detail": true, "credit_expiry": true,
             "identifier": ["uid", "phone"], "expiry": ["expiresAt"] },
-        "checkin": { "description": "QuWork 每日奖励：先查后领、回查确认；结果不明时不重复提交（待真实账号验证）", "daily": true, "modes": ["checkin"] },
+        "checkin": { "description": "QuWork 每日奖励：先查后领、回查确认；结果不明时不重复提交。", "daily": true, "modes": ["checkin"] },
         "refusal_finishes": ["content_filter"], "refusal_markers": [], "default_models": models::defaults() })
 }
 
@@ -58,7 +58,10 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             &refresh::refresh(true)?,
             &["llmToken"]
         ))),
-        "token.expiring" => Ok(json!(refresh::expiring(&refresh::snapshot()?))),
+        "token.expiring" => Ok(json!(refresh::expiring_within(
+            &refresh::snapshot()?,
+            sdk::expiring_lead(&params, 0),
+        ))),
         "login.start" => login::start(&params),
         "login.poll" => login::poll(),
         "login.cancel" => login::cancel(),

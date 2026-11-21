@@ -19,9 +19,9 @@ fn control() -> Result<state::Snapshot> {
 fn put(before: &state::Snapshot, value: Value) -> Result<bool> {
     state::compare_exchange(Scope::Account, CONTROL, 1, before.revision, value, 0)
 }
-pub fn due() -> Result<bool> {
+pub fn due(min_lead_ms: i64) -> Result<bool> {
     let current = account::read()?;
-    Ok(current.credentials.expiring()?
+    Ok(current.credentials.expiring_within(min_lead_ms)?
         && (current.credentials.pat().is_some()
             || agent2api_wasm_sdk::refresh_guard::available("credential-refresh", current.credentials.oauth_refresh())?))
 }

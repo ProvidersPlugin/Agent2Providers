@@ -4,10 +4,15 @@ use crate::{account, credentials::Cookies, endpoints, errors, network, util};
 
 const REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let skew = REFRESH_SKEW_MS.max(min_lead_ms.max(0));
     util::text(secret, &["appToken"]).is_empty()
         || util::timestamp(&secret["appTokenExpiresAt"])
-            .is_none_or(|at| at.saturating_sub(REFRESH_SKEW_MS) <= sdk::now())
+            .is_none_or(|at| at.saturating_sub(skew) <= sdk::now())
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn exchange(secret: &mut Value) -> Result<String> {

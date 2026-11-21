@@ -35,18 +35,22 @@ pub fn snapshot() -> Result<Session> {
     let secret = account::parse(&record["secret"], record["secret"]["name"].as_str())?;
     Ok(Session { record, secret })
 }
-fn expiring(secret: &Value) -> bool {
+fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let lead = 300_000_i64.max(min_lead_ms.max(0));
     util::integer(&secret["expiresAt"])
         .filter(|v| *v > 0)
-        .is_some_and(|v| v.saturating_sub(300_000) <= sdk::now())
+        .is_some_and(|v| v.saturating_sub(lead) <= sdk::now())
+}
+fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 fn refreshable(secret: &Value) -> bool {
     !util::text(secret, &["refreshToken"]).is_empty()
         && util::integer(&secret["refreshExpiresAt"]).is_none_or(|at| at <= 0 || at > sdk::now())
 }
-pub fn is_expiring() -> Result<bool> {
+pub fn is_expiring(min_lead_ms: i64) -> Result<bool> {
     let current = snapshot()?;
-    Ok(refreshable(&current.secret) && expiring(&current.secret))
+    Ok(refreshable(&current.secret) && expiring_within(&current.secret, min_lead_ms))
 }
 pub fn ensure(force: bool) -> Result<Session> {
     let current = snapshot()?;

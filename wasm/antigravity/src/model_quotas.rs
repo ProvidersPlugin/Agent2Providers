@@ -295,8 +295,173 @@ fn build_row(
     row
 }
 
+const EFFORT_TOKENS: [&str; 9] = [
+    "extra-low",
+    "extra_low",
+    "extra low",
+    "minimal",
+    "xhigh",
+    "xlow",
+    "medium",
+    "high",
+    "low",
+];
+
+fn strip_effort_id(id: &str, allow_max: bool) -> (&str, bool) {
+    let lower = id.to_ascii_lowercase();
+    let candidates = EFFORT_TOKENS
+        .iter()
+        .copied()
+        .chain(allow_max.then_some("max"));
+    for token in candidates {
+        if token.contains(' ') {
+            continue;
+        }
+        for sep in ['-', '_'] {
+            if lower.len() > token.len() + 1
+                && lower.ends_with(token)
+                && lower.as_bytes()[lower.len() - token.len() - 1] == sep as u8
+            {
+                let base = id[..id.len() - token.len() - 1].trim_end_matches(['-', '_']);
+                if !base.is_empty() {
+                    return (base, true);
+                }
+            }
+        }
+    }
+    (id, false)
+}
+
+fn strip_parenthesized_effort(name: &str) -> (&str, bool) {
+    let trimmed = name.trim();
+    let open = if trimmed.ends_with(')') {
+        trimmed.rfind('(')
+    } else if trimmed.ends_with('）') {
+        trimmed.rfind('（')
+    } else {
+        return (trimmed, false);
+    };
+    let Some(pos) = open else {
+        return (trimmed, false);
+    };
+    let close_len = if trimmed.ends_with('）') { '）'.len_utf8() } else { 1 };
+    let open_len = if trimmed[pos..].starts_with('（') { '（'.len_utf8() } else { 1 };
+    let inner = trimmed[pos + open_len..trimmed.len() - close_len]
+        .trim()
+        .to_ascii_lowercase();
+    let is_effort = inner == "max" || EFFORT_TOKENS.iter().any(|tok| *tok == inner);
+    if !is_effort {
+        return (trimmed, false);
+    }
+    let prefix = trimmed[..pos].trim_end();
+    if prefix.is_empty() {
+        (trimmed, false)
+    } else {
+        (prefix, true)
+    }
+}
+
+fn strip_effort_name(name: &str, allow_max: bool) -> (&str, bool) {
+    let (without_paren, had_paren) = strip_parenthesized_effort(name);
+    if had_paren {
+        return (without_paren, true);
+    }
+    let lower = without_paren.to_ascii_lowercase();
+    let candidates = EFFORT_TOKENS
+        .iter()
+        .copied()
+        .chain(allow_max.then_some("max"));
+    for token in candidates {
+        if lower.len() > token.len() + 1 && lower.ends_with(token) {
+            let boundary = lower.as_bytes()[lower.len() - token.len() - 1];
+            if boundary == b' ' || boundary == b'-' {
+                let prefix = without_paren[..without_paren.len() - token.len()].trim_end_matches([' ', '-']);
+                if !prefix.is_empty() {
+                    return (prefix, true);
+                }
+            }
+        }
+    }
+    (without_paren, false)
+}
+
+fn row_percent(row: &Value) -> Option<f64> {
+    row["remainingPercent"].as_f64().filter(|v| v.is_finite())
+}
+
+fn prefer_incoming_reading(existing: &Value, incoming: &Value) -> bool {
+    match (row_percent(existing), row_percent(incoming)) {
+        (None, Some(_)) => true,
+        (Some(_), None) => false,
+        (Some(e), Some(i)) if i + 1e-6 < e => true,
+        (Some(e), Some(i)) if (i - e).abs() > 1e-6 => false,
+        _ => {
+            let ew = !existing["window"].as_str().unwrap_or("").trim().is_empty();
+            let iw = !incoming["window"].as_str().unwrap_or("").trim().is_empty();
+            if !ew && iw {
+                return true;
+            }
+            if ew && !iw {
+                return false;
+            }
+            match (existing["resetsAt"].as_i64(), incoming["resetsAt"].as_i64()) {
+                (None, Some(_)) => true,
+                (Some(er), Some(ir)) => ir < er,
+                _ => false,
+            }
+        }
+    }
+}
+
+fn merge_quota_row(existing: &mut Value, incoming: Value, adopt_identity: bool) {
+    if adopt_identity {
+        existing["id"] = incoming["id"].clone();
+        existing["name"] = incoming["name"].clone();
+        if !incoming["group"].as_str().unwrap_or("").is_empty() {
+            existing["group"] = incoming["group"].clone();
+        }
+    }
+    if prefer_incoming_reading(existing, &incoming) {
+        existing["remainingPercent"] = incoming["remainingPercent"].clone();
+        existing["view"] = incoming["view"].clone();
+        existing["window"] = incoming["window"].clone();
+        for key in ["modelPercent", "groupPercent", "resetsAt"] {
+            if incoming.get(key).is_some_and(|v| !v.is_null()) {
+                existing[key] = incoming[key].clone();
+            } else if let Some(obj) = existing.as_object_mut() {
+                obj.remove(key);
+            }
+        }
+    } else {
+        if existing["window"].as_str().unwrap_or("").trim().is_empty()
+            && !incoming["window"].as_str().unwrap_or("").trim().is_empty()
+        {
+            existing["window"] = incoming["window"].clone();
+        }
+        if existing["resetsAt"].as_i64().is_none() && incoming["resetsAt"].as_i64().is_some() {
+            existing["resetsAt"] = incoming["resetsAt"].clone();
+        }
+    }
+    for flag in ["recommended", "supportsThinking", "supportsImages"] {
+        if incoming[flag].as_bool() == Some(true) {
+            existing[flag] = json!(true);
+        }
+    }
+    if existing.get("thinkingBudget").is_none()
+        && incoming.get("thinkingBudget").is_some_and(|v| !v.is_null())
+    {
+        existing["thinkingBudget"] = incoming["thinkingBudget"].clone();
+    }
+}
+
 pub fn build(models_body: Option<&Value>, groups: &[GroupReading]) -> Vec<Value> {
-    let mut entries: Vec<(usize, String, Value)> = Vec::new();
+    struct Candidate {
+        rank: usize,
+        id: String,
+        name: String,
+        row: Value,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
     if let Some(body) = models_body {
         let support = official_support(body);
         let raw_items = iter_raw_models(body);
@@ -335,16 +500,19 @@ pub fn build(models_body: Option<&Value>, groups: &[GroupReading]) -> Vec<Value>
                 display_name
             };
             let rank = support.rank.get(&lower).copied().unwrap_or(usize::MAX);
-            entries.push((
+            candidates.push(Candidate {
                 rank,
-                lower,
-                build_row(id, &label, group_name, model_frac, model_reset, group_bucket, Some(info)),
-            ));
+                id: id.to_string(),
+                name: label.clone(),
+                row: build_row(id, &label, group_name, model_frac, model_reset, group_bucket, Some(info)),
+            });
         }
     }
 
     if let Some(argon_group) = groups.iter().find(|g| g.dedicated == Some("argon")) {
-        let has_argon = entries.iter().any(|(_, lower, _)| lower.contains("argon"));
+        let has_argon = candidates
+            .iter()
+            .any(|item| item.id.to_ascii_lowercase().contains("argon"));
         if !has_argon {
             let bucket = bottleneck(argon_group);
             let group_name = if argon_group.name.is_empty() {
@@ -352,38 +520,89 @@ pub fn build(models_body: Option<&Value>, groups: &[GroupReading]) -> Vec<Value>
             } else {
                 argon_group.name.as_str()
             };
-            for (idx, (id, label)) in [
-                ("gemini-4-argon", "Gemini 4 Argon"),
-                ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
-                ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
-                ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let info = json!({ "recommended": true, "supportsThinking": true, "supportsImages": true });
-                entries.push((
-                    idx,
-                    id.to_string(),
-                    build_row(id, label, group_name, None, None, bucket.clone(), Some(&info)),
-                ));
-            }
+            let info = json!({ "recommended": true, "supportsThinking": true, "supportsImages": true });
+            candidates.push(Candidate {
+                rank: 0,
+                id: "gemini-4-argon".to_string(),
+                name: "Gemini 4 Argon".to_string(),
+                row: build_row("gemini-4-argon", "Gemini 4 Argon", group_name, None, None, bucket, Some(&info)),
+            });
         }
     }
 
-    entries.sort_by(|(ra, la, _), (rb, lb, _)| {
-        ra.cmp(rb)
-            .then_with(|| category_rank(la).cmp(&category_rank(lb)))
-            .then_with(|| la.cmp(lb))
+    // 同一模型不同思考等级在配额展示里合并为一条基础模型；`-max` 仅在括号标注或存在同族兄弟时视作档位。
+    let mut base_counts: HashMap<String, usize> = HashMap::new();
+    for item in &candidates {
+        let (base_id, _) = strip_effort_id(&item.id, true);
+        *base_counts.entry(base_id.to_ascii_lowercase()).or_insert(0) += 1;
+    }
+
+    struct Collapsed {
+        rank: usize,
+        base_lower: String,
+        bare_priority: u8,
+        row: Value,
+    }
+    let mut collapsed: Vec<Collapsed> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut by_label: HashMap<String, usize> = HashMap::new();
+
+    for mut item in candidates {
+        let (max_id_base, _) = strip_effort_id(&item.id, true);
+        let (_, had_paren) = strip_parenthesized_effort(&item.name);
+        let allow_max = had_paren || base_counts.get(&max_id_base.to_ascii_lowercase()).copied().unwrap_or(0) > 1;
+        let (base_id, id_stripped) = strip_effort_id(&item.id, allow_max);
+        let (base_name, _) = strip_effort_name(&item.name, allow_max || id_stripped);
+        let final_name = if item.name.eq_ignore_ascii_case(&item.id) {
+            base_id.to_string()
+        } else {
+            base_name.to_string()
+        };
+        item.row["id"] = json!(base_id);
+        item.row["name"] = json!(final_name);
+
+        let base_lower = base_id.to_ascii_lowercase();
+        let label_key = final_name.trim().to_ascii_lowercase();
+        let bare_priority = u8::from(id_stripped);
+        let existing_idx = by_id
+            .get(&base_lower)
+            .copied()
+            .or_else(|| (!label_key.is_empty()).then(|| by_label.get(&label_key).copied()).flatten());
+
+        if let Some(idx) = existing_idx {
+            let slot = &mut collapsed[idx];
+            slot.rank = slot.rank.min(item.rank);
+            let adopt_identity = bare_priority < slot.bare_priority;
+            if adopt_identity {
+                slot.bare_priority = bare_priority;
+                slot.base_lower = base_lower.clone();
+            }
+            merge_quota_row(&mut slot.row, item.row, adopt_identity);
+            by_id.entry(base_lower).or_insert(idx);
+            if !label_key.is_empty() {
+                by_label.entry(label_key).or_insert(idx);
+            }
+        } else {
+            let idx = collapsed.len();
+            by_id.insert(base_lower.clone(), idx);
+            if !label_key.is_empty() {
+                by_label.insert(label_key, idx);
+            }
+            collapsed.push(Collapsed {
+                rank: item.rank,
+                base_lower,
+                bare_priority,
+                row: item.row,
+            });
+        }
+    }
+
+    collapsed.sort_by(|a, b| {
+        a.rank
+            .cmp(&b.rank)
+            .then_with(|| category_rank(&a.base_lower).cmp(&category_rank(&b.base_lower)))
+            .then_with(|| a.base_lower.cmp(&b.base_lower))
     });
 
-    let mut seen_labels = HashSet::new();
-    let mut rows = Vec::new();
-    for (_, _, row) in entries {
-        let label_key = row["name"].as_str().unwrap_or("").trim().to_ascii_lowercase();
-        if label_key.is_empty() || seen_labels.insert(label_key) {
-            rows.push(row);
-        }
-    }
-    rows
+    collapsed.into_iter().map(|entry| entry.row).collect()
 }

@@ -6,15 +6,19 @@ use agent2api_wasm_sdk::{self as sdk, json, AccountLock, Error, Result, Value};
 
 const CONTROL: &str = "refresh-control";
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let margin = endpoints::REFRESH_MARGIN.max(min_lead_ms.max(0));
     account::expires(secret)
-        .is_some_and(|at| at.saturating_sub(endpoints::REFRESH_MARGIN) <= sdk::now())
+        .is_some_and(|at| at.saturating_sub(margin) <= sdk::now())
 }
-pub fn due() -> Result<bool> {
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
+}
+pub fn due(min_lead_ms: i64) -> Result<bool> {
     let initial = account::read()?;
     if initial.local {
         let status = sdk::desktop_refresh::status(endpoints::PROVIDER)?;
-        return Ok(status["authorized"] == true && status["refreshable"] == true && expiring(&initial.secret));
+        return Ok(status["authorized"] == true && status["refreshable"] == true && expiring_within(&initial.secret, min_lead_ms));
     }
     if account::refresh_token(&initial.secret).is_empty() {
         return Ok(false);
@@ -31,7 +35,7 @@ pub fn due() -> Result<bool> {
             "AutoClaw 国际版续期状态格式已变化，请重新发起",
         ));
     }
-    if expiring(&snapshot.secret) {
+    if expiring_within(&snapshot.secret, min_lead_ms) {
         return Ok(true);
     }
     // 维护间隔只从成功续期起算，失败不阻挡下一轮调度。

@@ -80,12 +80,13 @@ pub fn ensure(force: bool) -> Result<String> {
 }
 
 /// 仅回答 15 分钟临期策略；只要具有完整刷新材料即可在临期时由插件自动续期。
-pub fn expiring() -> Result<bool> {
+pub fn expiring(min_lead_ms: i64) -> Result<bool> {
     let account = Account::current_refresh()?;
     account.unchanged_refresh()?;
+    let lead = LEAD_MS.max(min_lead_ms.max(0));
     Ok(!account.needs_relogin
         && account.credential.refresh_material_complete()
-        && account.credential.needs_refresh(LEAD_MS, util::now()?))
+        && account.credential.needs_refresh(lead, util::now()?))
 }
 
 pub fn status() -> Result<Value> {

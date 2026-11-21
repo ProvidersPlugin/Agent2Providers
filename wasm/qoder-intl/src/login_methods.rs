@@ -32,12 +32,12 @@ pub fn notice(locale: &str, phase: &str) -> &'static str {
 
 pub fn methods(locale: &str) -> Value {
     let text = match locale {
-        "en" => ["Browser device authorization", "Authorize your Qoder International account on the official page. PKCE is polled automatically; no local callback, client installation or UMID is required for login.", "Personal access token (PAT)", "Enter credentials", "Import credentials JSON", "Credentials JSON"],
-        "ja" => ["ブラウザーでデバイス認証", "公式ページで Qoder 国際版を認証してください。PKCE の結果は自動取得され、ログインにローカルコールバックやクライアント、UMID は不要です。", "個人アクセストークン（PAT）", "認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON"],
-        "ko" => ["브라우저 기기 인증", "공식 페이지에서 Qoder 국제판을 인증해 주세요. PKCE 결과를 자동으로 가져오며 로그인에는 로컬 콜백, 클라이언트 설치 또는 UMID가 필요하지 않습니다.", "개인 액세스 토큰 (PAT)", "인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON"],
-        "pt-BR" => ["Autorizar dispositivo no navegador", "Autorize sua conta Qoder International na página oficial. O resultado PKCE é consultado automaticamente; o login não exige callback local, cliente instalado ou UMID.", "Token de acesso pessoal (PAT)", "Inserir credenciais", "Importar credenciais JSON", "Credenciais JSON"],
-        "zh-Hant" => ["網頁裝置授權", "請在官方頁面授權 Qoder 國際版帳號。PKCE 結果會自動輪詢，登入不需要本機回呼、安裝客戶端或 UMID。", "個人存取權杖（PAT）", "手動填寫憑證", "匯入憑證 JSON", "憑證 JSON"],
-        _ => ["网页设备授权", "请在官方页面授权 Qoder 国际版账号。PKCE 结果会自动轮询，登录不需要本机回调、安装客户端或 UMID。", "个人访问令牌（PAT）", "手动填写凭据", "导入凭据 JSON", "凭据 JSON"],
+        "en" => ["Browser device authorization", "Authorize your Qoder International account on the official page to add the account automatically.", "Personal access token (PAT)", "Enter credentials", "Import credentials JSON", "Credentials JSON", "Select or paste a Qoder International credential file to import the account; automatic renewal is supported when complete sign-in details are included."],
+        "ja" => ["ブラウザーでデバイス認証", "公式ページで Qoder 国際版を認証すると自動でアカウントが追加されます。", "個人アクセストークン（PAT）", "認証情報を入力", "認証情報 JSON を取り込む", "認証情報 JSON", "Qoder 国際版の認証ファイルを選択または貼り付けてアカウントを取り込めます。完全なログイン情報が含まれていれば自動更新に対応します。"],
+        "ko" => ["브라우저 기기 인증", "공식 페이지에서 Qoder 국제판을 인증하면 계정이 자동으로 추가됩니다.", "개인 액세스 토큰 (PAT)", "인증 정보 입력", "인증 정보 JSON 가져오기", "인증 정보 JSON", "Qoder 국제판 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 전체 로그인 정보가 포함되어 있으면 자동 갱신을 지원합니다."],
+        "pt-BR" => ["Autorizar dispositivo no navegador", "Autorize sua conta Qoder International na página oficial para adicionar a conta automaticamente.", "Token de acesso pessoal (PAT)", "Inserir credenciais", "Importar credenciais JSON", "Credenciais JSON", "Selecione ou cole um arquivo de credenciais do Qoder International para importar a conta; a renovação automática é suportada quando os dados completos de login estão incluídos."],
+        "zh-Hant" => ["網頁裝置授權", "在官方頁面授權 Qoder 國際版帳號即可自動新增帳號。", "個人存取權杖（PAT）", "手動填寫憑證", "匯入憑證 JSON", "憑證 JSON", "選擇或貼上 Qoder 國際版憑據檔案即可匯入帳號；包含完整登入資訊時支援自動續期。"],
+        _ => ["网页设备授权", "在官方页面授权 Qoder 国际版账号即可自动添加账号。", "个人访问令牌（PAT）", "手动填写凭据", "导入凭据 JSON", "凭据 JSON", "选择或粘贴 Qoder 国际版凭据文件即可导入账号；包含完整登录信息时支持自动续期。"],
     };
     let fields = match locale {
         "en" => [
@@ -96,7 +96,7 @@ pub fn methods(locale: &str) -> Value {
             { "key": "machineId", "type": "text", "label": fields[3], "optional": true },
             { "key": "expiresAt", "type": "text", "label": fields[4], "optional": true }
         ] },
-        { "methodIndex": 3, "type": "api", "label": text[4], "prompts": [
+        { "methodIndex": 3, "type": "api", "label": text[4], "instructions": text[6], "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[5], "secret": true }
         ] }
     ] })

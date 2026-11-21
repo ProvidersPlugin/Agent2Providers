@@ -127,10 +127,15 @@ pub fn can_refresh(secret: &Value) -> bool {
         && !text(secret, &["latestKeyfrom", "latest_keyfrom"]).is_empty()
 }
 
-pub fn expiring(secret: &Value) -> bool {
+pub fn expiring_within(secret: &Value, min_lead_ms: i64) -> bool {
+    let lead = 3_600_000_i64.max(min_lead_ms.max(0));
     can_refresh(secret)
         && expires(secret) > 0
-        && expires(secret).saturating_sub(3_600_000) <= sdk::now()
+        && expires(secret).saturating_sub(lead) <= sdk::now()
+}
+
+pub fn expiring(secret: &Value) -> bool {
+    expiring_within(secret, 0)
 }
 
 pub fn identity(secret: &Value) -> String {
@@ -222,6 +227,11 @@ fn canonical(payload: &Value) -> Result<Value> {
         if value.is_empty() {
             continue;
         }
+        let value = if matches!(target, "firstKeyfrom" | "latestKeyfrom") {
+            normalize_keyfrom(&value)
+        } else {
+            value
+        };
         let limit = if target.ends_with("Token") {
             32 * 1024
         } else {
@@ -377,11 +387,28 @@ pub fn normalize(params: &Value) -> Result<Value> {
     normalized(secret)
 }
 
+pub fn normalize_keyfrom(value: &str) -> String {
+    let trimmed = value.trim().to_ascii_lowercase();
+    let valid_channel = !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'));
+    let legacy_timestamp =
+        trimmed.len() >= 10 && trimmed.bytes().all(|byte| byte.is_ascii_digit());
+    if !valid_channel || legacy_timestamp {
+        upstream::OFFICIAL_KEYFROM.to_string()
+    } else {
+        trimmed
+    }
+}
+
 pub fn login_bundle(data: &Value, uuid: &str, keyfrom: &str) -> Result<Value> {
     let mut secret = canonical(data)?;
+    let normalized_keyfrom = normalize_keyfrom(keyfrom);
     secret["uuid"] = json!(uuid);
-    secret["firstKeyfrom"] = json!(keyfrom);
-    secret["latestKeyfrom"] = json!(keyfrom);
+    secret["firstKeyfrom"] = json!(normalized_keyfrom);
+    secret["latestKeyfrom"] = json!(normalized_keyfrom);
     secret["createdAt"] = json!(sdk::now());
     let expiry = expires(&secret);
     if expiry > 0 {
@@ -394,11 +421,11 @@ pub fn keyfrom_fields(secret: &Value, client_version: &str) -> Vec<(&'static str
     let mut fields = vec![
         (
             "firstKeyfrom",
-            text(secret, &["firstKeyfrom", "first_keyfrom"]),
+            normalize_keyfrom(&text(secret, &["firstKeyfrom", "first_keyfrom"])),
         ),
         (
             "latestKeyfrom",
-            text(secret, &["latestKeyfrom", "latest_keyfrom"]),
+            normalize_keyfrom(&text(secret, &["latestKeyfrom", "latest_keyfrom"])),
         ),
         ("version", client_version.to_string()),
     ];
@@ -510,7 +537,7 @@ pub fn refresh() -> Result<String> {
         secret,
         &["refreshToken", "refresh_token"]
     )));
-    let response = upstream::anonymous("/api/auth/refresh", &body)?;
+    let response = upstream::anonymous("/api/auth/refresh", &body, &client_version)?;
     let data = upstream::envelope(&response, "续期")?;
     let fresh = canonical(&data)?;
     validate_current(&current)?;
@@ -533,6 +560,14 @@ pub fn refresh() -> Result<String> {
         next["id"] = json!(previous_identity);
     }
     next["accessToken"] = json!(next_token);
+    next["firstKeyfrom"] = json!(normalize_keyfrom(&text(
+        secret,
+        &["firstKeyfrom", "first_keyfrom"]
+    )));
+    next["latestKeyfrom"] = json!(normalize_keyfrom(&text(
+        secret,
+        &["latestKeyfrom", "latest_keyfrom"]
+    )));
     let refreshed = text(&fresh, &["refreshToken"]);
     if !refreshed.is_empty() {
         next["refreshToken"] = json!(refreshed);
@@ -559,6 +594,8 @@ pub fn refresh() -> Result<String> {
             "expires_at",
             "expires_in",
             "created_at",
+            "first_keyfrom",
+            "latest_keyfrom",
             "user",
             "auth",
         ] {

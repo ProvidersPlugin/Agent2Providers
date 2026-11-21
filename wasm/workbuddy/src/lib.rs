@@ -65,7 +65,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.identity" => Ok(json!(account::identity(&params["secret"]))),
         "token.ensure" => Ok(json!(session::ensure(false)?.token())),
         "token.refresh" => Ok(json!(session::ensure(true)?.token())),
-        "token.expiring" => Ok(json!(session::is_expiring()?)),
+        "token.expiring" => Ok(json!(session::is_expiring(agent2api_wasm_sdk::expiring_lead(&params, 0))?)),
         "login.start" => login::start(&params),
         "login.poll" => login::poll(&params),
         "login.cancel" => login::cancel(&params),

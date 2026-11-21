@@ -46,7 +46,10 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "account.identity" => Ok(json!(account::identity(&params["secret"]))),
         "token.ensure" => Ok(json!(account::ensure()?)),
         "token.refresh" => Ok(json!(account::refresh()?)),
-        "token.expiring" => Ok(json!(account::expiring(&sdk::account()?["secret"]))),
+        "token.expiring" => Ok(json!(account::expiring_within(
+            &sdk::account()?["secret"],
+            sdk::expiring_lead(&params, 0),
+        ))),
         "login.start" => login::start(&params),
         "login.poll" => login::poll(&params),
         "login.cancel" => login::cancel(),

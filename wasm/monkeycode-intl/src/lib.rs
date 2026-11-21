@@ -39,9 +39,9 @@ fn metadata() -> Value {
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false
         },
         "login_methods": [{ "kind": "token", "label": "国际 Session／Cookie／JSON",
-            "placeholder": "国际站手工登录态；将在线校验，当前部署和单位尚未验收",
+            "placeholder": "粘贴 MonkeyCode 国际站 Session 或 Cookie",
             "extra_fields": [{ "key": "imageId", "label": "镜像编号（可选）",
-                "placeholder": "留空使用国际站官方默认镜像；不扫描历史任务", "optional": true, "multiline": false }] }],
+                "placeholder": "留空使用国际站官方默认镜像", "optional": true, "multiline": false }] }],
         "account_features": { "usage": true, "credit_detail": true, "credit_expiry": false,
             "identifier": ["userId"], "expiry": ["expiresAt"], "long_lived": false,
             "edition": false, "claim": false, "plan_channel": false, "default_limiters": [] },

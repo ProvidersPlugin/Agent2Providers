@@ -2,12 +2,19 @@
   "id": "agent2api-wasm-autoclaw",
   "name": "AutoClaw 国内版",
   "description": "独立的 AutoClaw 国内版提供商，支持手机验证码登录、凭据导入与自动续期、本机登录态导入、实时模型目录、对话、积分查询和每日签到。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "protocol": 1,
   "providers": [
-    { "id": "autoclaw", "label": "AutoClaw 国内版", "order": 10, "default_enabled": true }
+    {
+      "id": "autoclaw",
+      "label": "AutoClaw 国内版",
+      "order": 10,
+      "default_enabled": true
+    }
   ],
-  "entry": { "wasm32-unknown-unknown": "autoclaw.wasm" },
+  "entry": {
+    "wasm32-unknown-unknown": "autoclaw.wasm"
+  },
   "icons": "assets",
   "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
 }

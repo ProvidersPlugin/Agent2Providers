@@ -74,26 +74,63 @@ pub fn transport(error: Error) -> Error {
     .with_code("codearts_transport")
 }
 
-pub fn upstream(status: u16, operation: &str, body: &Value, secrets: &[String]) -> Error {
-    if status == 401 {
-        return Error::http(
-            401,
-            "CodeArts 凭据被上游拒绝，请从主程序续期入口更新；缺少原授权材料时需重新登录",
-        )
-        .with_code("codearts_credential_rejected");
+/// 解析上游错误响应体；非 JSON 文本原样保留以便展示上游原文。
+pub fn parse_body(bytes: &[u8]) -> Value {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        return value;
     }
-    let status = if (400..500).contains(&status) {
+    let text = String::from_utf8_lossy(bytes).trim().to_string();
+    if text.is_empty() {
+        Value::Null
+    } else {
+        Value::String(text)
+    }
+}
+
+/// 遮蔽上游文本中可能回显的凭据，同时保留非敏感原文与 URL。
+pub fn clean_upstream_text(text: &str, secrets: &[String], limit: usize) -> String {
+    let mut masked = text.to_string();
+    let mut ordered: Vec<&str> = secrets
+        .iter()
+        .map(String::as_str)
+        .filter(|secret| !secret.is_empty())
+        .collect();
+    ordered.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    ordered.dedup();
+    for secret in ordered {
+        masked = masked.replace(secret, "[已隐藏]");
+    }
+    let mut cleaned = String::new();
+    let mut count = 0usize;
+    for ch in masked.chars() {
+        let ch = if matches!(ch, '\r' | '\n' | '\t') {
+            ' '
+        } else if ch.is_control() {
+            continue;
+        } else {
+            ch
+        };
+        if count >= limit {
+            break;
+        }
+        cleaned.push(ch);
+        count += 1;
+    }
+    cleaned.trim().to_string()
+}
+
+pub fn upstream(status: u16, _operation: &str, body: &Value, secrets: &[String]) -> Error {
+    if status == 401 {
+        return Error::http(401, format_upstream_message(401, body, secrets))
+            .with_code("codearts_credential_rejected");
+    }
+    let resolved = if (400..600).contains(&status) {
         status
     } else {
         502
     };
-    let detail = upstream_detail(body, secrets);
-    let message = if detail.is_empty() {
-        format!("CodeArts {operation}未获上游成功确认（HTTP {status}）")
-    } else {
-        format!("CodeArts {operation}未获上游成功确认（HTTP {status}）：{detail}")
-    };
-    Error::http(status, message).with_code("codearts_upstream")
+    let message = format_upstream_message(status, body, secrets);
+    Error::http(resolved, message).with_code("codearts_upstream")
 }
 
 pub fn spellings(secret: &str) -> Vec<String> {
@@ -169,27 +206,52 @@ fn code_status(code: &str) -> Option<u16> {
     (400..=599).contains(&status).then_some(status)
 }
 
-/// 错误码可以公开（它是上游给的固定编号），但仍经过同一套脱敏。
-fn public_code(code: &str, secrets: &[String]) -> String {
-    let shown = public_text(code.trim(), secrets, 96);
-    if shown == "[已隐藏]" {
-        String::new()
-    } else {
-        shown
-    }
-}
-
-fn detail_from(payload: &Value, secrets: &[String]) -> String {
+fn detail_from(body: &Value, payload: &Value, secrets: &[String]) -> String {
     let text = payload["message"]
         .as_str()
         .or_else(|| payload["error_msg"].as_str())
         .or_else(|| payload["msg"].as_str())
+        .or_else(|| payload["error_message"].as_str())
+        .or_else(|| payload["Message"].as_str())
+        .or_else(|| payload["detail"].as_str())
+        .or_else(|| payload["reason"].as_str())
+        .or_else(|| body.get("error").and_then(Value::as_str))
         .unwrap_or("");
-    let text = public_text(text, secrets, 200);
-    if text == "[已隐藏]" {
-        String::new()
+    let main = clean_upstream_text(text, secrets, 2000);
+    let extras: Vec<String> = payload
+        .get("details")
+        .or_else(|| body.get("details"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let item_msg = item["error_msg"]
+                .as_str()
+                .or_else(|| item["message"].as_str())
+                .or_else(|| item["msg"].as_str())
+                .map(|value| clean_upstream_text(value, secrets, 400))
+                .unwrap_or_default();
+            let item_code = item["error_code"]
+                .as_str()
+                .or_else(|| item["code"].as_str())
+                .map(|value| clean_upstream_text(value, secrets, 96))
+                .unwrap_or_default();
+            match (item_code.is_empty(), item_msg.is_empty()) {
+                (true, true) => None,
+                (false, true) => Some(item_code),
+                (true, false) => Some(item_msg),
+                (false, false) if item_code == item_msg => Some(item_msg),
+                (false, false) => Some(format!("{item_code}: {item_msg}")),
+            }
+        })
+        .filter(|item| !item.is_empty() && !main.contains(item))
+        .collect();
+    if main.is_empty() {
+        extras.join("; ")
+    } else if extras.is_empty() {
+        main
     } else {
-        text.trim().to_string()
+        format!("{main} ({})", extras.join("; "))
     }
 }
 
@@ -207,20 +269,61 @@ fn code_of(payload: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// 上游错误体里的可公开说明：错误码优先，其次脱敏后的原文。
-fn upstream_detail(body: &Value, secrets: &[String]) -> String {
+fn format_upstream_message(status: u16, body: &Value, secrets: &[String]) -> String {
+    let prefix = if (400..600).contains(&status) {
+        format!("上游返回 {status}")
+    } else {
+        "上游返回".to_string()
+    };
+    if let Some(raw) = body.as_str() {
+        let cleaned = clean_upstream_text(raw, secrets, 2000);
+        return if cleaned.is_empty() {
+            format!("上游返回 HTTP {status}")
+        } else {
+            format!("{prefix}：{cleaned}")
+        };
+    }
     let payload = body
         .get("error")
         .filter(|error| error.is_object())
         .unwrap_or(body);
-    let code = public_code(&code_of(payload), secrets);
-    let message = detail_from(payload, secrets);
-    match (code.is_empty(), message.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => message,
-        (false, true) => format!("错误码 {code}"),
-        (false, false) => format!("错误码 {code}：{message}"),
+    let code = clean_upstream_text(&code_of(payload), secrets, 96);
+    let detail = detail_from(body, payload, secrets);
+    match (code.is_empty(), detail.is_empty()) {
+        (false, false) if detail != code => format!("{prefix}（{code}）：{detail}"),
+        (true, false) | (false, false) => format!("{prefix}：{detail}"),
+        (false, true) => format!("{prefix}（{code}）"),
+        (true, true) => {
+            if body.is_null() {
+                format!("上游返回 HTTP {status}")
+            } else {
+                let raw = clean_upstream_text(&body.to_string(), secrets, 2000);
+                if raw.is_empty() || raw == "{}" {
+                    format!("上游返回 HTTP {status}")
+                } else {
+                    format!("{prefix}：{raw}")
+                }
+            }
+        }
     }
+}
+
+fn parse_reset_at(payload: &Value) -> Option<i64> {
+    payload["resetAt"]
+        .as_i64()
+        .or_else(|| payload["reset_at"].as_i64())
+        .filter(|at| {
+            *at > 0
+                && *at < (1_i64 << 53)
+                && chrono::DateTime::from_timestamp_millis(*at).is_some()
+        })
+}
+
+fn parse_upstream_code(payload: &Value) -> Option<i64> {
+    payload["upstreamCode"]
+        .as_i64()
+        .or_else(|| payload["upstream_code"].as_i64())
+        .or_else(|| payload["code"].as_i64())
 }
 
 fn details(status: u16, body: &Value, secrets: &[String]) -> Classified {
@@ -228,12 +331,59 @@ fn details(status: u16, body: &Value, secrets: &[String]) -> Classified {
         .get("error")
         .filter(|error| error.is_object())
         .unwrap_or(body);
+    // 插件自身返回的 codearts_* / quota_limited 错误经过宿主二次分类时直接保留原文，
+    // 不再当成未识别的上游错误重复套壳。
+    if let Some(provider_code) = payload["providerCode"]
+        .as_str()
+        .filter(|code| code.starts_with("codearts_") || *code == "quota_limited")
+    {
+        let (kind, resolved_status, code_tag) = match provider_code {
+            "codearts_credential_rejected" => ("token_expired", 401, "codearts_credential_rejected"),
+            "quota_limited" => ("quota_limited", 429, "quota_limited"),
+            "codearts_content_blocked" => ("content_blocked", 403, "codearts_content_blocked"),
+            "codearts_concurrency_limited" => (
+                "fatal",
+                if (400..600).contains(&status) { status } else { 409 },
+                "codearts_concurrency_limited",
+            ),
+            "codearts_invalid_input" => (
+                "fatal",
+                if (400..600).contains(&status) { status } else { 400 },
+                "codearts_invalid_input",
+            ),
+            _ => (
+                "fatal",
+                if (400..600).contains(&status) { status } else { 502 },
+                "codearts_upstream",
+            ),
+        };
+        let raw_message = payload["message"]
+            .as_str()
+            .or_else(|| payload["error_msg"].as_str())
+            .unwrap_or("");
+        let message = clean_upstream_text(raw_message, secrets, 2000);
+        let message = if message.is_empty() {
+            format!("上游返回 HTTP {resolved_status}")
+        } else {
+            message
+        };
+        return Classified {
+            kind,
+            status: resolved_status,
+            message,
+            code: code_tag,
+            reset_at: parse_reset_at(payload),
+            upstream_code: parse_upstream_code(payload),
+        };
+    }
     let code_owned = code_of(payload);
     let code = code_owned.as_str();
     let code_lower = code.trim().to_ascii_lowercase();
     let message = payload["message"]
         .as_str()
         .or_else(|| payload["error_msg"].as_str())
+        .or_else(|| payload["msg"].as_str())
+        .or_else(|| body.as_str())
         .unwrap_or("");
     let lower = message.to_ascii_lowercase();
     let image = code_lower.contains("001001020")
@@ -296,127 +446,42 @@ fn details(status: u16, body: &Value, secrets: &[String]) -> Classified {
         || (lower.contains("function name") && lower.contains("length over limit"));
     let channel = code_lower == "4000" || lower.contains("invalid channel, group not found");
     let busy = code_lower.starts_with("tm.00000001") || message.contains("网络繁忙");
-    let (kind, status, code_tag, reason) = if token {
-        (
-            "token_expired",
-            401,
-            "codearts_credential_rejected",
-            "CodeArts 登录凭据已失效，请续期或重新登录",
-        )
+    let (kind, resolved_status, code_tag) = if token {
+        ("token_expired", 401, "codearts_credential_rejected")
     } else if quota {
-        (
-            "quota_limited",
-            429,
-            "quota_limited",
-            "CodeArts 额度或速率窗口受限，请稍后重试",
-        )
+        ("quota_limited", 429, "quota_limited")
     } else if concurrency {
-        (
-            "fatal",
-            409,
-            "codearts_concurrency_limited",
-            "CodeArts 当前账号已有三路对话，请等待在途请求结束",
-        )
+        ("fatal", 409, "codearts_concurrency_limited")
     } else if image {
-        (
-            "fatal",
-            400,
-            "codearts_not_multimodal",
-            "当前 CodeArts 模型不支持图片输入，请更换模型或去掉图片",
-        )
+        ("fatal", 400, "codearts_not_multimodal")
     } else if model_not_found {
-        (
-            "fatal",
-            400,
-            "codearts_model_rejected",
-            "当前 CodeArts 模型未获上游确认，请重新获取本账号目录",
-        )
+        ("fatal", 400, "codearts_model_rejected")
     } else if parameter {
-        (
-            "fatal",
-            400,
-            "codearts_parameter_rejected",
-            "CodeArts 上游拒绝了本次请求参数；请检查 stop、温度或输出上限等客户端设置",
-        )
+        ("fatal", 400, "codearts_parameter_rejected")
     } else if model_mismatch {
-        (
-            "fatal",
-            400,
-            "codearts_model_mismatch",
-            "CodeArts 模型名与上游请求头不一致，请重新获取本账号目录后再试",
-        )
+        ("fatal", 400, "codearts_model_mismatch")
     } else if tool_name {
-        (
-            "fatal",
-            400,
-            "codearts_tool_name_rejected",
-            "CodeArts 上游拒绝了过长的工具名（上限 64 字符）",
-        )
+        ("fatal", 400, "codearts_tool_name_rejected")
     } else if channel {
-        (
-            "fatal",
-            400,
-            "codearts_channel_unsupported",
-            "CodeArts 上游通道已不支持该模型或操作",
-        )
+        ("fatal", 400, "codearts_channel_unsupported")
     } else if blocked {
-        (
-            "content_blocked",
-            403,
-            "codearts_content_blocked",
-            "CodeArts 内容策略拒绝了本次请求",
-        )
+        ("content_blocked", 403, "codearts_content_blocked")
     } else if busy {
-        (
-            "fatal",
-            503,
-            "codearts_busy",
-            "CodeArts 上游繁忙，临时拒绝了本次请求，请稍后重试",
-        )
+        ("fatal", 503, "codearts_busy")
     } else {
-        let status = code_status(code)
+        let resolved_status = code_status(code)
             .or_else(|| (400..600).contains(&status).then_some(status))
             .unwrap_or(502);
-        (
-            "fatal",
-            status,
-            "codearts_upstream",
-            "CodeArts 上游未完成本次请求",
-        )
+        ("fatal", resolved_status, "codearts_upstream")
     };
-    let reset_at = payload["resetAt"]
-        .as_i64()
-        .or_else(|| payload["reset_at"].as_i64())
-        .filter(|at| {
-            *at > 0
-                && *at < (1_i64 << 53)
-                && chrono::DateTime::from_timestamp_millis(*at).is_some()
-        });
-    let upstream_code = payload["upstreamCode"]
-        .as_i64()
-        .or_else(|| payload["upstream_code"].as_i64())
-        .or_else(|| payload["code"].as_i64());
-    // 固定脱敏后再拼接：错误码可公开，原文仍受凭据与 URL 遮蔽约束。
-    let mut text = reason.to_string();
-    let code_note = public_code(code, secrets);
-    if !code_note.is_empty() {
-        text.push_str(&format!("（{code_note}）"));
-    }
-    let detail = detail_from(payload, secrets);
-    if !detail.is_empty() && detail != code_note {
-        text.push('：');
-        text.push_str(&detail);
-    }
-    if code_note.is_empty() && detail.is_empty() {
-        text.push_str(&format!("（HTTP {status}）"));
-    }
+    let text = format_upstream_message(status, body, secrets);
     Classified {
         kind,
-        status,
+        status: resolved_status,
         message: text,
         code: code_tag,
-        reset_at,
-        upstream_code,
+        reset_at: parse_reset_at(payload),
+        upstream_code: parse_upstream_code(payload),
     }
 }
 

@@ -107,8 +107,8 @@ fn assistant(message: &Value) -> Result<Assistant> {
 pub fn parse(body: &Value, supports_images: Option<bool>) -> Result<(Vec<Entry>, String)> {
     let messages = body["messages"]
         .as_array()
-        .filter(|list| !list.is_empty() && list.len() <= 4096)
-        .ok_or_else(|| Error::http(400, "Kiro消息列表为空或超过上限"))?;
+        .filter(|list| !list.is_empty())
+        .ok_or_else(|| Error::http(400, "Kiro消息列表必须是非空数组"))?;
     let mut system = Vec::new();
     let mut entries = Vec::new();
     let mut call_ids = std::collections::HashSet::new();

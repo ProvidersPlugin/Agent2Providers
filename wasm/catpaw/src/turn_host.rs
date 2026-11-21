@@ -62,8 +62,8 @@ pub(super) enum Cleanup {
 impl PreparedCall {
     /// constraints 是本次本地校验的请求约束；不含账号、会话键、URL 或远端 ID。
     pub(super) fn open(constraints: &Value, message_count: usize) -> Result<Self> {
-        if message_count == 0 || message_count > 512 {
-            return Err(errors::invalid("CatPaw 本次消息数量不在 1 至 512 范围内"));
+        if message_count == 0 {
+            return Err(errors::invalid("CatPaw 本次消息数量不能为 0"));
         }
         bounded(constraints, 3 * 1024 * 1024)?;
         let reply = invoke(

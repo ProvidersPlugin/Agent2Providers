@@ -36,7 +36,7 @@ pub fn get(account: &Account, request: ReadRequest<'_>, maximum: usize) -> Resul
     }
     account.unchanged()?;
     if status != 200 {
-        let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let value = errors::parse_body(&bytes);
         return Err(errors::classified(
             status,
             &value,

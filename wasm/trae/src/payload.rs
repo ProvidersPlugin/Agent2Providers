@@ -26,9 +26,9 @@ pub fn prepare_body(mut obj: Value, route: &Route, session: &str) -> Result<Valu
     if obj
         .get("messages")
         .and_then(Value::as_array)
-        .is_none_or(|rows| rows.len() > 4096 || rows.iter().any(|row| !row.is_object()))
+        .is_none_or(|rows| rows.iter().any(|row| !row.is_object()))
     {
-        return Err(Error::http(400, "Trae messages 必须是受限长度的对象数组"));
+        return Err(Error::http(400, "Trae messages 必须是对象数组"));
     }
     normalize_legacy_functions(&mut obj)?;
     normalize_tool_choice(&mut obj);

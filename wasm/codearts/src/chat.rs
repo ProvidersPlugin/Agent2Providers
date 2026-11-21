@@ -17,7 +17,7 @@ pub fn forward(mut params: Value) -> Result<Value> {
         .to_string();
     if !params["body"]["messages"]
         .as_array()
-        .is_some_and(|rows| !rows.is_empty() && rows.len() <= 512)
+        .is_some_and(|rows| !rows.is_empty())
     {
         return Err(errors::invalid("messages 必须是非空数组"));
     }
@@ -148,7 +148,7 @@ pub fn forward(mut params: Value) -> Result<Value> {
         if response.status != 200 {
             let status = response.status;
             let payload = response.bytes(256 * 1024).map_err(errors::transport)?;
-            let value: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
+            let value = errors::parse_body(&payload);
             return Err(errors::classified(
                 status,
                 &value,

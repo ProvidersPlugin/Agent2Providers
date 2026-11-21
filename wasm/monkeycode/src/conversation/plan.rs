@@ -9,7 +9,6 @@ use crate::{catalog, endpoints, util};
 use sdk::tool_bridge::ToolBridge;
 
 const MAX_BODY: usize = 256 * 1024;
-const MAX_MESSAGES: usize = 512;
 const MAX_PARTS: usize = 512;
 
 pub(super) struct Prepared {
@@ -86,8 +85,8 @@ pub(super) fn prepare(params: &Value) -> Result<Prepared> {
     let mut budget = MAX_BODY;
     let history = body["messages"]
         .as_array()
-        .filter(|rows| !rows.is_empty() && rows.len() <= MAX_MESSAGES)
-        .ok_or_else(|| invalid("messages 必须是非空且大小受限的数组"))?;
+        .filter(|rows| !rows.is_empty())
+        .ok_or_else(|| invalid("messages 必须是非空数组"))?;
     let mut has_dialogue = false;
     for row in history {
         let fields = row
@@ -225,8 +224,8 @@ impl Frozen {
 fn prompt(messages: Option<&Value>) -> Result<(String, Option<String>)> {
     let messages = messages
         .and_then(Value::as_array)
-        .filter(|messages| !messages.is_empty() && messages.len() <= MAX_MESSAGES)
-        .ok_or_else(|| invalid("messages必须是非空且大小受限的数组"))?;
+        .filter(|messages| !messages.is_empty())
+        .ok_or_else(|| invalid("messages必须是非空数组"))?;
     let mut prompt = String::new();
     let mut system = None;
     let mut budget = MAX_BODY;

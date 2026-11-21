@@ -40,7 +40,7 @@ pub fn prepare(body: &Value) -> Result<Prepared> {
     let bridge = sdk::tool_bridge::ToolBridge::new(body)?;
     let mut history = body["messages"]
         .as_array()
-        .filter(|messages| !messages.is_empty() && messages.len() <= 512)
+        .filter(|messages| !messages.is_empty())
         .cloned()
         .ok_or_else(|| errors::invalid("messages 必须是非空数组"))?;
     let mut images = Vec::new();

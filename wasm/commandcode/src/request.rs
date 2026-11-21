@@ -46,7 +46,7 @@ pub fn build(key: &str, body: &Value, headers: &Value, config: &Config) -> Resul
     }
     let messages = body["messages"]
         .as_array()
-        .filter(|messages| !messages.is_empty() && messages.len() <= 512)
+        .filter(|messages| !messages.is_empty())
         .ok_or_else(|| Error::http(400, "Command Code 请求必须包含有效消息数组"))?
         .clone();
     let model = body["model"]

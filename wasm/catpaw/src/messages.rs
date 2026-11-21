@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{blocks, errors, tools};
 
-pub(super) const MAX_MESSAGES: usize = 512;
 const MAX_MERGED_BLOCKS: usize = 1024;
 const MAX_HISTORY_CALLS: usize = 4096;
 
@@ -60,7 +59,6 @@ struct IdPool<'a> {
 
 impl<'a> IdPool<'a> {
     fn new(supplied: &'a [String]) -> Result<Self> {
-        if supplied.len() > MAX_MESSAGES { return Err(errors::invalid("CatPaw 消息关联 ID 数量超过限制")); }
         let mut supplied_ids = BTreeSet::new();
         for id in supplied {
             check_message_id(id)?;
@@ -102,8 +100,8 @@ fn check_message_id(id: &str) -> Result<()> {
 
 /// 必须先经过 prepare 的全体输入预算检查；缺失 id 按非指令消息原始顺序消耗 supplied_ids。
 pub(super) fn normalize(raw: &[Value], supplied_ids: &[String]) -> Result<Normalized> {
-    if raw.is_empty() || raw.len() > MAX_MESSAGES {
-        return Err(errors::invalid("CatPaw messages 必须是 1 至 512 项的非空数组"));
+    if raw.is_empty() {
+        return Err(errors::invalid("CatPaw messages 必须是非空数组"));
     }
     let mut ids = IdPool::new(supplied_ids)?;
     let mut stage: Vec<Message> = Vec::with_capacity(raw.len());

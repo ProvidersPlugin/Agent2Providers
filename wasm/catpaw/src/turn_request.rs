@@ -39,8 +39,8 @@ pub(super) fn preflight(
     selection.check_tools(!tools.configs.is_empty())?;
     let raw = body["messages"]
         .as_array()
-        .filter(|items| !items.is_empty() && items.len() <= 512)
-        .ok_or_else(|| errors::invalid("CatPaw messages 必须是 1 至 512 项数组"))?;
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| errors::invalid("CatPaw messages 必须是非空数组"))?;
     let mut message_count = 0usize;
     for message in raw {
         if !message.is_object() {

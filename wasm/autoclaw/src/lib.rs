@@ -2,6 +2,7 @@
 //! 国内官方登录为短信；本机导入保存实时引用，续期与写回需要独立辅助授权。
 //! 环境旁路不在 Wasm 读取，桌面实时/enc: 来源保留受控 helper 契约。
 mod account;
+mod campaigns;
 mod chat;
 mod checkin;
 mod client;
@@ -30,7 +31,7 @@ fn metadata() -> Value {
     use sdk::error_rules::attach;
     let meta = json!({ "id": endpoints::PROVIDER, "label": "AutoClaw 国内版", "order": 10,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
-            "usage": true, "checkin": true, "claims": false, "web_login": false,
+            "usage": true, "checkin": true, "claims": true, "web_login": false,
             "sse_model_rewrite": true, "sse_strip_newline_chunks": true,
             "anonymous_default_session": false, "system_proxy_when_unset": false,
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false },
@@ -60,6 +61,8 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "models.refresh" => models::refresh(&params),
         "usage.query" => usage::query(),
         "checkin.claim" => checkin::claim(),
+        "claim.status" => campaigns::preview(),
+        "claim" => campaigns::claim(params["claim"].as_str().unwrap_or("")),
         "conversation" => {
             chat::forward(params)?;
             Ok(Value::Null)
@@ -97,6 +100,8 @@ fn admin(params: &Value) -> Result<Value> {
         "login.sms.verify" => sms::verify(params),
         "network.user-agent" => Ok(json!({ "accountWide": true })),
         "quota.sources" => Ok(usage::sources(&payload["report"])),
+        "claim.status" | "activity.status" => campaigns::preview(),
+        "benefits.redeem" => campaigns::redeem(payload),
         "promotion.status" => {
             let snapshot = account::read()?;
             let result = promotion::today(&snapshot.secret)?;

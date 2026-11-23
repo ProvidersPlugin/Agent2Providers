@@ -7,11 +7,18 @@ use super::{endpoints, util};
 const APP_ID: &str = "100003";
 const APP_KEY: &str = "38d2391985e2369a5fb8227d8e6cd5e5";
 
-pub fn signed(token: &str) -> Result<Value> {
+fn signed_parts() -> Result<(String, String)> {
     let now = sdk::now();
-    if now <= 0 { return Err(Error::new("宿主时钟不可用，不能生成 AutoClaw 请求签名")); }
+    if now <= 0 {
+        return Err(Error::new("宿主时钟不可用，不能生成 AutoClaw 请求签名"));
+    }
     let timestamp = (now / 1000).to_string();
     let sign = format!("{:x}", Md5::digest(format!("{APP_ID}&{timestamp}&{APP_KEY}").as_bytes()));
+    Ok((timestamp, sign))
+}
+
+pub fn signed(token: &str) -> Result<Value> {
+    let (timestamp, sign) = signed_parts()?;
     let mut headers = json!({ "Content-Type": "application/json", "Accept": "*/*",
         "X-Version": endpoints::CLIENT_VERSION, "X-Product": "autoclaw", "X-Client-Type": "pc",
         "X-Harness-Type": "zcode", "X-Tm": "win", "X-Lang": "zh-CN", "X-Channel": "official",
@@ -19,6 +26,18 @@ pub fn signed(token: &str) -> Result<Value> {
     let token = util::strip_bearer(token);
     if !token.is_empty() { util::token_valid(&token, false)?; headers["authorization"] = json!(format!("Bearer {token}")); }
     Ok(headers)
+}
+
+pub fn active(token: &str) -> Result<Value> {
+    let token = util::strip_bearer(token);
+    util::token_valid(&token, false)?;
+    let (timestamp, sign) = signed_parts()?;
+    // 当前登录活跃 / Weekly Perks 活动需携带 2.x 客户端频道头，仅限显式签到与福利领取调用。
+    Ok(json!({ "Content-Type": "application/json", "Accept": "*/*",
+        "User-Agent": "AutoClaw/2.2.0 (win-x64)", "X-Version": "2.2.0", "X-Tm": "win-x64",
+        "X-Product": "autoclaw", "X-Auth-Appid": APP_ID, "X-Auth-TimeStamp": timestamp,
+        "X-Auth-Sign": sign, "X-Trace-Id": util::random_hex(16)?, "X-Lang": "zh-CN",
+        "X-Channel": "AutoClaw20", "Authorization": format!("Bearer {token}") }))
 }
 
 pub fn chat(token: &str, route: &str, input: &Value) -> Result<Value> {

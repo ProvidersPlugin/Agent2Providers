@@ -36,14 +36,16 @@ fn metadata() -> Value {
     use sdk::error_rules::{attach, class, rule};
     let meta = json!({ "id": network::PROVIDER, "label": "ZCode 国际版", "order": 14,
         "capabilities": { "chat": true, "stateful": false, "refresh": false,
-            "model_refresh": true, "usage": true, "checkin": false, "claims": false,
+            "model_refresh": true, "usage": true, "checkin": false, "claims": true,
             "web_login": true, "sse_model_rewrite": true, "refresh_uses_account": true,
             "supports_default_model": false, "env_credentials": false },
         "login_methods": [{ "kind": "browser", "button": "网页登录", "hint": "在 Z.AI 授权页完成 ZCode 国际版账号登录" }],
-        "account_features": { "usage": true, "credit_detail": true, "claim": false,
+        "account_features": { "usage": true, "credit_detail": true, "claim": true,
             "plan_channel": true, "edition": true, "identifier": ["userId"], "expiry": ["expiresAt"] },
         "desktop_launch": desktop_launch::summary(),
         "admin_panels": ["captcha_pool"],
+        "checkin": { "description": "偶尔开放赠送套餐活动（每日签到已下架，有活动时可在活动福利查询并领取）· 国际版",
+            "modes": [], "daily": false, "plans": true },
         "default_models": models::list(), "settings_schema": config::schema(),
         "settings_group": { "label": "ZCode 国际版" }
     });

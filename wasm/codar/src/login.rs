@@ -60,8 +60,7 @@ pub fn start(params: &Value) -> Result<Value> {
             value["nextPollAt"] = json!(0);
         }
         1 => {
-            value["phase"] = json!("phone");
-            value["purpose"] = json!("login");
+            return Err(Error::http(400, "科搭手机验证码登录请使用短信登录入口"));
         }
         4 => {
             let normalized = desktop::normalized((!name.is_empty()).then_some(name.as_str()))?;

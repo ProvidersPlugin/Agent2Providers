@@ -15,6 +15,15 @@ pub fn request(
     body: Option<&Value>,
     operation: &str,
 ) -> Result<Reply> {
+    request_with_headers(method, path, headers::signed(token)?, body, operation)
+}
+fn request_with_headers(
+    method: &str,
+    path: &str,
+    headers: Value,
+    body: Option<&Value>,
+    operation: &str,
+) -> Result<Reply> {
     if !path.starts_with('/') || path.starts_with("//") || path.contains(['\r', '\n', '\0', '#']) {
         return Err(Error::coded("AutoClaw 请求路径无效", "forbidden"));
     }
@@ -27,7 +36,7 @@ pub fn request(
         let response = http::open_timeout(
             method,
             &format!("{}{path}", endpoints::ORIGIN),
-            headers::signed(token)?,
+            headers,
             body,
             timeout,
         )?;
@@ -71,6 +80,18 @@ pub fn post(path: &str, token: &str, body: &Value, operation: &str) -> Result<Va
     http_ok(
         request("POST", path, token, Some(body), operation)?,
         operation,
+    )
+}
+pub fn activate(token: &str, body: &Value) -> Result<Value> {
+    http_ok(
+        request_with_headers(
+            "POST",
+            "/userapi/v1/user-info",
+            headers::active(token)?,
+            Some(body),
+            "登录活跃触发",
+        )?,
+        "登录活跃触发",
     )
 }
 pub fn auth_code(code: i64) -> bool {

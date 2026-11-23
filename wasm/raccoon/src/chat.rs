@@ -1,8 +1,52 @@
 //! 主动输出标准Chat SSE，保留工具/思考/图片字段并改回请求模型名。
 //! HTTP200错误信封及流内业务错误都先分类；必须真实DONE，不把截断流伪装成成功。
 
-use super::{config, conversation, endpoints, errors, network, reasoning, session, stream};
-use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
+use super::{config, conversation, endpoints, errors, iam, network, reasoning, session, stream};
+use agent2api_wasm_sdk::{self as sdk, http, json, Error, Result, Value};
+
+fn is_json_response(response: &http::Response) -> bool {
+    response.header_values("content-type").iter().any(|value| {
+        let mime = value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        mime == "application/json" || mime.ends_with("+json")
+    })
+}
+
+fn open_stream(session: &session::Session, headers: Value, body: &Value) -> Result<http::Response> {
+    let path = format!("{}/chat/completions", endpoints::LLM);
+    let mut confirmed = false;
+    let mut headers = Some(headers);
+    loop {
+        let current_headers = headers.take().ok_or_else(|| Error::new("小浣熊请求头缺失"))?;
+        let response = network::open(
+            "POST",
+            &path,
+            &session.credential.token,
+            &session.credential.org,
+            current_headers.clone(),
+            Some(body),
+        )?;
+        if (200..300).contains(&response.status) && !is_json_response(&response) {
+            return Ok(response);
+        }
+        let reply = network::read(response, 1024 * 1024)?;
+        if !confirmed && errors::code(&reply.value) == Some(200_901) {
+            confirmed = true;
+            iam::confirm(&session.credential.token)?;
+            headers = Some(current_headers);
+            continue;
+        }
+        return Err(errors::upstream(
+            reply.status,
+            &reply.value,
+            &[&session.credential.token, &session.credential.refresh],
+        ));
+    }
+}
 
 pub fn forward(params: &Value) -> Result<()> {
     let session = session::ensure(false)?;
@@ -22,31 +66,7 @@ pub fn forward(params: &Value) -> Result<()> {
         headers[key] = value.clone();
     }
     headers["Accept"] = json!("application/json");
-    let mut response = network::open(
-        "POST",
-        &format!("{}/chat/completions", endpoints::LLM),
-        &session.credential.token,
-        &session.credential.org,
-        headers,
-        Some(&body),
-    )?;
-    let content_json = response.header_values("content-type").iter().any(|value| {
-        let mime = value
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        mime == "application/json" || mime.ends_with("+json")
-    });
-    if !(200..300).contains(&response.status) || content_json {
-        let reply = network::read(response, 1024 * 1024)?;
-        return Err(errors::upstream(
-            reply.status,
-            &reply.value,
-            &[&session.credential.token, &session.credential.refresh],
-        ));
-    }
+    let mut response = open_stream(&session, headers, &body)?;
     let mut stream = stream::Stream::new();
     let result = (|| {
         while let Some(bytes) = response.read()? {

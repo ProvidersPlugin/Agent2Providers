@@ -186,7 +186,13 @@ pub fn exchange(
     if token.starts_with("enc:") || refresh.starts_with("enc:") {
         return Err(Error::http(502, "国际版 OAuth 不应返回本机密文凭据"));
     }
-    let user = util::scalar(&data["user_id"]);
+    // Zai / Google 等三方 OAuth 返回的 data.user_id 可能是外部账号 ID，而 AutoClaw 令牌校验与刷新一律以 JWT 中的 user_id 为准。
+    let token_user = util::scalar(&util::claims(&token)["user_id"]);
+    let user = if token_user.is_empty() {
+        util::scalar(&data["user_id"])
+    } else {
+        token_user
+    };
     let mut secret = account::parse(
         &json!({ "provider": endpoints::PROVIDER, "region": "intl", "token": token,
         "refreshToken": refresh, "deviceId": device, "userId": user }),
@@ -195,18 +201,11 @@ pub fn exchange(
     if !username.is_empty() {
         secret["name"] = json!(username);
     }
-    // 与原生相同，邮箱查询不是授权成功的前提；身份冲突和主机拒绝不能静默忽略。
+    // 与原生相同，邮箱查询不是授权成功的前提；主机拒绝或 401 不能静默忽略，但不因外部资料 user_id 格式差异覆盖 JWT 身份。
     match profile::fetch(&secret) {
         Ok(profile) => {
             let uid = util::text(&profile, &["userId"]);
-            if !uid.is_empty() {
-                if !account::user(&secret).is_empty() && uid != account::user(&secret) {
-                    return Err(Error::http(
-                        409,
-                        "AutoClaw 国际版资料与授权账号不一致，未添加账号",
-                    )
-                    .with_code("identity_changed"));
-                }
+            if !uid.is_empty() && account::user(&secret).is_empty() {
                 secret["userId"] = json!(uid);
             }
             let email = util::text(&profile, &["email"]);

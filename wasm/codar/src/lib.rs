@@ -16,6 +16,7 @@ mod models;
 mod network;
 mod reasoning;
 mod request;
+mod sms;
 mod stream;
 mod token;
 mod usage;
@@ -68,6 +69,8 @@ fn admin(params: &Value) -> Result<Value> {
         Some("activity.status" | "claim.status") => activities::preview(),
         Some("usage.records" | "usage.ledger") => usage::ledger(&params["payload"]),
         Some("usage.daily") => usage::daily(&params["payload"]),
+        Some(sdk::login::sms::SEND) => sms::send(params),
+        Some(sdk::login::sms::VERIFY) => sms::verify(params),
         _ => Err(Error::unsupported()),
     }
 }

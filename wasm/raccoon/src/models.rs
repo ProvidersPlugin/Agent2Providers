@@ -68,7 +68,7 @@ pub fn refresh(params: &Value) -> Result<Value> {
             json!({ "refreshed": false, "count": previous["models"].as_array().map(Vec::len).unwrap_or(0) }),
         );
     }
-    let result = network::open_timeout(
+    let result = network::request_timeout(
         "GET",
         &format!("{}/model_catalog", endpoints::LLM),
         &session.credential.token,
@@ -77,8 +77,6 @@ pub fn refresh(params: &Value) -> Result<Value> {
         None,
         10_000,
     )
-    .and_then(|response| network::read(response, 4 * 1024 * 1024))
-    .and_then(|reply| network::data(reply, &[&session.credential.token], false))
     .and_then(|data| {
         let mut models = model_shape::parse(&data)?;
         if !models.iter().any(|model| model["id"] == images::MODEL) {

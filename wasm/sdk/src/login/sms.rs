@@ -40,12 +40,21 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Challenge {
     Geetest { gt: String, challenge: String, success: bool, new_captcha: bool },
+    Alicom4 { #[serde(rename = "captchaId")] captcha_id: String },
     External { url: String },
 }
 
 pub fn method(index: u64, label: &str, config: Config) -> Value {
     json!({ "methodIndex": index, "type": "sms", "label": label, "prompts": [],
         "browserMode": "none", "sms": config })
+}
+
+pub fn method_with_challenge(index: u64, label: &str, config: Config, challenge: Challenge) -> Value {
+    let mut method = method(index, label, config);
+    if let Some(sms) = method.get_mut("sms").and_then(Value::as_object_mut) {
+        sms.insert("challenge".into(), serde_json::to_value(challenge).unwrap_or(Value::Null));
+    }
+    method
 }
 
 /// Ticket is private to the plugin and host; it is never rendered or merged into user input.
@@ -56,4 +65,8 @@ pub fn sent(ticket: Value, retry_after_seconds: u64, expires_after_seconds: u64)
 
 pub fn captcha(ticket: Value, challenge: Challenge) -> Value {
     json!({ "status": "captcha", "ticket": ticket, "challenge": challenge })
+}
+
+pub fn verify_captcha(ticket: Value, challenge: Challenge, message: &str) -> Value {
+    json!({ "status": "captcha", "ticket": ticket, "challenge": challenge, "message": message })
 }

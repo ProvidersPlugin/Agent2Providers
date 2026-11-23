@@ -340,17 +340,10 @@ pub fn normalize(params: &Value) -> Result<Value> {
     if device(&secret).is_empty() {
         secret["deviceId"] = json!(util::random_hex(32)?);
     }
-    // 手工导入仍核对已登录的只读资料接口；缺少可选邮箱不等于鉴权失败。
+    // 手工导入仍核对已登录的只读资料接口；缺少可选邮箱不等于鉴权失败，同时保留 JWT 中的 userId 不被外部资料 ID 覆盖。
     let profile = profile::fetch(&secret)?;
     let uid = util::text(&profile, &["userId"]);
-    if !uid.is_empty() {
-        let previous = user(&secret);
-        if !previous.is_empty() && previous != uid {
-            return Err(
-                Error::http(409, "AutoClaw 国际版资料与凭据身份不一致，未添加账号")
-                    .with_code("identity_changed"),
-            );
-        }
+    if !uid.is_empty() && user(&secret).is_empty() {
         secret["userId"] = json!(uid);
     }
     if user(&secret).is_empty() {

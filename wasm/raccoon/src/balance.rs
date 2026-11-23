@@ -1,8 +1,12 @@
 //! 余额以total_chargeable_points优先，五钱包含企业加油包；订阅失败不抹掉积分。
 //! 每日积分是按天发放的余额，不能宣称每日清零；未知读数不写零。
+//! 上游 /points/v1/balance 受限(403等非401)时，回退读取 setting_info 的 available_points。
 
-use super::{network, session, util};
-use agent2api_wasm_sdk::{json, Error, Result, Value};
+use super::{config, credentials::Credential, network, session, util};
+use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
+
+const COOLDOWN_KEY: &str = "points-balance:cooldown";
+const COOLDOWN_TTL_MS: i64 = 180_000;
 
 const WALLETS: &[(&str, &str)] = &[
     ("daily_points", "每日积分"),
@@ -12,22 +16,91 @@ const WALLETS: &[(&str, &str)] = &[
     ("enterprise_topup_points", "企业加油包积分"),
 ];
 
+fn control_headers() -> Result<Value> {
+    let mut headers = config::page(false)?;
+    headers["Accept"] = json!("application/json");
+    headers["X-Raccoon-Language"] = json!("zh");
+    Ok(headers)
+}
+
+fn available_points(value: &Value) -> Option<i64> {
+    util::integer(&value["total_chargeable_points"]).or_else(|| util::integer(&value["available_points"]))
+}
+
+fn fetch_points(credential: &Credential) -> Result<(Value, bool, Option<String>)> {
+    let in_cooldown = sdk::session_get(COOLDOWN_KEY)
+        .ok()
+        .is_some_and(|value| value == true);
+    let mut first_error = None;
+    if !in_cooldown {
+        match network::request(
+            "GET",
+            "/api/web/points/v1/balance",
+            &credential.token,
+            &credential.org,
+            control_headers()?,
+            None,
+        ) {
+            Ok(points) if points.is_object() && available_points(&points).is_some() => {
+                return Ok((points, false, None));
+            }
+            Ok(points) => {
+                first_error = Some(Error::http(
+                    502,
+                    if points.is_object() {
+                        "积分余额响应缺少可用积分"
+                    } else {
+                        "积分余额响应不是JSON对象"
+                    },
+                ));
+            }
+            Err(error) => {
+                if matches!(error.status, Some(401 | 409 | 503)) {
+                    return Err(error);
+                }
+                if error.code.as_deref() == Some("raccoon_edge_403") {
+                    let _ = sdk::session_put(COOLDOWN_KEY, json!(true), COOLDOWN_TTL_MS);
+                }
+                first_error = Some(error);
+            }
+        }
+    }
+    let path = if credential.org.is_empty() {
+        "/api/web/office/v3/setting_info"
+    } else {
+        "/api/web/org/user/office/v1/setting_info"
+    };
+    let info = match network::request(
+        "GET",
+        path,
+        &credential.token,
+        &credential.org,
+        control_headers()?,
+        None,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            if error.status == Some(401) {
+                return Err(error);
+            }
+            if in_cooldown {
+                let _ = sdk::session_remove(COOLDOWN_KEY);
+                return Err(error);
+            }
+            return Err(first_error.unwrap_or(error));
+        }
+    };
+    if !info.is_object() || available_points(&info).is_none() {
+        return Err(first_error.unwrap_or_else(|| Error::http(502, "小浣熊设置接口未返回可用积分")));
+    }
+    Ok((info, true, first_error.map(|error| error.message)))
+}
+
 pub fn query() -> Result<Value> {
     let session = session::ensure(false)?;
     let credential = &session.credential;
-    let points = network::request(
-        "GET",
-        "/api/web/points/v1/balance",
-        &credential.token,
-        &credential.org,
-        json!({ "Accept": "application/json" }),
-        None,
-    )?;
-    if !points.is_object() {
-        return Err(Error::http(502, "积分余额响应不是JSON对象"));
-    }
-    let available = util::integer(&points["total_chargeable_points"])
-        .or_else(|| util::integer(&points["available_points"]));
+    let (points, from_setting, points_error) = fetch_points(credential)?;
+    let available = available_points(&points);
     let mut wallets = Vec::new();
     let mut credits = Vec::new();
     let mut sources = Vec::new();
@@ -44,11 +117,19 @@ pub fn query() -> Result<Value> {
         "/api/web/auth/v1/entitlement_info",
         &credential.token,
         &credential.org,
-        json!({ "Accept": "application/json" }),
+        control_headers()?,
         None,
     );
+    let mut raw = if from_setting {
+        json!({ "pointsSource": "setting_info", "settingInfo": points })
+    } else {
+        json!({ "points": points })
+    };
+    if let Some(error) = points_error {
+        raw["pointsError"] = json!(error);
+    }
     let mut result = json!({ "available": available, "unit": "积分", "wallets": wallets, "quotaSources": sources,
-        "subscription": null, "raw": { "points": points } });
+        "subscription": null, "raw": raw });
     match subscription {
         Ok(value) => {
             result["subscription"] = normalize(&value);

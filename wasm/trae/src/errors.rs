@@ -12,6 +12,7 @@ pub fn code(value: &Value) -> Option<i64> {
         value.get("code"),
         value.get("Code"),
         value.pointer("/ResponseMetadata/Error/Code"),
+        value.pointer("/ResponseMetadata/Error/CodeN"),
         value.get("upstreamCode"),
     ]
     .into_iter()
@@ -73,6 +74,11 @@ fn input_too_large(text: &str) -> bool {
 pub fn upstream(status: u16, body: &Value) -> Error {
     let c = code(body);
     let text = message(body);
+    let meta_code = body
+        .pointer("/ResponseMetadata/Error/Code")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let marker = [
         body.get("providerCode"),
         body.pointer("/error/code"),
@@ -104,8 +110,13 @@ pub fn upstream(status: u16, body: &Value) -> Error {
     } else if status == 401
         || matches!(c, Some(1001 | 401 | 20101))
         || marker == "trae_session_expired"
+        || matches!(
+            meta_code.as_str(),
+            "unauthorized" | "invalidtoken" | "tokenexpired"
+        )
         || text.contains("not able to authenticate")
         || text.contains("unable to authenticate")
+        || text.contains("refresh token is invalid")
     {
         (
             401,

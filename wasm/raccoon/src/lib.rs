@@ -47,6 +47,7 @@ fn metadata() -> Value {
         ],
         "account_features": { "usage": true, "credit_detail": true, "identifier": ["userId", "uid"], "expiry": ["expiresAt", "tokenExpiresAt"] },
         "checkin": { "description": "桌面端每日积分：setting_info触发，账单核对到账", "daily": true, "modes": ["checkin"], "onboarding": true },
+        "usage_query": { "concurrency": 1, "min_interval_ms": 1000 },
         "default_models": fallback::models(), "settings_schema": config::schema(), "settings_group": { "label": "小浣熊" } });
     attach(meta, vec![], vec![])
 }

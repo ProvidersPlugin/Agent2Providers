@@ -39,7 +39,7 @@ All additions are implemented but unverified. Compilation, packaging and signatu
 | WorkBuddy (Global) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
 | Raccoon | ✓ (chat / generation / reference editing) | ✓ (legacy credentials; IAM requires sign-in) | ✓ | ✓ | ✓ | ✓ (first-login rewards) |
 | CatPaw | ✓ | ✗ | ✓ | ✓ | ✗ | — |
-| AutoClaw (domestic / international) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| AutoClaw (domestic / international) | ✓ | ✓ | ✓ | ✓ | ✓ | Implemented; unverified (Login active / Weekly Perks, client & newbie tasks, code redemption) |
 | Qoder | ✓ | ✓ | ✓ | ✓ | ✓ | Implemented; unverified (Sonus and other limited-time credit rewards) |
 | QwenWork (China / International) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
 | Cline (Free / Pass) | ✓ | ✓ | ✓ | ✓ | — | — |

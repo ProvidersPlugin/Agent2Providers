@@ -17,10 +17,6 @@ pub fn fetch(secret: &Value) -> Result<Value> {
     if !uid.is_empty() && !util::printable(&uid, 256) {
         return Err(Error::http(502, "AutoClaw 国际版资料用户标识无效"));
     }
-    if !uid.is_empty() && !account::user(secret).is_empty() && uid != account::user(secret) {
-        return Err(Error::http(409, "AutoClaw 国际版资料与当前账号身份不一致")
-            .with_code("identity_changed"));
-    }
     Ok(json!({ "userId": uid, "email": util::text(&payload["data"], &["email"]) }))
 }
 

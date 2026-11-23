@@ -54,7 +54,7 @@ pub fn form(value: &Value) -> Result<Value> {
     )
 }
 
-fn phone(raw: &str) -> Result<String> {
+pub(crate) fn phone(raw: &str) -> Result<String> {
     let digits = raw.trim();
     if digits.len() == 11
         && digits.starts_with('1')
@@ -70,7 +70,7 @@ fn phone(raw: &str) -> Result<String> {
     }
 }
 
-fn captcha(value: &Value) -> Result<Value> {
+pub(crate) fn captcha(value: &Value) -> Result<Value> {
     let mut output = json!({});
     for key in ["lot_number", "captcha_output", "pass_token", "gen_time"] {
         let value = value[key]
@@ -146,7 +146,14 @@ pub fn send(old: &Snapshot, params: &Value) -> Result<Value> {
     Ok(json!({ "state": "pending", "interaction": form(&next)? }))
 }
 
-pub fn require_phone(old: &Snapshot, reply: &Value) -> Result<Option<Value>> {
+pub(crate) struct PhoneChallenge {
+    pub purpose: &'static str,
+    pub temp_token: String,
+    pub username: String,
+    pub phone_tail: String,
+}
+
+pub(crate) fn parse_phone_challenge(reply: &Value) -> Result<Option<PhoneChallenge>> {
     let data = network::data(reply);
     let status = util::text(data, &["status"]);
     let status = if status.is_empty() {
@@ -162,9 +169,6 @@ pub fn require_phone(old: &Snapshot, reply: &Value) -> Result<Option<Value>> {
     } else {
         return Ok(None);
     };
-    if state::load()?.revision != old.revision {
-        return Err(Error::http(409, "科搭登录步骤已变化，请重新读取"));
-    }
     let temp = util::text(data, &["token"]);
     let temp = if temp.is_empty() {
         util::text(reply, &["token"])
@@ -181,6 +185,51 @@ pub fn require_phone(old: &Snapshot, reply: &Value) -> Result<Option<Value>> {
         return Err(Error::http(502, "科搭安全验证缺少临时令牌或账号名"));
     }
     crate::credentials::token(&temp)?;
+    let phone_tail = if purpose == "ip_verify" {
+        let raw = util::text(data, &["phone"]);
+        let raw = if raw.is_empty() {
+            util::text(reply, &["phone"])
+        } else {
+            raw
+        };
+        raw.chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<String>()
+    } else {
+        String::new()
+    };
+    Ok(Some(PhoneChallenge {
+        purpose,
+        temp_token: temp,
+        username,
+        phone_tail,
+    }))
+}
+
+pub fn require_phone(old: &Snapshot, reply: &Value) -> Result<Option<Value>> {
+    let Some(challenge) = parse_phone_challenge(reply)? else {
+        return Ok(None);
+    };
+    if state::load()?.revision != old.revision {
+        return Err(Error::http(409, "科搭登录步骤已变化，请重新读取"));
+    }
+    if !challenge.phone_tail.is_empty()
+        && !old.value["phone"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with(&challenge.phone_tail)
+        && old.value["methodIndex"] == 1
+    {
+        return Err(Error::http(
+            409,
+            "科搭短信登录账号与原手机号不一致，未继续验证",
+        ));
+    }
     let mut next = old.value.clone();
     if let Some(fields) = next.as_object_mut() {
         // 新 IP 验证是新的短信步骤，不能沿用上一步的手机号、验证码期限或发送节流。
@@ -197,39 +246,11 @@ pub fn require_phone(old: &Snapshot, reply: &Value) -> Result<Option<Value>> {
         }
     }
     next["phase"] = json!("phone");
-    next["purpose"] = json!(purpose);
+    next["purpose"] = json!(challenge.purpose);
     next["step"] = json!(util::nonce()?);
-    next["tempToken"] = json!(temp);
-    next["username"] = json!(username);
-    next["phoneTail"] = if purpose == "ip_verify" {
-        let raw = util::text(data, &["phone"]);
-        let raw = if raw.is_empty() {
-            util::text(reply, &["phone"])
-        } else {
-            raw
-        };
-        let digits = raw
-            .chars()
-            .rev()
-            .take_while(char::is_ascii_digit)
-            .take(4)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<String>();
-        if !digits.is_empty()
-            && !old.value["phone"].as_str().unwrap_or("").ends_with(&digits)
-            && old.value["methodIndex"] == 1
-        {
-            return Err(Error::http(
-                409,
-                "科搭短信登录账号与原手机号不一致，未继续验证",
-            ));
-        }
-        json!(digits)
-    } else {
-        json!("")
-    };
+    next["tempToken"] = json!(challenge.temp_token);
+    next["username"] = json!(challenge.username);
+    next["phoneTail"] = json!(challenge.phone_tail);
     next["hint"] = Value::Null;
     state::save(old, next.clone())?;
     Ok(Some(

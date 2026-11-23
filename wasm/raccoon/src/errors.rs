@@ -28,7 +28,7 @@ pub fn message(body: &Value) -> String {
         .to_string()
 }
 pub fn authentication(body: &Value) -> bool {
-    matches!(code(body), Some(200_003 | 200_009))
+    matches!(code(body), Some(200_001 | 200_003 | 200_009))
         || code_text(body) == "authorization_verify_error"
         || message(body).contains("authorization_verify_error")
 }

@@ -3,7 +3,7 @@
   "verified": false,
   "requires": [
     "http.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
-    "locks.v1", "state.v1", "catalog.v1", "settings.v1", "settings.schema.v1",
+    "locks.v1", "state.v1", "sessions.v1", "catalog.v1", "settings.v1", "settings.schema.v1",
     "runtime.platform.v1", "runtime.architecture.v1", "chat.stream.v1", "errors.v1",
     "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1",
     "images.v1", "resources.v1", "resources.fetch-public.v1"

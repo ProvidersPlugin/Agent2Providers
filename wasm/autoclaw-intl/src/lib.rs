@@ -2,6 +2,7 @@
 //! Google / Zai 使用主程序托管的 Aliyun V2 与各自固定 loopback。
 //! 只有本机凭据读取/解密需要固定来源 helper；浏览器登录不新增任何原生部署依赖。
 mod account;
+mod campaigns;
 mod chat;
 mod checkin;
 mod client;
@@ -33,7 +34,7 @@ fn metadata() -> Value {
     use sdk::error_rules::attach;
     let meta = json!({ "id": endpoints::PROVIDER, "label": "AutoClaw 国际版", "order": 11,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
-            "usage": true, "checkin": true, "claims": false, "web_login": login_host::READY,
+            "usage": true, "checkin": true, "claims": true, "web_login": login_host::READY,
             "sse_model_rewrite": true, "sse_strip_newline_chunks": true,
             "anonymous_default_session": false, "system_proxy_when_unset": false,
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false },
@@ -70,6 +71,8 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "models.refresh" => models::refresh(&params),
         "usage.query" => usage::query(),
         "checkin.claim" => checkin::claim(),
+        "claim.status" => campaigns::preview(),
+        "claim" => campaigns::claim(params["claim"].as_str().unwrap_or("")),
         "conversation" => {
             chat::forward(params)?;
             Ok(Value::Null)
@@ -116,6 +119,8 @@ fn admin(params: &Value) -> Result<Value> {
         }
         "network.user-agent" => Ok(json!({ "accountWide": true })),
         "quota.sources" => Ok(usage::sources(&payload["report"])),
+        "claim.status" | "activity.status" => campaigns::preview(),
+        "benefits.redeem" => campaigns::redeem(payload),
         "promotion.status" => promotion::today(&account::read()?.secret),
         "prompt.info" => Ok(
             json!({ "gatewayNote": "使用国际版官方系统首句并规范化历史载体；原系统正文、思考文本、用户/工具消息与图片保留。上游不接受的输出预算字段不发送。",

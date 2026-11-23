@@ -6,6 +6,7 @@ use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 pub struct Reply {
     pub status: u16,
     pub value: Value,
+    pub edge_403: bool,
 }
 
 pub fn headers(token: &str, org: &str, mut extra: Value) -> Result<Value> {
@@ -68,21 +69,26 @@ pub fn open_timeout(
 }
 pub fn read(response: http::Response, limit: usize) -> Result<Reply> {
     let status = response.status;
+    let edge_403 = status == 403 && !response.header_values("x-tt-system-error").is_empty();
     let bytes = response.bytes(limit).map_err(|mut error| {
         error.message = "小浣熊响应读取失败或超过限制".into();
         error
     })?;
     let value = serde_json::from_slice(&bytes).map_err(|_| {
-        Error::http(
+        let mut error = Error::http(
             if (400..600).contains(&status) {
                 status
             } else {
                 502
             },
             format!("小浣熊未返回有效JSON（HTTP {status}）"),
-        )
+        );
+        if status == 403 {
+            error = error.with_code("raccoon_edge_403");
+        }
+        error
     })?;
-    Ok(Reply { status, value })
+    Ok(Reply { status, value, edge_403 })
 }
 pub fn raw(
     method: &str,
@@ -101,7 +107,11 @@ pub fn data(reply: Reply, secrets: &[&str], require_code: bool) -> Result<Value>
     if errors::failed(reply.status, &reply.value)
         || require_code && errors::code(&reply.value) != Some(0)
     {
-        return Err(errors::upstream(reply.status, &reply.value, secrets));
+        let mut error = errors::upstream(reply.status, &reply.value, secrets);
+        if reply.status == 403 && reply.edge_403 {
+            error = error.with_code("raccoon_edge_403");
+        }
+        return Err(error);
     }
     let data = reply
         .value
@@ -109,6 +119,36 @@ pub fn data(reply: Reply, secrets: &[&str], require_code: bool) -> Result<Value>
         .filter(|value| !value.is_null())
         .cloned();
     Ok(data.unwrap_or(reply.value))
+}
+fn request_once(
+    method: &str,
+    path: &str,
+    token: &str,
+    org: &str,
+    extra: Value,
+    body: Option<&Value>,
+    timeout_ms: u64,
+) -> Result<Reply> {
+    read(
+        open_timeout(method, path, token, org, extra, body, timeout_ms)?,
+        4 * 1024 * 1024,
+    )
+}
+pub fn request_timeout(
+    method: &str,
+    path: &str,
+    token: &str,
+    org: &str,
+    extra: Value,
+    body: Option<&Value>,
+    timeout_ms: u64,
+) -> Result<Value> {
+    let mut reply = request_once(method, path, token, org, extra.clone(), body, timeout_ms)?;
+    if !token.is_empty() && errors::code(&reply.value) == Some(200_901) {
+        super::iam::confirm(token)?;
+        reply = request_once(method, path, token, org, extra, body, timeout_ms)?;
+    }
+    data(reply, &[token], false)
 }
 pub fn request(
     method: &str,
@@ -123,9 +163,5 @@ pub fn request(
     } else {
         20_000
     };
-    let reply = read(
-        open_timeout(method, path, token, org, extra, body, timeout)?,
-        4 * 1024 * 1024,
-    )?;
-    data(reply, &[token], false)
+    request_timeout(method, path, token, org, extra, body, timeout)
 }

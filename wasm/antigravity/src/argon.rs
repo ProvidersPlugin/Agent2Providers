@@ -92,7 +92,7 @@ fn quota(summary: &Value) -> Value {
                 .flatten()
                 .filter(move |bucket| is_quota_bucket(group, bucket))
         })
-        .filter_map(|bucket| super::util::quota_fraction(bucket).map(|fraction| (fraction, bucket)))
+        .filter_map(|bucket| super::util::bucket_fraction(bucket).map(|fraction| (fraction, bucket)))
         .min_by(|(a, _), (b, _)| a.total_cmp(b));
     let Some((fraction, bucket)) = tightest else {
         return Value::Null;

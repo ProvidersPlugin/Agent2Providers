@@ -40,13 +40,10 @@ pub fn collect_groups(summary: Option<&Value>) -> Vec<GroupReading> {
         let mut first_bucket = None;
 
         for bucket in group["buckets"].as_array().into_iter().flatten() {
-            if bucket["disabled"].as_bool() == Some(true) {
-                continue;
-            }
             if dedicated.is_none() {
                 dedicated = argon::dedicated_token(group, bucket);
             }
-            let Some(fraction) = util::quota_fraction(bucket) else {
+            let Some(fraction) = util::bucket_fraction(bucket) else {
                 continue;
             };
             if !fraction.is_finite() {

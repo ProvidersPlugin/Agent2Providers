@@ -97,6 +97,26 @@ pub fn quota_fraction(value: &Value) -> Option<f64> {
     }
 }
 
+/// 解析配额分桶的剩余比例：显式 disabled 或省略了比例/重置时间的百分比窗口桶均视为 0。
+pub fn bucket_fraction(bucket: &Value) -> Option<f64> {
+    if bucket["disabled"].as_bool() == Some(true) {
+        return Some(0.0);
+    }
+    if let Some(fraction) = quota_fraction(bucket) {
+        return Some(fraction);
+    }
+    let has_amount = bucket
+        .get("remainingAmount")
+        .or_else(|| bucket.get("remaining_amount"))
+        .is_some_and(|v| !v.is_null());
+    let has_window = !text(
+        bucket,
+        &["window", "bucketId", "bucket_id", "displayName", "display_name"],
+    )
+    .is_empty();
+    (!has_amount && has_window).then_some(0.0)
+}
+
 pub fn conflict() -> Error {
     Error::http(409, "Antigravity 账号已在操作期间变化，未覆盖新的凭据")
         .with_code("credential_conflict")

@@ -60,16 +60,105 @@ fn parse(params: &Value) -> Result<contract::Request> {
     Ok(request)
 }
 
-fn phone(raw: &str) -> Result<String> {
+fn is_mask_char(ch: char) -> bool {
+    matches!(ch, '*' | '•' | '●' | 'x' | 'X' | '×')
+}
+
+fn strip_cn_prefix(raw: &str) -> String {
     let trimmed: String = raw
         .chars()
         .filter(|ch| !ch.is_whitespace() && *ch != '-')
         .collect();
-    let digits = trimmed.strip_prefix("+86").unwrap_or(&trimmed);
-    let digits = digits
-        .strip_prefix("86")
-        .filter(|rest| rest.len() == 11)
-        .unwrap_or(digits);
+    let mut digits = trimmed.strip_prefix("+86").unwrap_or(&trimmed);
+    for prefix in ["0086", "86"] {
+        if let Some(after) = digits.strip_prefix(prefix) {
+            let count = after.chars().count();
+            let has_mask = after.chars().any(is_mask_char);
+            if count == 11
+                || (has_mask
+                    && (7..=11).contains(&count)
+                    && after
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch == '1' || is_mask_char(ch)))
+            {
+                digits = after;
+                break;
+            }
+        }
+    }
+    digits.to_string()
+}
+
+fn match_masked_phone(pattern: &[char], expected: &[u8]) -> bool {
+    if expected.len() != 11 {
+        return false;
+    }
+    if pattern.len() == 11 {
+        return pattern
+            .iter()
+            .enumerate()
+            .all(|(index, &ch)| ch == '*' || ch == expected[index] as char);
+    }
+    if pattern.len() > 11 {
+        return false;
+    }
+    let mut collapsed = Vec::with_capacity(pattern.len());
+    for &ch in pattern {
+        if ch != '*' || collapsed.last() != Some(&'*') {
+            collapsed.push(ch);
+        }
+    }
+    let mut dp = [false; 12];
+    dp[0] = true;
+    for ch in collapsed {
+        let mut next = [false; 12];
+        if ch == '*' {
+            let mut matched = false;
+            for index in 0..11 {
+                if dp[index] {
+                    matched = true;
+                }
+                if matched {
+                    next[index + 1] = true;
+                }
+            }
+        } else {
+            for index in 0..11 {
+                if dp[index] && expected[index] == ch as u8 {
+                    next[index + 1] = true;
+                }
+            }
+        }
+        dp = next;
+    }
+    dp[11]
+}
+
+/// 上游登录响应里的 `phone` 可能是脱敏格式（如 `188****9337`）或其他非标准表示；
+/// 只在可识别为完整手机号或脱敏手机号时核对是否归属本次手机号，避免误报输入格式错误。
+fn returned_phone_mismatch(returned: &str, expected: &str) -> bool {
+    let clean = strip_cn_prefix(returned);
+    if clean.is_empty()
+        || !clean
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || is_mask_char(ch))
+        || !clean.chars().any(|ch| ch.is_ascii_digit())
+    {
+        return false;
+    }
+    if clean.bytes().all(|byte| byte.is_ascii_digit()) {
+        return clean.len() == 11 && clean != expected;
+    }
+    let pattern: Vec<char> = clean
+        .chars()
+        .map(|ch| if is_mask_char(ch) { '*' } else { ch })
+        .collect();
+    !match_masked_phone(&pattern, expected.as_bytes())
+}
+
+fn phone(raw: &str) -> Result<String> {
+    let digits = strip_cn_prefix(raw);
     if digits.len() == 11
         && digits.starts_with('1')
         && digits
@@ -78,7 +167,7 @@ fn phone(raw: &str) -> Result<String> {
             .is_some_and(|digit| (b'3'..=b'9').contains(digit))
         && digits.bytes().all(|byte| byte.is_ascii_digit())
     {
-        Ok(digits.to_string())
+        Ok(digits)
     } else {
         Err(Error::http(400, "请填写 11 位中国大陆手机号"))
     }
@@ -243,7 +332,7 @@ pub fn verify(params: &Value) -> Result<Value> {
             let session = account::token(data)?;
             let uid = account::identifier(data, &["userId", "userid", "user_id"]);
             let returned_phone = account::identifier(data, &["phone"]);
-            if !returned_phone.is_empty() && self::phone(&returned_phone)? != phone {
+            if !returned_phone.is_empty() && returned_phone_mismatch(&returned_phone, &phone) {
                 return Err(Error::http(
                     409,
                     "短信返回的账号不属于本次手机号，未添加账号",

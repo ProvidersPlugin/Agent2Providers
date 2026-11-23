@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "agent2api-wasm-monkeycode-intl"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 dependencies = [
  "agent2api-wasm-sdk",
  "chrono",

@@ -5,12 +5,18 @@ use super::Context;
 use crate::{catalog, errors, web_session};
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 
-fn uncertain() -> Error {
-    Error::http(
-        502,
-        "国际网页会话结果未确认，未换模型重复创建；请到官方页面核对",
-    )
-    .with_code("activity_web_outcome_uncertain")
+fn uncertain(detail: Option<&str>) -> Error {
+    let message = match detail.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(detail) => format!("国际网页会话结果未确认（{detail}），5 分钟内暂缓换模型重复创建"),
+        None => "国际网页会话结果未确认，5 分钟内暂缓换模型重复创建；请到官方页面核对".to_string(),
+    };
+    Error::http(502, message).with_code("activity_web_outcome_uncertain")
+}
+fn record_pending(ctx: &Context, model: &str, reason: &str) {
+    let _ = ctx.put(
+        "web",
+        &json!({ "day": ctx.day, "pending": true, "model": model, "at": sdk::now(), "reason": reason }),
+    );
 }
 pub(super) fn run(ctx: &mut Context, models: &[String]) -> Result<Value> {
     let before = ctx.get("web")?;
@@ -19,8 +25,8 @@ pub(super) fn run(ctx: &mut Context, models: &[String]) -> Result<Value> {
         result["reused"] = json!(true);
         return Ok(result);
     }
-    if before["day"] == ctx.day && before["pending"] == true {
-        return Err(uncertain());
+    if super::pending_active(&before, &ctx.day, Some(models)) {
+        return Err(uncertain(super::pending_detail(&before).as_deref()));
     }
     ctx.check()?;
     let mut cookie = match web_session::ready(&ctx.current, &ctx.job) {
@@ -53,8 +59,14 @@ pub(super) fn run(ctx: &mut Context, models: &[String]) -> Result<Value> {
                 "web",
                 &json!({ "day": ctx.day, "pending": true, "model": model, "at": sdk::now() }),
             )?;
-            let reply = web_session::request(&ctx.current, &ctx.job, &cookie, &body)
-                .map_err(|_| uncertain())?;
+            let reply = match web_session::request(&ctx.current, &ctx.job, &cookie, &body) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let reason = errors::clean(&error.message, &ctx.current.secrets());
+                    record_pending(ctx, model, &reason);
+                    return Err(uncertain(Some(&format!("{model}：{reason}"))));
+                }
+            };
             if reply.status == 401 || reply.status == 403 || reply.code() == Some(12153) {
                 ctx.put(
                     "web",
@@ -93,7 +105,13 @@ pub(super) fn run(ctx: &mut Context, models: &[String]) -> Result<Value> {
             let rejected = (400..500).contains(&reply.status) && reply.status != 408
                 || (200..300).contains(&reply.status) && reply.code().is_some_and(|code| code != 0);
             if !rejected {
-                return Err(uncertain());
+                let reason = format!(
+                    "HTTP {}：{}",
+                    reply.status,
+                    errors::clean(reply.message(), &ctx.current.secrets())
+                );
+                record_pending(ctx, model, &reason);
+                return Err(uncertain(Some(&format!("{model}：{reason}"))));
             }
             ctx.put("web", &json!({ "day": ctx.day, "pending": false, "model": model, "status": reply.status }))?;
             let message = errors::clean(reply.message(), &ctx.current.secrets());

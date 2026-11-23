@@ -35,7 +35,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": "officeace", "label": "OfficeAce 果办", "order": 12,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": "officeace", "label": "OfficeAce 果办", "order": 12,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": true, "claims": true, "web_login": true,
             "sse_model_rewrite": false, "sse_strip_newline_chunks": false,
@@ -45,7 +46,18 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "credit_detail": true, "credit_expiry": true,
             "identifier": ["id"], "expiry": ["expiresAt"] },
         "checkin": { "description": "一次结算当天全部奖励（每日签到及新人礼）；套餐需另行确认，不自动续费", "daily": true, "modes": ["checkin"], "onboarding": true },
-        "default_models": [] })
+        "default_models": [] });
+    attach(
+        meta,
+        vec![
+            class("balance", &[], &["1009"]),
+            class("rate_limit", &[429], &["81111", "81112", "81114", "0308", "308"]),
+            class("content", &[], &["officeace_content_filter"]),
+        ],
+        vec![
+            rule("oa_no_points_1009", "账号积分为零（1009）", "华为云网关因可用积分为 0 停用模型密钥时，冷却该账号并切换其他账号。", "balance", &[401], "1009", "switch_account", "fixed", 1800, true, 14400, "account"),
+        ],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

@@ -128,7 +128,15 @@ pub fn callback(params: &Value) -> Result<Value> {
     let official = before.value["officialState"].as_str().ok_or_else(replaced)?;
     let code = match oauth_urls::callback(raw, vendor, navigate, official)? {
         oauth_urls::Callback::Code(code) => code,
-        oauth_urls::Callback::Denied => { clear(&before)?; return Ok(failed("已取消或拒绝 AutoClaw 国际版官方授权")); }
+        oauth_urls::Callback::Denied(detail) => {
+            clear(&before)?;
+            let message = if detail.is_empty() {
+                "已取消或拒绝 AutoClaw 国际版官方授权".to_string()
+            } else {
+                format!("已取消或拒绝 AutoClaw 国际版官方授权：{detail}")
+            };
+            return Ok(failed(&message));
+        }
     };
     let device = before.value["deviceId"].as_str().ok_or_else(replaced)?;
     let mut next = before.value.clone();

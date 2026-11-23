@@ -8,7 +8,8 @@ pub fn defaults() -> Vec<Value> {
     let rows: Vec<Value> = serde_json::from_str(include_str!("fallback.json")).unwrap_or_default();
     let mut models = rows.into_iter().map(|row| {
         let mut model = json!({ "id": row["id"], "name": row["id"], "kind": "chat", "protocol": row["protocol"],
-            "supportsToolCall": true, "supportsReasoning": true, "supportsImages": row["images"],
+            // 上游限制登录凭证用于工具调用，默认不声明可用工具，避免路由和助手误选
+            "supportsToolCall": false, "supportsReasoning": true, "supportsImages": row["images"],
             "maxInputTokens": row["context"], "isDefault": row["id"] == "auto", "catalogSource": "official_public_snapshot" });
         if row["output"].as_u64().is_some_and(|count| count > 0) { model["maxOutputTokens"] = row["output"].clone(); }
         model["authentication"] = row["authentication"].clone();
@@ -55,14 +56,10 @@ fn parse(body: &Value) -> Result<Vec<Value>> {
         let wire = protocol(row)?;
         let name = util::safe_text(&util::text(row, &["display_name", "name"]), &[], 120);
         let mut model = json!({ "id": id, "name": if name.is_empty() { id } else { &name }, "kind": "chat", "protocol": wire,
-            "isDefault": id == "auto", "catalogSource": "codar_models" });
-        for (target, source) in [
-            ("supportsToolCall", "function_tools"),
-            ("streaming", "streaming"),
-        ] {
-            if let Some(value) = row["capabilities"][source].as_bool() {
-                model[target] = json!(value);
-            }
+            // 目录中的 function_tools 仅表示模型能力，不代表登录凭证可在第三方带上 tools 调用
+            "supportsToolCall": false, "isDefault": id == "auto", "catalogSource": "codar_models" });
+        if let Some(value) = row["capabilities"]["streaming"].as_bool() {
+            model["streaming"] = json!(value);
         }
         if let Some(modalities) = row["input_modalities"].as_array() {
             model["supportsImages"] = json!(modalities.iter().any(|kind| *kind == "image"));

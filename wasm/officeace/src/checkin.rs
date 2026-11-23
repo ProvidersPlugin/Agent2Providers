@@ -99,10 +99,7 @@ fn inner(context: &mut control::Context) -> Result<Value> {
         }
     }
     let old_bonuses = subscription::bonuses(&before);
-    if before["bonus_skus"]
-        .as_array()
-        .is_none_or(|rows| rows.len() != old_bonuses.len())
-    {
+    if !subscription::valid_bonuses(&before, old_bonuses.len()) {
         return Err(Error::http(
             502,
             "领取前的奖励账本无法确认，未提交重复结算请求",
@@ -149,13 +146,20 @@ fn inner(context: &mut control::Context) -> Result<Value> {
             return Err(error);
         }
     };
-    let items = claimed["bonus_skus"]
-        .as_array()
-        .ok_or_else(|| Error::http(502, "官方没有返回有效奖励结算结果，请先查询积分"))?;
+    let item_count = match claimed.get("bonus_skus") {
+        Some(Value::Array(rows)) => rows.len(),
+        Some(Value::Null) => 0,
+        _ => {
+            return Err(Error::http(
+                502,
+                "官方没有返回有效奖励结算结果，请先查询积分",
+            ))
+        }
+    };
     let bonuses = subscription::bonuses(&claimed);
     let mut rewards = Vec::new();
     let mut gained = 0.0;
-    if items.len() != bonuses.len() {
+    if item_count != bonuses.len() {
         return Err(Error::http(
             502,
             "官方奖励条目格式未知，请先查询明细，不要重复提交",

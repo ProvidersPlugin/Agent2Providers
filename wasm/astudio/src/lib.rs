@@ -23,7 +23,8 @@ pub const PROVIDER_ID: &str = "astudio";
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": PROVIDER_ID, "label": "AStudio", "order": 32,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": PROVIDER_ID, "label": "AStudio", "order": 32,
         "capabilities": { "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
             "usage": true, "checkin": true, "claims": false, "web_login": true,
             "sse_model_rewrite": false, "refresh_uses_account": true, "supports_default_model": true,
@@ -32,7 +33,18 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "identifier": ["uid", "accountId"], "expiry": [], "long_lived": false },
         "refusal_finishes": ["content_filter", "safety"], "refusal_markers": [],
         "checkin": { "daily": true, "description": "每日登录积分：执行官方账号初始化，分别核对通用积分与星火积分；未观测到新增奖励不标记已签", "modes": ["checkin"] },
-        "default_models": models::defaults() })
+        "default_models": models::defaults() });
+    attach(
+        meta,
+        vec![
+            class("quota", &[429], &["astudio_quota"]),
+            class("auth", &[401], &["astudio_model_expired", "astudio_session_expired", "astudio_banned", "80000"]),
+            class("content", &[], &["astudio_content"]),
+        ],
+        vec![
+            rule("astudio_banned", "账号受限（403）", "账号被封禁时长期冷却该账号并切换其他可用账号。", "auth", &[403], "astudio_banned", "switch_account", "fixed", 3600, true, 86400, "account"),
+        ],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {
@@ -84,7 +96,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
                 .unwrap_or("");
             Ok(
                 json!({ "stop": matches!(marker, "local_precondition" | "native_helper_unavailable"
-                | "forbidden" | "plugin_resource_limit" | "aborted" | "timeout") }),
+                | "plugin_resource_limit" | "aborted" | "timeout") }),
             )
         }
         "retry.decision" => Ok(json!({ "action": "default" })),

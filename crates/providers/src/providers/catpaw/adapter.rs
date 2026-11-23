@@ -92,14 +92,12 @@ impl Provider for CatPawProvider {
                 // 翻译层（`openai.rs`）自己填 `model`，通用回写层无事可做
                 sse_model_rewrite: false,
                 sse_strip_newline_chunks: false,
-                // 环境变量旁路（CATPAW_COOKIE）：脚本 / CI 用户不建账号也能用
-                anonymous_default_session: true,
+                anonymous_default_session: false,
                 system_proxy_when_unset: false,
                 refresh_uses_account: false,
                 // 没有「默认模型」概念（与内置实现同一结论）
                 supports_default_model: false,
-                // `CATPAW_COOKIE` 旁路实现存在
-                env_credentials: true,
+                env_credentials: false,
             })
             .with_login(vec![
                 proto::LoginMethod::Browser {
@@ -396,12 +394,6 @@ pub(crate) async fn resolve_credentials(
     ctx: &PluginCtx,
     account_id: &str,
 ) -> Result<CatPawCredentials, GatewayError> {
-    if account_id.is_empty() {
-        if let Some(credentials) = credentials::env_credentials() {
-            credentials::log_source("环境变量（CATPAW_COOKIE）", "", &credentials.uid);
-            return Ok(credentials);
-        }
-    }
     let credentials = credentials::snapshot_for(ctx, account_id).await?;
     credentials::log_source(
         if account_id.is_empty() { "默认登录态" } else { "账号记录" },

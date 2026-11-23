@@ -9,11 +9,47 @@ const OVERLAY: &str = "desktop-credential-overlay";
 const KEY: &str = "credentials";
 const TTL: i64 = 7_200_000;
 const CONTROL: &str = "cline-refresh-control";
+const IN_FLIGHT_TTL_MS: i64 = 60_000;
+const BACKOFF_TTL_MS: i64 = 60_000;
 
 fn unresolved() -> Error {
     Error::http(409,
         "Cline 上次续期结果尚未确认，不会重复消费同一续期令牌；仍有效的访问令牌可继续使用，到期后请重新登录")
         .with_code("cline_refresh_result_unconfirmed")
+}
+
+fn backoff_key(current: &Snapshot) -> String {
+    format!(
+        "refresh-backoff:{}",
+        account::fingerprint(&account::text(&current.record, &["id"]))
+    )
+}
+
+fn control_active(value: &Value, stamp: &str, now: i64) -> bool {
+    value["stamp"] == stamp
+        && value["at"]
+            .as_i64()
+            .is_some_and(|at| at > 0 && now >= at && now.saturating_sub(at) < IN_FLIGHT_TTL_MS)
+}
+
+fn clear_control(stamp: &str) {
+    let Ok(current) = sdk::state::get(Scope::Account, CONTROL, 1) else {
+        return;
+    };
+    if current.value.is_null() {
+        return;
+    }
+    if current.compatible && current.value["stamp"] != stamp {
+        return;
+    }
+    let _ = sdk::state::compare_exchange(
+        Scope::Account,
+        CONTROL,
+        1,
+        current.revision,
+        Value::Null,
+        0,
+    );
 }
 
 fn refresh_stamp(current: &Snapshot) -> String {
@@ -277,11 +313,12 @@ pub fn due(min_lead_ms: i64) -> Result<bool> {
         return Ok(status["authorized"] == true && status["refreshable"] == true && expiring_within(&snapshot.secret, min_lead_ms));
     }
     if !renewable(&snapshot.secret) { return Ok(false); }
+    let stamp = refresh_stamp(&snapshot);
     let control = sdk::state::get(Scope::Account, CONTROL, 1)?;
-    if !control.compatible {
-        return Err(source_changed());
+    if control.compatible && control_active(&control.value, &stamp, sdk::now()) {
+        return Ok(false);
     }
-    if control.value["stamp"] == refresh_stamp(&snapshot) {
+    if usable(&snapshot) && sdk::session_get(&backoff_key(&snapshot)).is_ok_and(|entry| entry["stamp"] == stamp) {
         return Ok(false);
     }
     Ok(expiring_within(&snapshot.secret, min_lead_ms))
@@ -385,13 +422,68 @@ fn mark_relogin(current: &Snapshot) {
     );
 }
 
+fn refresh_denied(reply: &client::Reply) -> bool {
+    if matches!(reply.status, 401 | 403) { return true; }
+    if reply.status != 400 { return false; }
+    let text = [&reply.body["error"]["code"], &reply.body["error"]["message"],
+        &reply.body["error"], &reply.body["code"], &reply.body["message"]]
+        .into_iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    ["invalid_grant", "invalid refresh", "refresh token", "revoked", "expired", "session not found", "token not found"]
+        .iter().any(|marker| text.contains(marker))
+}
+
+fn execute_refresh(current: &Snapshot, old_uid: &str, body: &Value, force: bool) -> Result<Value> {
+    let latest = read()?;
+    check_record(&current.record, &latest.record)?;
+    if current.secret != latest.secret || current.stamp != latest.stamp || current.overlay_revision != latest.overlay_revision {
+        return Err(source_changed());
+    }
+    let reply = match client::request("POST", "/auth/refresh", None, false, Some(body)) {
+        Ok(reply) => reply,
+        Err(error) => {
+            if error.code.as_deref() != Some("aborted") && !force && usable(current) {
+                let _ = sdk::session_put(&backoff_key(current), json!({ "stamp": refresh_stamp(current) }), BACKOFF_TTL_MS);
+                return retain_valid(current);
+            }
+            return Err(error);
+        }
+    };
+    let secret = match refreshed(&current.secret, old_uid, &reply) {
+        Ok(secret) => secret,
+        Err(error) => {
+            if refresh_denied(&reply) {
+                mark_relogin(current);
+                return Err(Error::http(401, "Cline 续期令牌已被拒绝，请重新登录；本次不会自动重发").with_code("refresh_token_expired"));
+            }
+            if !force && matches!(reply.status, 429 | 500..=599) && usable(current) {
+                let _ = sdk::session_put(&backoff_key(current), json!({ "stamp": refresh_stamp(current) }), BACKOFF_TTL_MS);
+                return retain_valid(current);
+            }
+            return Err(error);
+        }
+    };
+    let saved_revision = save(current, &secret)?;
+    let _ = sdk::session_remove(&backoff_key(current));
+    let recent_key = format!("refresh:{}", account::fingerprint(&account::text(&current.record, &["id"])));
+    let _ = sdk::session_put(&recent_key, json!({ "stamp": completion_stamp(current, &secret, saved_revision) }), 5000);
+    Ok(secret)
+}
+
 pub fn ensure(force: bool) -> Result<Value> {
     let before = read()?;
     if account::local(&before.record["secret"]) {
         let status = sdk::desktop_refresh::status(crate::PROVIDER_ID)?;
         if (force || expiring(&before.secret)) && status["authorized"] == true && status["refreshable"] == true {
-            sdk::desktop_refresh::refresh(crate::PROVIDER_ID)?;
-            return desktop::synchronize(&before.record);
+            match sdk::desktop_refresh::refresh(crate::PROVIDER_ID) {
+                Ok(_) => return desktop::synchronize(&before.record),
+                Err(error)
+                    if !force && usable(&before)
+                        && !matches!(error.code.as_deref(), Some("desktop_identity_changed" | "desktop_refresh_material_missing" | "refresh_token_expired")) =>
+                {
+                    return Ok(before.secret);
+                }
+                Err(error) => return Err(error),
+            }
         }
         if account::expiry(&before.secret).is_some_and(|at| at <= sdk::now()) {
             return Err(Error::http(401, "Cline本机登录态已过期，请授权本机续期或重新登录官方客户端"));
@@ -402,168 +494,78 @@ pub fn ensure(force: bool) -> Result<Value> {
     if before.record["secret"]["desktopReadOnly"] == true {
         let expiry = account::expiry(&before.secret);
         if expiry.is_some_and(|at| at <= sdk::now()) {
-            return Err(Error::http(
-                401,
-                "Cline 本机登录态已过期，请在官方客户端重新登录；不会消耗客户端的一次性续期凭据",
-            )
-            .with_code("cline_desktop_relogin_required"));
+            return Err(Error::http(401, "Cline 本机登录态已过期，请在官方客户端重新登录；不会消耗客户端的一次性续期凭据")
+                .with_code("cline_desktop_relogin_required"));
         }
         if force {
-            return Err(Error::http(
-                401,
-                "Cline 本机登录态已被拒绝，请在官方客户端重新登录；不会消耗客户端的一次性续期凭据",
-            )
-            .with_code("cline_token"));
+            return Err(Error::http(401, "Cline 本机登录态已被拒绝，请在官方客户端重新登录；不会消耗客户端的一次性续期凭据")
+                .with_code("cline_token"));
         }
         return Ok(before.secret);
     }
-    if !force && !expiring(&before.secret) {
-        return Ok(before.secret);
-    }
+    if !force && !expiring(&before.secret) { return Ok(before.secret); }
     let _lock = AccountLock::acquire().map_err(|_| source_unconfirmed())?;
     let current = read()?;
-    if !same_identity(&before.record, &current.record) {
-        return Err(identity_changed());
-    }
-    if current.record["secret"] != before.record["secret"]
-        || current.secret != before.secret
-        || current.stamp != before.stamp
-        || current.overlay_revision != before.overlay_revision
+    if !same_identity(&before.record, &current.record) { return Err(identity_changed()); }
+    if current.record["secret"] != before.record["secret"] || current.secret != before.secret
+        || current.stamp != before.stamp || current.overlay_revision != before.overlay_revision
     {
-        if !force && usable(&current) {
-            return Ok(current.secret);
-        }
+        if !force && usable(&current) { return Ok(current.secret); }
         return Err(source_changed());
     }
-    if !force && !expiring(&current.secret) {
-        return Ok(current.secret);
-    }
+    if !force && !expiring(&current.secret) { return Ok(current.secret); }
     if !force && !renewable(&current.secret) {
-        if account::expiry(&current.secret).is_none_or(|expiry| expiry > sdk::now()) {
-            return Ok(current.secret);
-        }
+        if account::expiry(&current.secret).is_none_or(|expiry| expiry > sdk::now()) { return Ok(current.secret); }
         mark_relogin(&current);
-        return Err(
-            Error::http(401, "Cline 访问令牌已到期且没有续期材料，请重新登录")
-                .with_code("refresh_token_expired"),
-        );
+        return Err(Error::http(401, "Cline 访问令牌已到期且没有续期材料，请重新登录").with_code("refresh_token_expired"));
     }
     if !renewable(&current.secret) {
         mark_relogin(&current);
-        return Err(Error::http(
-            400,
-            "Cline 账号没有 refreshToken，无法续期，请重新登录",
-        ).with_code("refresh_token_expired"));
+        return Err(Error::http(400, "Cline 账号没有 refreshToken，无法续期，请重新登录").with_code("refresh_token_expired"));
     }
-    let recent_key = format!(
-        "refresh:{}",
-        account::fingerprint(&account::text(&current.record, &["id"]))
-    );
+    let recent_key = format!("refresh:{}", account::fingerprint(&account::text(&current.record, &["id"])));
     let stamp = completion_stamp(&current, &current.secret, current.overlay_revision);
     if sdk::session_get(&recent_key).map_err(|_| source_unconfirmed())?["stamp"] == stamp {
         return Ok(current.secret);
     }
-    // 在发送前核对原身份；无法认出原账号时不先消费它的续期凭据。
+    let reserved_stamp = refresh_stamp(&current);
+    if !force && usable(&current) && sdk::session_get(&backoff_key(&current)).is_ok_and(|entry| entry["stamp"] == reserved_stamp) {
+        return Ok(current.secret);
+    }
     let old_uid = original_uid(&current.secret)?;
-    let refresh = token_field(&current.secret, &["refreshToken", "refresh_token"], false)
+    let refresh = token_field(&current.secret, &["refreshToken", "refresh_token"], false, false)
         .map_err(|_| source_unconfirmed())?
         .ok_or_else(source_unconfirmed)?;
     let body = json!({ "refreshToken": refresh, "grantType": "refresh_token" });
     let control = sdk::state::get(Scope::Account, CONTROL, 1).map_err(|_| source_unconfirmed())?;
-    if !control.compatible {
-        return Err(source_changed());
-    }
-    let reserved_stamp = refresh_stamp(&current);
-    if control.value["stamp"] == reserved_stamp {
-        if !force && usable(&current) {
-            return Ok(current.secret);
-        }
+    if !force && control.compatible && control_active(&control.value, &reserved_stamp, sdk::now()) {
+        if usable(&current) { return Ok(current.secret); }
         return Err(unresolved());
     }
-    // 先落只含摘要的持久预约。超时、取消、坏响应或保存失败都不能在下次实例重用原材料。
     if !sdk::state::compare_exchange(
-        Scope::Account,
-        CONTROL,
-        1,
-        control.revision,
-        json!({ "stamp": reserved_stamp, "at": sdk::now() }),
-        0,
-    )
-    .map_err(|_| source_unconfirmed())?
-    {
+        Scope::Account, CONTROL, 1, control.revision,
+        json!({ "stamp": reserved_stamp, "at": sdk::now() }), 0,
+    ).map_err(|_| source_unconfirmed())? {
         return Err(source_changed());
     }
     let reserved = sdk::state::get(Scope::Account, CONTROL, 1).map_err(|_| source_unconfirmed())?;
     if !reserved.compatible || reserved.value["stamp"] != reserved_stamp {
         return Err(source_changed());
     }
-    let latest = read()?;
-    check_record(&current.record, &latest.record)?;
-    if current.secret != latest.secret
-        || current.stamp != latest.stamp
-        || current.overlay_revision != latest.overlay_revision
-    {
-        return Err(source_changed());
-    }
-    // 每次调用只有这一次 POST；持久预约在完整结果保存成功后才清除。
-    let reply = match client::request("POST", "/auth/refresh", None, false, Some(&body)) {
-        Ok(reply) => reply,
-        Err(error) => {
-            if error.code.as_deref() == Some("aborted") {
-                return Err(error);
-            }
-            if !force && usable(&current) {
-                return retain_valid(&current);
-            }
-            return Err(Error::http(
-                502,
-                "Cline 续期请求的结果未确认，未交付新凭据；不会重复消费同一续期令牌",
-            )
-            .with_code("cline_refresh_result_unconfirmed"));
-        }
-    };
-    let secret = match refreshed(&current.secret, &old_uid, &reply) {
-        Ok(secret) => secret,
-        Err(_) if !force && matches!(reply.status, 429 | 500..=599) && usable(&current) => {
-            return retain_valid(&current)
-        }
-        Err(error) => {
-            if matches!(reply.status, 401 | 403) {
-                mark_relogin(&current);
-                return Err(Error::http(401, "Cline 续期令牌已被拒绝，请重新登录；本次不会自动重发")
-                    .with_code("refresh_token_expired"));
-            }
-            return Err(error);
-        }
-    };
-    let saved_revision = save(&current, &secret)?;
-    if !sdk::state::compare_exchange(Scope::Account, CONTROL, 1, reserved.revision, Value::Null, 0)? {
-        return Err(save_unconfirmed());
-    }
-    // 只有本次明确保存成功才能登记完成；缓存失败不抹掉已确认的保存事实。
-    let _ = sdk::session_put(
-        &recent_key,
-        json!({ "stamp": completion_stamp(&current, &secret, saved_revision) }),
-        5000,
-    );
-    Ok(secret)
+    let outcome = execute_refresh(&current, &old_uid, &body, force);
+    // 请求已结束（含失败）时释放进行中预约，避免临时网络或代理问题把账号永久锁死。
+    clear_control(&reserved_stamp);
+    outcome
 }
 
-// 缺少新刷新凭据时不能确认旧值仍有效；只拒绝保存，不自动补发。
 fn response_data(reply: &client::Reply) -> Result<&Value> {
     if matches!(reply.status, 401 | 403) {
         // 这是续期本身被拒绝，不是让外层再次续期的普通访问令牌过期。
-        return Err(
-            Error::http(403, "Cline 续期令牌已被拒绝，请重新登录；本次不会自动重发")
-                .with_code("cline_refresh_denied"),
-        );
+        return Err(Error::http(403, "Cline 续期令牌已被拒绝，请重新登录；本次不会自动重发").with_code("cline_refresh_denied"));
     }
     if !(200..300).contains(&reply.status) {
-        return Err(Error::http(
-            502,
-            "Cline 上游未确认本次续期成功，未交付新凭据；本次不会自动重发",
-        )
-        .with_code("cline_refresh_rejected"));
+        return Err(Error::http(502, format!("Cline 上游未确认本次续期成功（HTTP {}），未交付新凭据", reply.status))
+            .with_code("cline_refresh_rejected"));
     }
     check_envelope(&reply.body)?;
     let data = match reply.body.get("data") {
@@ -573,11 +575,8 @@ fn response_data(reply: &client::Reply) -> Result<&Value> {
     };
     check_envelope(data)?;
     for key in ["tokenType", "token_type"] {
-        if let Some(value) = data.get(key) {
-            if !value
-                .as_str()
-                .is_some_and(|value| value.eq_ignore_ascii_case("Bearer"))
-            {
+        if let Some(value) = data.get(key).filter(|value| !value.is_null()) {
+            if !value.as_str().is_some_and(|value| value.eq_ignore_ascii_case("Bearer")) {
                 return Err(invalid_response());
             }
         }
@@ -588,55 +587,41 @@ fn response_data(reply: &client::Reply) -> Result<&Value> {
 fn check_envelope(value: &Value) -> Result<()> {
     if !value.is_object()
         || value["type"] == "error"
-        || value
-            .get("success")
-            .is_some_and(|value| value.as_bool() != Some(true))
-        || value
-            .get("error")
-            .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+        || value.get("success").is_some_and(|value| value.as_bool() != Some(true))
+        || value.get("error").is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
     {
         return Err(invalid_response());
     }
     Ok(())
 }
 
-fn token_field(value: &Value, keys: &[&str], access: bool) -> Result<Option<String>> {
+fn token_field(value: &Value, keys: &[&str], access: bool, allow_empty: bool) -> Result<Option<String>> {
     let mut token: Option<String> = None;
     for key in keys {
-        let Some(value) = value.get(*key) else {
-            continue;
-        };
+        let Some(value) = value.get(*key).filter(|value| !value.is_null()) else { continue; };
         let raw = value.as_str().ok_or_else(invalid_field_type)?;
         if raw.is_empty() {
+            if allow_empty { continue; }
             return Err(empty_field());
         }
         // 先验原文，不能把换行、空白、错类型、空字段或冲突别名当成“未轮换”。
-        if raw.len() > endpoints::MAX_TOKEN
-            || !raw.is_ascii()
-            || raw
-                .bytes()
-                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        if raw.len() > endpoints::MAX_TOKEN || !raw.is_ascii()
+            || raw.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
         {
             return Err(invalid_response());
         }
         let next = if access {
             match raw.strip_prefix(endpoints::PREFIX) {
                 Some("") => return Err(invalid_response()),
-                Some(value) if value.starts_with(endpoints::PREFIX) => {
-                    return Err(invalid_response())
-                }
+                Some(value) if value.starts_with(endpoints::PREFIX) => return Err(invalid_response()),
                 Some(_) => raw.to_string(),
                 None => format!("{}{raw}", endpoints::PREFIX),
             }
         } else {
             raw.to_string()
         };
-        if next.len() > endpoints::MAX_TOKEN {
-            return Err(invalid_response());
-        }
-        if token.as_ref().is_some_and(|token| token != &next) {
-            return Err(conflicting_aliases());
-        }
+        if next.len() > endpoints::MAX_TOKEN { return Err(invalid_response()); }
+        if token.as_ref().is_some_and(|token| token != &next) { return Err(conflicting_aliases()); }
         token = Some(next);
     }
     Ok(token)
@@ -644,54 +629,34 @@ fn token_field(value: &Value, keys: &[&str], access: bool) -> Result<Option<Stri
 
 fn jwt_claims(token: &str) -> Result<Value> {
     let raw = token.strip_prefix(endpoints::PREFIX).unwrap_or(token);
-    if !raw.contains('.') {
-        return Ok(Value::Null);
-    }
+    if !raw.contains('.') { return Ok(Value::Null); }
     let mut parts = raw.split('.');
-    let header = parts
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(invalid_response)?;
-    let payload = parts
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(invalid_response)?;
-    let signature = parts
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(invalid_response)?;
-    if parts.next().is_some()
-        || header.len() + payload.len() + signature.len() > endpoints::MAX_TOKEN
-    {
+    let header = parts.next().filter(|value| !value.is_empty()).ok_or_else(invalid_response)?;
+    let payload = parts.next().filter(|value| !value.is_empty()).ok_or_else(invalid_response)?;
+    let signature = parts.next().filter(|value| !value.is_empty()).ok_or_else(invalid_response)?;
+    if parts.next().is_some() || header.len() + payload.len() + signature.len() > endpoints::MAX_TOKEN {
         return Err(invalid_response());
     }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload.trim_end_matches('='))
-        .map_err(|_| invalid_response())?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).map_err(|_| invalid_response())?;
     let claims: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
-    if !claims.is_object() {
-        return Err(invalid_response());
-    }
+    if !claims.is_object() { return Err(invalid_response()); }
     // 这里只核对上游原文中的声明，不把解码当签名验证，也不新增用户查询请求。
     Ok(claims)
 }
 
-fn uid_fields(value: &Value, keys: &[&str]) -> Result<Option<String>> {
+fn uid_fields(value: &Value, keys: &[&str], allow_empty: bool) -> Result<Option<String>> {
     let mut uid: Option<String> = None;
     for key in keys {
-        let Some(value) = value.get(*key) else {
-            continue;
-        };
+        let Some(value) = value.get(*key).filter(|value| !value.is_null()) else { continue; };
         let next = value.as_str().ok_or_else(invalid_field_type)?;
         if next.is_empty() {
+            if allow_empty { continue; }
             return Err(empty_field());
         }
         if next.len() > 512 || next.trim() != next || next.chars().any(char::is_control) {
             return Err(invalid_response());
         }
-        if uid.as_deref().is_some_and(|uid| uid != next) {
-            return Err(identity_changed());
-        }
+        if uid.as_deref().is_some_and(|uid| uid != next) { return Err(identity_changed()); }
         uid = Some(next.to_string());
     }
     Ok(uid)
@@ -708,11 +673,11 @@ fn join_uid(left: Option<String>, right: Option<String>) -> Result<Option<String
 fn original_uid(secret: &Value) -> Result<String> {
     let token = account::access(secret).map_err(|_| source_unconfirmed())?;
     let claims = jwt_claims(&token).map_err(|_| source_unconfirmed())?;
-    let token_uid = uid_fields(&claims, &["external_id"]).map_err(|_| source_unconfirmed())?;
+    let token_uid = uid_fields(&claims, &["external_id"], false).map_err(|_| source_unconfirmed())?;
     // 只保留原来已支持的 usr- 标识作为兜底；邮箱、名字和令牌摘要不证明账号相同。
     let stored = account::identity(secret);
     let stored_uid = if stored.starts_with("usr-") && stored.len() > 4 {
-        uid_fields(&json!({ "account": stored }), &["account"])?
+        uid_fields(&json!({ "account": stored }), &["account"], false)?
     } else {
         None
     };
@@ -720,35 +685,33 @@ fn original_uid(secret: &Value) -> Result<String> {
 }
 
 fn expiry_field(value: Option<&Value>) -> Result<Option<i64>> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
+    let Some(value) = value.filter(|value| !value.is_null()) else { return Ok(None); };
+    if value.as_str().is_some_and(|text| text.trim().is_empty()) {
         return Ok(None);
-    };
-    let at = match value {
-        Value::Number(value) => value.as_i64(),
-        Value::String(value)
-            if value.len() <= 64
-                && value.trim() == value
-                && !value.chars().any(char::is_control) =>
-        {
-            value.parse::<i64>().ok().or_else(|| {
-                chrono::DateTime::parse_from_rfc3339(value)
-                    .ok()
-                    .map(|value| value.timestamp_millis())
-            })
+    }
+    let raw = match value {
+        Value::Number(value) => value.as_f64().filter(|number| number.is_finite() && number.fract() == 0.0),
+        Value::String(value) if value.len() <= 64 && value.trim() == value && !value.chars().any(char::is_control) => {
+            if let Ok(number) = value.parse::<i64>() {
+                Some(number as f64)
+            } else {
+                return chrono::DateTime::parse_from_rfc3339(value)
+                    .ok().map(|value| value.timestamp_millis()).filter(|at| *at > 0)
+                    .map(Some).ok_or_else(invalid_response);
+            }
         }
         _ => None,
     };
-    at.filter(|at| *at > 0)
-        .map(Some)
-        .ok_or_else(invalid_response)
+    let Some(number) = raw.filter(|number| *number > 0.0) else { return Err(invalid_response()); };
+    let millis = if number < 100_000_000_000.0 { number * 1000.0 } else { number };
+    if millis >= i64::MAX as f64 { return Err(invalid_response()); }
+    Ok(Some(millis as i64))
 }
 
 fn jwt_expiry(claims: &Value) -> Result<Option<i64>> {
-    let Some(value) = claims.get("exp") else {
-        return Ok(None);
-    };
-    value
-        .as_i64()
+    let Some(value) = claims.get("exp").filter(|value| !value.is_null()) else { return Ok(None); };
+    value.as_i64()
+        .or_else(|| value.as_f64().filter(|n| n.is_finite() && n.fract() == 0.0 && *n > 0.0 && *n < (i64::MAX / 1000) as f64).map(|n| n as i64))
         .filter(|seconds| *seconds > 0)
         .and_then(|seconds| seconds.checked_mul(1000))
         .map(Some)
@@ -757,23 +720,22 @@ fn jwt_expiry(claims: &Value) -> Result<Option<i64>> {
 
 fn refreshed(current: &Value, old_uid: &str, reply: &client::Reply) -> Result<Value> {
     let data = response_data(reply)?;
-    let access = token_field(data, &["accessToken", "access_token", "token"], true)?
+    let access = token_field(data, &["accessToken", "access_token", "token"], true, false)?
         .ok_or_else(missing_field)?;
-    let refresh = token_field(data, &["refreshToken", "refresh_token"], false)?
-        .ok_or_else(|| Error::http(502,
-            "Cline 续期响应未提供刷新凭据，无法确认旧凭据是否仍有效；未保存或交付本次结果，本次不会自动重发")
-            .with_code("cline_refresh_incomplete"))?;
+    let refresh = match token_field(data, &["refreshToken", "refresh_token"], false, true)? {
+        Some(token) => token,
+        None => token_field(current, &["refreshToken", "refresh_token"], false, false)?
+            .ok_or_else(source_unconfirmed)?,
+    };
     let claims = jwt_claims(&access)?;
-    let token_uid = uid_fields(&claims, &["external_id"])?;
-    let info_uid = match data.get("userInfo") {
-        Some(info) if info.is_object() => uid_fields(info, &["clineUserId", "external_id"])?,
+    let token_uid = uid_fields(&claims, &["external_id"], false)?;
+    let info_uid = match data.get("userInfo").filter(|value| !value.is_null()) {
+        Some(info) if info.is_object() => uid_fields(info, &["clineUserId", "external_id"], true)?,
         Some(_) => return Err(invalid_response()),
         None => None,
     };
     let new_uid = join_uid(token_uid, info_uid)?.ok_or_else(identity_unconfirmed)?;
-    if new_uid != old_uid {
-        return Err(identity_changed());
-    }
+    if new_uid != old_uid { return Err(identity_changed()); }
     let expiry = match (expiry_field(data.get("expiresAt"))?, jwt_expiry(&claims)?) {
         // 两个真实截止时间同时存在时取较早者，不把访问令牌的有效期延长。
         (Some(response), Some(jwt)) => Some(response.min(jwt)),

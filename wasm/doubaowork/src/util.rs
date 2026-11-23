@@ -109,6 +109,7 @@ pub fn sensitive_key(key: &str) -> bool {
                 | "sessionkey"
                 | "accesskey"
                 | "deviceid"
+                | "iid"
                 | "webid"
                 | "fp"
                 | "fingerprint"

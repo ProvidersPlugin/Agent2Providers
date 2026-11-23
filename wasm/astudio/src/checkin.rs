@@ -12,7 +12,28 @@ use sha2::{Digest, Sha256};
 const KEY: &str = "daily-login-v1";
 
 fn report(outcome: &str, message: &str, credit: Option<String>) -> Value {
-    json!({ "outcome": outcome, "message": message, "credit": credit, "streak": null })
+    json!({ "outcome": outcome, "message": message, "credit": credit, "streak": null, "retryAt": null })
+}
+
+fn plan_zero_reason(config: &Value, membership: &Value) -> Option<String> {
+    let code = membership["planCode"].as_str().map(str::trim).filter(|v| !v.is_empty())?;
+    let plan = config["plans"]
+        .as_array()?
+        .iter()
+        .find(|item| item["planCode"].as_str().is_some_and(|candidate| candidate.eq_ignore_ascii_case(code)))?;
+    let points = account::number(&plan["dailyLoginPoints"])?;
+    if points > 0.0 {
+        return None;
+    }
+    let label = account::text(plan, &["planName"]);
+    let display = if label.is_empty() {
+        code.to_string()
+    } else {
+        label
+    };
+    Some(format!(
+        "当前套餐（{display}）每日登录积分为 0，没有可领取的每日登录奖励"
+    ))
 }
 
 fn save(previous: &Snapshot, value: Value) -> Result<Snapshot> {
@@ -55,8 +76,8 @@ fn observe(record: &Value, previous: &Snapshot) -> Result<Value> {
         .collect();
     if rewards.is_empty() {
         return Ok(report(
-            "failed",
-            "每日登录结果尚未确认；后续只回查积分，不重复提交初始化",
+            "inactive",
+            "今日登录初始化已提交，但暂未观测到新增积分（可能今日已领过，或当前账号不再发放每日登录奖励）；后续仅回查积分，不重复初始化",
             None,
         ));
     }
@@ -113,6 +134,17 @@ fn run() -> Result<Value> {
     let config = client::studio("GET", endpoints::PLAN, Some(secret))?.data(true, "session")?;
     if config["dailyLoginEnabled"] == false {
         return Ok(report("inactive", "当前没有每日登录积分活动", None));
+    }
+    match client::studio("GET", endpoints::MEMBERSHIP, Some(secret))
+        .and_then(|reply| reply.data(true, "session"))
+    {
+        Ok(membership) => {
+            if let Some(reason) = plan_zero_reason(&config, &membership) {
+                return Ok(report("ineligible", &reason, None));
+            }
+        }
+        Err(error) if error.code.as_deref() == Some("astudio_session_expired") => return Err(error),
+        Err(_) => {}
     }
     let before = usage::balance(secret)?;
     account::ensure_current(&record)?;

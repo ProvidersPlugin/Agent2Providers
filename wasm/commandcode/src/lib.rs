@@ -17,7 +17,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({
+    use sdk::error_rules::attach;
+    let meta = json!({
         "id": "commandcode", "label": "Command Code", "order": 1,
         "capabilities": {
             "chat": true, "stateful": false, "refresh": false, "model_refresh": true,
@@ -32,7 +33,8 @@ fn metadata() -> Value {
         "account_features": { "identifier": ["id"], "long_lived": true, "usage": true },
         "default_models": models::fallback_models(),
         "settings_schema": config::schema()
-    })
+    });
+    attach(meta, vec![], vec![])
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

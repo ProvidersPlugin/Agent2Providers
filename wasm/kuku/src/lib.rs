@@ -26,7 +26,8 @@ mod util;
 use agent2api_wasm_sdk::{json, Error, Result, Value};
 agent2api_wasm_sdk::export_provider!(handle);
 fn metadata() -> Value {
-    json!({ "id": endpoints::ID, "label": "KukuAI 库库", "order": 19,
+    use agent2api_wasm_sdk::error_rules::{attach, class};
+    let meta = json!({ "id": endpoints::ID, "label": "KukuAI 库库", "order": 19,
         "capabilities": { "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
             "usage": true, "checkin": true, "claims": false, "web_login": true,
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false,
@@ -39,7 +40,16 @@ fn metadata() -> Value {
         ],
         "account_features": { "usage": true, "identifier": ["uid"], "expiry": [], "long_lived": false },
         "checkin": { "description": "库库30天签到与已完成旧每日任务领奖；未完成对话任务不会伪报或自动消费", "modes": ["checkin"], "daily": true },
-        "default_models": models::fallback()["models"] })
+        "default_models": models::fallback()["models"] });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401], &["kuku_auth", "-6", "1000004"]),
+            class("quota", &[429], &["kuku_quota", "11002"]),
+            class("content", &[], &["kuku_content_blocked"]),
+        ],
+        vec![],
+    )
 }
 fn handle(method: &str, params: Value) -> Result<Value> {
     match method {

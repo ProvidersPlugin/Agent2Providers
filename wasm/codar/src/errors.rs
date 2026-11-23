@@ -138,14 +138,15 @@ pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
         }
         .into();
     }
-    let mut error = Error::http(
-        status,
+    let detail = util::safe_text(&message(value), protected, 400);
+    let summary = if upstream == "client_not_supported" {
         format!(
-            "科搭返回 {status}：{}",
-            util::safe_text(&message(value), protected, 400)
-        ),
-    )
-    .with_code(upstream);
+            "科搭返回 {status}（当前登录凭证仅支持单轮无工具请求，不支持多轮或工具调用）：{detail}"
+        )
+    } else {
+        format!("科搭返回 {status}：{detail}")
+    };
+    let mut error = Error::http(status, summary).with_code(upstream);
     error.upstream_code = business.map(|code| code as i64);
     for object in [
         value,

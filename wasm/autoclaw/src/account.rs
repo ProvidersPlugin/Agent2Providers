@@ -275,10 +275,6 @@ pub fn normalized(secret: Value) -> Result<Value> {
 
 pub fn normalize(params: &Value) -> Result<Value> {
     let source = &params["source"];
-    if source["kind"] == "manual" && source["payload"]["methodIndex"] == 4 {
-        let legacy = sdk::legacy_credentials::take()?;
-        return normalize(&json!({ "source": { "kind": "manual", "payload": legacy }, "name": params["name"] }));
-    }
     if source["kind"] == "manual"
         && source["payload"].get("methodIndex").is_some()
         && !matches!(source["payload"]["methodIndex"].as_u64(), Some(1 | 2))

@@ -4,6 +4,33 @@
 use super::{prompt, util};
 use agent2api_wasm_sdk::{json, Error, Value};
 
+const MAX_DETAIL_CHARS: usize = 4096;
+const MESSAGE_KEYS: &[&str] = &[
+    "msg",
+    "message",
+    "detail",
+    "error_msg",
+    "error_description",
+    "reason",
+];
+
+fn truncate(text: &str) -> String {
+    text.trim().chars().take(MAX_DETAIL_CHARS).collect()
+}
+
+/// 解析上游响应体；非 JSON 时保留原始文本以便排查。
+pub fn parse_body(bytes: &[u8]) -> Value {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        return value;
+    }
+    let text = truncate(&String::from_utf8_lossy(bytes));
+    if text.is_empty() {
+        Value::Null
+    } else {
+        Value::String(text)
+    }
+}
+
 pub fn code(body: &Value) -> Option<i64> {
     [
         body.get("upstream_code"),
@@ -18,15 +45,36 @@ pub fn code(body: &Value) -> Option<i64> {
     .find_map(util::integer)
 }
 fn message(body: &Value) -> String {
-    let message = util::text(body, &["message", "msg"]);
-    if !message.is_empty() {
-        return message;
+    for candidate in [body, &body["error"], &body["data"]] {
+        let text = util::text(candidate, MESSAGE_KEYS);
+        if !text.is_empty() {
+            return text;
+        }
+        if let Some(raw) = candidate.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            return raw.to_string();
+        }
     }
-    let nested = util::text(&body["error"], &["message", "msg"]);
-    if nested.is_empty() {
-        body.as_str().unwrap_or("").to_string()
+    String::new()
+}
+/// 提取上游原始报错文本；缺少常见文本字段时回退完整 JSON，便于直接排查。
+pub fn raw_detail(body: &Value) -> String {
+    let text = message(body);
+    if !text.is_empty() {
+        return truncate(&text);
+    }
+    if body.is_null() {
+        String::new()
     } else {
-        nested
+        truncate(&body.to_string())
+    }
+}
+pub fn append_detail(base: impl Into<String>, body: &Value) -> String {
+    let base = base.into();
+    let detail = raw_detail(body);
+    if detail.is_empty() || base.contains(&detail) {
+        base
+    } else {
+        format!("{base}：{detail}")
     }
 }
 pub fn has_error(body: &Value) -> bool {
@@ -103,7 +151,7 @@ pub fn classify(status: u16, body: &Value) -> Value {
             format!("AutoClaw 上游请求失败（HTTP {status}）"),
         )
     };
-    json!({ "kind": kind, "status": status, "message": hint, "upstream_code": code(body), "reset_at": null })
+    json!({ "kind": kind, "status": status, "message": append_detail(hint, body), "upstream_code": code(body), "reset_at": null })
 }
 pub fn failure(status: u16, body: &Value) -> Error {
     let class = classify(status, body);

@@ -93,6 +93,90 @@ impl Context {
         Err(Error::http(401, "国际日活认证失败"))
     }
 }
+pub(super) const PENDING_TTL_MS: i64 = 5 * 60_000;
+
+pub(super) fn pending_active(saved: &Value, day: &str, models: Option<&[String]>) -> bool {
+    if saved["day"] != day || saved["pending"] != true {
+        return false;
+    }
+    if !saved["at"]
+        .as_i64()
+        .is_some_and(|at| sdk::now().saturating_sub(at) < PENDING_TTL_MS)
+    {
+        return false;
+    }
+    match models {
+        Some(list) => saved["model"]
+            .as_str()
+            .is_some_and(|model| list.iter().any(|item| item == model)),
+        None => true,
+    }
+}
+pub(super) fn pending_detail(saved: &Value) -> Option<String> {
+    let model = saved["model"].as_str().map(str::trim).unwrap_or("");
+    let reason = saved["reason"].as_str().map(str::trim).unwrap_or("");
+    match (model.is_empty(), reason.is_empty()) {
+        (false, false) => Some(format!("{model}：{reason}")),
+        (false, true) => Some(model.to_string()),
+        (true, false) => Some(reason.to_string()),
+        (true, true) => None,
+    }
+}
+fn step_failure_summary(step: &Value) -> Option<String> {
+    let failures = step["failures"].as_array().filter(|rows| !rows.is_empty());
+    if let Some(rows) = failures {
+        let mut parts = Vec::new();
+        for row in rows.iter().take(3) {
+            let model = row["model"].as_str().map(str::trim).unwrap_or("");
+            let msg = row["message"]
+                .as_str()
+                .or_else(|| row["msg"].as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            match (model.is_empty(), msg.is_empty()) {
+                (false, false) => parts.push(format!("{model}: {msg}")),
+                (false, true) => parts.push(model.to_string()),
+                (true, false) => parts.push(msg.to_string()),
+                (true, true) => {}
+            }
+        }
+        if !parts.is_empty() {
+            let suffix = if rows.len() > 3 {
+                format!(" 等 {} 个模型失败", rows.len())
+            } else {
+                String::new()
+            };
+            return Some(format!("{}{suffix}", parts.join("；")));
+        }
+    }
+    step["msg"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+fn activity_summary(skipped: &Value, poke: &Value, web: &Value) -> Option<String> {
+    if let Some(reason) = skipped.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(format!("未调用保活模型：{reason}"));
+    }
+    let poke_ok = poke["succeeded"] == true;
+    let web_ok = web["succeeded"] == true;
+    if poke_ok && web_ok {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !poke_ok {
+        if let Some(detail) = step_failure_summary(poke) {
+            parts.push(format!("模型保活：{detail}"));
+        }
+    }
+    if !web_ok && !(poke["uncertain"] == true && web["uncertain"] == true) {
+        if let Some(detail) = step_failure_summary(web) {
+            parts.push(format!("网页会话：{detail}"));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("；"))
+}
 fn authentication(reply: &network::Reply) -> bool {
     reply.status == 401 || reply.code() == Some(12153)
 }
@@ -170,7 +254,7 @@ pub fn run(payload: &Value) -> Result<Value> {
         Some(Ok(models)) => {
             let poke = model::run(&mut ctx, &models).unwrap_or_else(failure);
             let web = if poke["uncertain"] == true {
-                json!({ "succeeded": false, "uncertain": true, "msg": "桌面模型结果未确认，本轮未追加网页模型消费；下次先核对原结果" })
+                json!({ "succeeded": false, "uncertain": true, "msg": "因桌面模型结果未确认，本轮暂未追加网页模型消费" })
             } else {
                 web::run(&mut ctx, &models).unwrap_or_else(failure)
             };
@@ -179,20 +263,28 @@ pub fn run(payload: &Value) -> Result<Value> {
         Some(Err(error)) => (Value::Null, Value::Null, json!(error.message)),
         None => (Value::Null, Value::Null, Value::Null),
     };
+    let summary = if mode != Mode::Claim {
+        activity_summary(&skipped, &poke, &web)
+    } else {
+        None
+    };
     let mut value = json!({ "status": status, "claim": claim, "activity": {
         "mode": mode.name(), "active": status["active"], "todayCheckedIn": status["todayCheckedIn"], "statusAvailable": status["statusAvailable"],
         "report": report, "pokeSucceeded": poke["succeeded"], "pokeModel": poke["model"], "poke": poke, "webConversation": web,
-        "modelCallsSkipped": !skipped.is_null(), "error": skipped,
+        "modelCallsSkipped": !skipped.is_null(), "error": skipped, "summary": summary,
         "rewardConfirmed": claim["success"] == true || claim["alreadyCompleted"] == true,
         "webActivityConfirmed": web["succeeded"] == true,
         "message": "上报、桌面对话、网页会话与奖励到账为不同结果，请分别查看" }, "at": sdk::now() });
     if mode == Mode::Keepalive {
         value["claim"]["msg"] = json!(if web["succeeded"] == true {
-            "保活完成，网页会话已创建；本轮未领取奖励"
+            "保活完成，网页会话已创建；本轮未领取奖励".to_string()
         } else if poke["succeeded"] == true {
-            "桌面保活已完成，但网页日活未确认；本轮未领取奖励"
+            match step_failure_summary(&web) {
+                Some(reason) => format!("桌面保活已完成，但网页会话失败（{reason}）；本轮未领取奖励"),
+                None => "桌面保活已完成，但网页日活未确认；本轮未领取奖励".to_string(),
+            }
         } else {
-            "网页日活与模型保活未确认，请查看具体原因"
+            summary.unwrap_or_else(|| "网页日活与模型保活未确认，请查看具体原因".to_string())
         });
     }
     session::check(&ctx.current)?;

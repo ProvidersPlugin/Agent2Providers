@@ -38,7 +38,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::ID, "label": "Kiro", "order": 31,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": endpoints::ID, "label": "Kiro", "order": 31,
         "capabilities": { "chat": true, "stateful": true, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": false, "claims": false, "web_login": true,
             "sse_model_rewrite": false, "sse_strip_newline_chunks": false, "anonymous_default_session": false,
@@ -51,7 +52,20 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "credit_detail": true, "credit_expiry": false,
             "usage_detail": false, "edition": false, "identifier": ["accountId", "uid"], "expiry": ["expiresAt"],
             "long_lived": false, "claim": false, "plan_channel": false, "email_as_name": true },
-        "default_models": models::fallback() })
+        "default_models": models::fallback() });
+    attach(
+        meta,
+        vec![
+            class("quota", &[429], &["kiro_quota"]),
+            class("auth", &[401], &["kiro_auth"]),
+            class("transient", &[503], &["kiro_model_capacity"]),
+            class("content", &[], &["kiro_content_blocked"]),
+            class("bad_request", &[400], &["context_length_exceeded"]),
+        ],
+        vec![
+            rule("kiro_capacity", "模型容量暂时不足（503）", "上游提示模型容量不足时短保护冷却当前模型并切换账号或提供商。", "transient", &[503], "kiro_model_capacity", "switch_account", "fixed", 60, true, 600, "model"),
+        ],
+    )
 }
 fn handle(method: &str, params: Value) -> Result<Value> {
     match method {

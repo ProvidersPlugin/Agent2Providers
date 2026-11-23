@@ -22,7 +22,6 @@ pub fn methods(locale: &str) -> Value {
         { "methodIndex": 3, "type": "api", "label": text[4], "instructions": text[6], "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[5], "secret": true }
         ] },
-        agent2api_wasm_sdk::login::desktop_method(4, "AutoClaw International", locale),
-        agent2api_wasm_sdk::legacy_credentials::method(5, locale)
+        agent2api_wasm_sdk::login::desktop_method(4, "AutoClaw International", locale)
     ] })
 }

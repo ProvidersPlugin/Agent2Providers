@@ -27,7 +27,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::ID, "label": "Accio 国际版", "order": 26,
+    use sdk::error_rules::{attach, class};
+    let meta = json!({ "id": endpoints::ID, "label": "Accio 国际版", "order": 26,
         "capabilities": { "chat": true, "stateful": true, "refresh": true, "model_refresh": true,
             "usage": true, "web_login": true, "checkin": false, "claims": false,
             "anonymous_default_session": false, "env_credentials": false, "refresh_uses_account": true,
@@ -40,7 +41,16 @@ fn metadata() -> Value {
         ],
         "account_features": { "usage": true, "credit_detail": false, "edition": true,
             "identifier": ["userId"], "expiry": ["expiresAt"], "email_as_name": true },
-        "default_models": models::fallback() })
+        "default_models": models::fallback() });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401], &["accio_auth"]),
+            class("quota", &[429], &["accio_quota"]),
+            class("content", &[], &["accio_content_blocked"]),
+        ],
+        vec![],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

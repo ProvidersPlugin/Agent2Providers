@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-workbuddy",
   "name": "WorkBuddy 国内版",
-  "description": "独立的 WorkBuddy 国内版：网页登录、凭据快照导入、自动续期、模型目录、对话与图片、积分、签到和成长任务。旅行排程由主程序按账号执行；本机导入只读固定文件，不需额外授权，加密登录态请改用网页登录。",
+  "description": "提供国内版对话、传图生图与搜索，支持网页登录、凭据及本机导入与自动续期，可查积分并签到领成长奖励。",
   "version": "0.1.0-beta.4",
   "protocol": 1,
   "providers": [{ "id": "workbuddy", "label": "WorkBuddy 国内版", "order": 15, "default_enabled": true }],

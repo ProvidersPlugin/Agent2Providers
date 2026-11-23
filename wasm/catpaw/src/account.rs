@@ -55,10 +55,6 @@ fn desktop_reference(value: &Value) -> bool {
 
 pub fn normalize(params: &Value) -> Result<Value> {
     credentials::own_provider(params)?;
-    if params["source"]["kind"] == "manual" && params["source"]["payload"]["methodIndex"] == 4 {
-        let legacy = agent2api_wasm_sdk::legacy_credentials::take()?;
-        return normalize(&json!({ "source": { "kind": "manual", "payload": legacy }, "name": params["name"] }));
-    }
     if params["source"]["kind"] == "desktop" { return crate::desktop::normalize(params); }
     let (value, source, form_name) = input(params)?;
     let value = credentials::payload(&value)?;

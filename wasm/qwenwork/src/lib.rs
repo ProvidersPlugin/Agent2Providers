@@ -29,7 +29,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": endpoints::LABEL, "order": 24,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": endpoints::LABEL, "order": 24,
         "capabilities": { "chat": true, "stateful": true, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": false, "claims": false, "web_login": true,
             "sse_model_rewrite": false, "sse_strip_newline_chunks": false, "anonymous_default_session": false,
@@ -43,7 +44,22 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "credit_detail": true, "edition": true,
             "identifier": ["uid", "userId"], "expiry": ["expiresAt"], "email_as_name": true },
         "default_models": catalog::public(&catalog::fallback()),
-        "settings_schema": config::schema(), "settings_group": { "label": endpoints::LABEL } })
+        "settings_schema": config::schema(), "settings_group": { "label": endpoints::LABEL } });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[429], &["qwenwork_rate_limited", "qwenwork_model_busy", "10605"]),
+            class("quota", &[], &["qwenwork_quota_limited"]),
+            class("auth", &[401], &["qwenwork_auth_expired", "105"]),
+            class("unsupported", &[403, 501], &["qwenwork_forbidden"]),
+            class("bad_request", &[400, 413, 422], &["qwenwork_request_rejected"]),
+            class("content", &[], &["content_filter"]),
+        ],
+        vec![
+            rule("qwen_busy", "模型排队拥塞（10605）", "模型排队繁忙时优先按上游等待时间短冷却并切换其他账号或提供商。", "rate_limit", &[], "qwenwork_model_busy", "switch_account", "upstream", 30, true, 300, "model"),
+            rule("qwen_forbidden_403", "地区或模型无权限（403）", "账号地区或权限不满足时，将该账号当前模型优先级调到最低并换号尝试。", "unsupported", &[403], "qwenwork_forbidden", "switch_account", "deprioritize", 1800, true, 7200, "account"),
+        ],
+    )
 }
 fn handle(method: &str, params: Value) -> Result<Value> {
     if params

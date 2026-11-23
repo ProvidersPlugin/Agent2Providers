@@ -84,17 +84,6 @@ pub async fn refresh(ctx: &PluginCtx, region: Region, account: &str) -> CatalogO
             reason = result.reason;
         }
     }
-    if records.is_empty() {
-        if let Some(token) = region.env_token() {
-            let session =
-                json!({ "auth": { "accessToken": token }, "account": {}, "edition": region.id() });
-            let result = refresh_session(ctx, region, &session, None).await;
-            refreshed |= result.refreshed;
-            if !result.reason.is_empty() {
-                reason = result.reason;
-            }
-        }
-    }
     if refreshed {
         CatalogOutcome::ok(catalog_state::current(ctx, region).await.models)
     } else {

@@ -20,8 +20,7 @@
     "http.catpaw-turn.v1",
     "desktop.credentials.v1",
     "native.helpers.v1",
-    "sessions.v1",
-    "credentials.legacy-import.v1"
+    "sessions.v1"
   ],
   "helpers": ["desktop.credentials.catpaw.v1"],
   "managed_login": {

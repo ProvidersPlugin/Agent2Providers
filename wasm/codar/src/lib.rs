@@ -25,7 +25,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "科搭 Codar", "order": 35,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "科搭 Codar", "order": 35,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": true, "claims": true, "web_login": true,
             "refresh_uses_account": true, "supports_default_model": true,
@@ -38,7 +39,18 @@ fn metadata() -> Value {
             "identifier": ["username", "uid"], "expiry": ["expiresAt"], "long_lived": false,
             "claim": true, "concurrency_default": 3, "default_limiters": [] },
         "checkin": { "daily": true, "modes": ["checkin"], "description": "滚动24小时签到，先查询状态再领取；已领取或结果未确认时不重复提交。" },
-        "default_models": models::defaults() })
+        "default_models": models::defaults() });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401], &["codar_token_expired", "account_restricted"]),
+            class("unsupported", &[403, 501], &["client_not_supported"]),
+        ],
+        vec![
+            rule("codar_restricted", "账号状态受限", "上游标记当前账号受限时冷却该账号并切换其他账号。", "auth", &[], "account_restricted", "switch_account", "fixed", 1800, true, 7200, "account"),
+            rule("codar_client_not_supported", "客户端凭证受限", "科搭限制登录凭证用于多轮对话或工具调用（仅单轮无工具可通过）；跳过科搭并尝试其他提供商，避免同家账号无效轮询。", "unsupported", &[403, 501], "client_not_supported", "switch_provider", "deprioritize", 1800, true, 7200, "provider"),
+        ],
+    )
 }
 
 fn admin(params: &Value) -> Result<Value> {
@@ -126,9 +138,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "is_error_response" => Ok(json!(
             params["status"].as_u64().unwrap_or(200) >= 400 || errors::failed(&params["body"])
         )),
-        "error.policy" => Ok(
-            json!({ "stop": matches!(errors::code(&params["body"]).as_str(), "account_restricted" | "client_not_supported") }),
-        ),
+        "error.policy" => Ok(json!({ "stop": false })),
         "retry.decision" => Ok(json!({ "action": "default" })),
         "retry_advice" => Ok(Value::Null),
         "cooldown_models" => Ok(json!({ "models": [] })),

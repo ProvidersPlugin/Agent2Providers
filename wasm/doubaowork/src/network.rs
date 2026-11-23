@@ -34,14 +34,9 @@ pub fn url(credentials: &Credentials, endpoint: ReadEndpoint) -> String {
             ("pkg_type", "release_version".into()),
             (
                 "runtime",
-                if endpoint.control() {
-                    "local_web"
-                } else {
-                    "web"
-                }
-                .into(),
+                "web".into(),
             ),
-            ("runtime_version", "3.42.2".into()),
+            ("runtime_version", "3.45.3".into()),
             ("pc_version", version.into()),
             ("doubao_pc_version", version.into()),
             ("use-olympus-account", "1".into()),
@@ -53,6 +48,7 @@ pub fn url(credentials: &Credentials, endpoint: ReadEndpoint) -> String {
     if !matches!(endpoint, ReadEndpoint::Identity) {
         for (wire, field) in [
             ("device_id", "deviceId"),
+            ("iid", "iid"),
             ("web_id", "webId"),
             ("channel", "channel"),
             ("chromium_version", "chromiumVersion"),
@@ -64,10 +60,10 @@ pub fn url(credentials: &Credentials, endpoint: ReadEndpoint) -> String {
         }
         let device = credentials.field("deviceId");
         let fingerprint = credentials.field("fingerprint");
-        if !fingerprint.is_empty() && (endpoint.control() || device.is_empty()) {
-            query.push(("fp", fingerprint.into()));
-        } else if !device.is_empty() {
+        if !device.is_empty() {
             query.push(("fp", format!("verify_{device}")));
+        } else if !fingerprint.is_empty() {
+            query.push(("fp", fingerprint.into()));
         }
         if endpoint.control() {
             for (wire, field) in [("tea_uuid", "teaUuid"), ("web_tab_id", "webTabId")] {

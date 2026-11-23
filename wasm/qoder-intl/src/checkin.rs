@@ -1,15 +1,43 @@
 //! 国际每日活动北京时间 10:00 开窗，不领 Sonus/限定模型等手动福利。
 //! 需增强的步骤调用已授权官方组件；缺授权或组件时如实提示，不记为已签到。
-use super::{account, campaigns, claims, daily, risk, util};
+use super::{account::{self, Snapshot}, campaigns, claims, client, daily, endpoints, refresh, risk, util};
 use agent2api_wasm_sdk::{json, Result, Value};
 
 fn outcome(outcome: &str, message: &str, retry: Option<i64>) -> Value {
     json!({ "outcome": outcome, "message": message, "credit": null, "streak": null, "retryAt": retry })
 }
+
+fn free_tier(snapshot: &Snapshot) -> Result<bool> {
+    let mut current = snapshot.clone();
+    let mut reply = client::get(endpoints::PLAN, &current.credentials.access, "套餐查询")?;
+    if reply.status == 401 && current.credentials.can_refresh() {
+        account::unchanged(&current)?;
+        let original = current.credentials.binding();
+        current = refresh::ensure(true)?;
+        if current.credentials.binding() != original {
+            return Err(account::changed());
+        }
+        reply = client::get(endpoints::PLAN, &current.credentials.access, "套餐查询")?;
+    }
+    match client::accepted(reply, "套餐查询") {
+        Ok(plan) => Ok(util::text(&plan, &["plan_tier_name"]).eq_ignore_ascii_case("free")),
+        Err(error) if util::terminal(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
+}
+
 pub fn claim() -> Result<Value> {
     let now = util::now()?;
     let window = daily::start(now);
     if now < window {
+        let snapshot = refresh::ensure(false)?;
+        if free_tier(&snapshot)? {
+            return Ok(outcome(
+                "ineligible",
+                "当前为免费版（Free）账号，官方自 2026-11-19 起已停止免费版每日积分领取（仅试用或付费订阅可用）",
+                None,
+            ));
+        }
         return Ok(outcome(
             "inactive",
             "每日积分活动尚未开窗（北京时间 10:00），到点后重新查询；未记为已签到",
@@ -38,6 +66,13 @@ pub fn claim() -> Result<Value> {
     // 真实上游当期 CLAIMED 可以证明已领；缺风控不能把这种证据抹掉。
     if done && target.is_none() {
         return Ok(outcome("done", "本期每日权益已领取", None));
+    }
+    if target.is_none() && free_tier(&session.snapshot)? {
+        return Ok(outcome(
+            "ineligible",
+            "当前为免费版（Free）账号，官方自 2026-11-19 起已停止免费版每日积分领取（仅试用或付费订阅可用）",
+            None,
+        ));
     }
     if !session.risk_ready {
         let mut value = outcome(

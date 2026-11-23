@@ -31,7 +31,8 @@ use agent2api_wasm_sdk::{json, Error, Result, Value};
 agent2api_wasm_sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "CodeArts", "order": 28,
+    use agent2api_wasm_sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "CodeArts", "order": 28,
         "capabilities": {
             "chat": true, "stateful": true, "refresh": true, "model_refresh": true, "usage": true,
             "checkin": true, "claims": true, "web_login": true,
@@ -46,7 +47,21 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "usage_detail": true, "identifier": ["userId", "uid"],
             "expiry": ["expiresAt"], "long_lived": false, "concurrency_default": 3 },
         "checkin": { "description": "每日福利领取后回读官方活动列表确认；一次性新手礼单独领取，不涉及学生认证、邀请或付费。", "modes": [], "daily": true, "onboarding": true },
-        "default_models": [], "migration_status": gates::status() })
+        "default_models": [], "migration_status": gates::status() });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[409, 429], &["quota_limited", "codearts_concurrency_limited"]),
+            class("auth", &[401], &["codearts_credential_rejected"]),
+            class("transient", &[503], &["codearts_busy"]),
+            class("unsupported", &[403, 501], &["codearts_model_rejected", "codearts_not_multimodal", "codearts_channel_unsupported"]),
+            class("bad_request", &[400], &["codearts_parameter_rejected", "codearts_model_mismatch", "codearts_tool_name_rejected"]),
+            class("content", &[], &["codearts_content_blocked"]),
+        ],
+        vec![
+            rule("codearts_concurrency", "账号并发上限（409）", "账号当前并发数达到上限时短冷却并立即切换其他可用账号。", "rate_limit", &[409], "codearts_concurrency_limited", "switch_account", "fixed", 20, true, 120, "account"),
+        ],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

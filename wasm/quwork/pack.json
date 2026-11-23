@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-quwork",
   "name": "QuWork",
-  "description": "独立的 QuWork 提供商，支持本机登录态与凭据导入、会话续期、模型目录、流式对话、积分查询和奖励兑换。",
+  "description": "提供流式对话与模型目录查询，支持网页登录、凭据及本机账号导入与续期，可查积分并支持签到与奖励兑换。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

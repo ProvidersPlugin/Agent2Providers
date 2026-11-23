@@ -30,6 +30,7 @@
         ],
         "identity": {"kind":"pe_product","values":["Antigravity"],"minimum_version":[2,0,0],"absent":["resources/app/product.json"]},
         "hot_switch": {"service_executables":["language_server.exe","language_server_windows_x64.exe"],"respawn_timeout_ms":15000},
+        "proxy_launch": {"kind":"chromium_env"},
         "resources": [
           {"id":"oauth","label":"Antigravity 登录凭证","storage":{"kind":"keyring","target":"gemini:antigravity","username":"antigravity"}}
         ]
@@ -50,6 +51,7 @@
           {"root":"program_files","path":"Antigravity/Antigravity.exe"}
         ],
         "identity": {"kind":"json_product","path":"resources/app/product.json","field":"nameShort","values":["Antigravity IDE"]},
+        "proxy_launch": {"kind":"chromium_env"},
         "resources": [
           {"id":"state","label":"Antigravity IDE 登录状态","storage":{"kind":"sqlite",
             "location":{"root":"app_data","path":"Antigravity IDE/User/globalStorage/state.vscdb"},

@@ -311,11 +311,16 @@ pub fn forward(mut params: Value) -> Result<()> {
     if !(200..300).contains(&response.status) || content_type.contains("application/json") {
         let status = response.status;
         let bytes = response.bytes(1024 * 1024)?;
-        let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let value = errors::parse_body(&bytes);
         return Err(errors::failure(status, &value));
     }
     if content_type.contains("text/html") {
-        return Err(Error::http(502, "AutoClaw 返回网页而不是模型结果"));
+        let bytes = response.bytes(64 * 1024).unwrap_or_default();
+        let value = errors::parse_body(&bytes);
+        return Err(Error::http(
+            502,
+            errors::append_detail("AutoClaw 返回网页而不是模型结果", &value),
+        ));
     }
     let mut output = Output::new(strip);
     let result = (|| -> Result<()> {

@@ -52,8 +52,9 @@ pub use limits::{
 pub use model::{CatalogMeta, ModelList, ModelRecord, RefreshOutcome};
 pub use provider::{
     signing_payload, AccountFeatures, AdminPanel, Capabilities, CheckinInfo, CheckinMode,
-    CheckinUiHook, DefaultLimiter, DefaultLimiterAction, DefaultLimiterKind, PackManifest,
-    PackProvider, PackSignature, PackUiPage, ProviderId, ProviderInfo,
+    CheckinUiHook, DefaultErrorRule, DefaultLimiter, DefaultLimiterAction, DefaultLimiterKind,
+    ErrorClassificationRule, PackManifest, PackProvider, PackSignature, PackUiPage, ProviderId,
+    ProviderInfo,
 };
 pub use proxy::WireProxy;
 

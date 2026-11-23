@@ -8,6 +8,7 @@ pub fn dispatch(params: &Value) -> Result<Value> {
         "activity.run" => activity::run(&params["payload"]),
         "activity.cancel" => journal::cancel(),
         "activity.run-status" => journal::status(),
+        "activity.reset" => journal::reset_pending(),
         "billing.checkin-status" => activity::status(),
         "billing.banner" | "billing.ambassador" => {
             let current = session::ensure(false)?;

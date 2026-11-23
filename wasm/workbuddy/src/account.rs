@@ -1,6 +1,6 @@
 //! 显式本机导入是一次性快照，与原生一致；后续不读本机、不使用环境变量旁路。
 //! uid/identity、组织和授权字段保持原契约，公开视图仅令牌尾号。
-use super::{desktop, endpoints, headers, network, util};
+use super::{desktop, endpoints, util};
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 
 pub fn identity(secret: &Value) -> String {
@@ -215,36 +215,10 @@ pub fn bundle(secret: Value) -> Result<Value> {
         json!({ "identity": identity(&secret), "public": public, "secret": secret, "desktop": false }),
     )
 }
-fn legacy_import() -> Result<Value> {
-    let auth = sdk::legacy_credentials::take()?;
-    let token = util::strip(&util::text(&auth, &["accessToken"]));
-    let expected = util::claims(&token).map(|claims| util::text(&claims, &["sub", "userId", "uid"]))
-        .unwrap_or_default();
-    let mut profile = network::raw_timeout("GET", endpoints::ORIGIN, "/v2/plugin/account",
-        headers::login_account(&auth)?, None, 10_000).and_then(|reply| reply.checked(&[&token]))
-        .unwrap_or(Value::Null);
-    if profile["account"].is_object() { profile = profile["account"].clone(); }
-    if util::text(&profile, &["uid"]).is_empty() {
-        let list = network::raw_timeout("GET", endpoints::ORIGIN, "/v2/plugin/accounts",
-            headers::login_account(&auth)?, None, 10_000)?.checked(&[&token])?;
-        let candidates: Vec<_> = list["accounts"].as_array().into_iter().flatten()
-            .filter(|row| expected.is_empty() || util::text(row, &["uid"]) == expected).collect();
-        let recent: Vec<_> = candidates.iter().copied().filter(|row| util::truth(&row["lastLogin"])).collect();
-        profile = if candidates.len() == 1 { candidates[0].clone() }
-            else if recent.len() == 1 { recent[0].clone() } else { Value::Null };
-    }
-    let uid = util::text(&profile, &["uid"]);
-    if uid.is_empty() || !expected.is_empty() && uid != expected {
-        return Err(Error::http(409, "WorkBuddy 旧环境凭据的账号身份未确认，请改用网页登录"));
-    }
-    Ok(json!({ "account": profile, "auth": auth, "edition": "cn" }))
-}
-
 pub fn normalize(params: &Value) -> Result<Value> {
     let source = &params["source"];
     let payload = match source["kind"].as_str() {
         Some("desktop") => desktop::read()?,
-        Some("manual") if source["payload"]["methodIndex"] == 3 => legacy_import()?,
         Some("manual") => {
             let payload = &source["payload"];
             if payload.get("methodIndex").is_none() {

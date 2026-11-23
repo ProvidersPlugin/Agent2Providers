@@ -1,7 +1,17 @@
 //! 国内每日签到只领当期 daily Credits 活动（每天 10:00 更新），不领取 Sonus 等其它福利。
 //! Free 账号没有活动是 inactive；不会调用停用的 daily-check-in 或任何国际组件。
-use super::{campaigns, claims, util};
+use super::{account::Snapshot, campaigns, claims, client, endpoints, util};
 use agent2api_wasm_sdk::{json, Result, Value};
+
+fn free_tier(snapshot: &Snapshot) -> Result<bool> {
+    match client::get(endpoints::PLAN, &snapshot.credentials.access, "套餐查询")
+        .and_then(|reply| client::accepted(reply, "套餐查询"))
+    {
+        Ok(plan) => Ok(util::text(&plan, &["plan_tier_name"]).eq_ignore_ascii_case("free")),
+        Err(error) if util::terminal(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
+}
 
 pub fn claim() -> Result<Value> {
     let session = campaigns::load()?;
@@ -27,6 +37,16 @@ pub fn claim() -> Result<Value> {
         }
     }
     let Some(id) = target else {
+        if !done && free_tier(&session.snapshot)? {
+            return Ok(json!({
+                "outcome": "ineligible",
+                "message": "当前为免费版（Free）账号，官方自 2026-11-19 起已停止免费版每日 Credits 领取（仅试用或付费订阅可用）",
+                "credit": null,
+                "streak": null,
+                "retryAt": null,
+                "until": null
+            }));
+        }
         return Ok(json!({ "outcome": if done { "done" } else { "inactive" },
             "message": if done { "本期每日权益已领取" } else { "当前没有可领取的签到活动" },
             "credit": null, "streak": null, "retryAt": null, "until": done_until }));

@@ -29,7 +29,8 @@ use agent2api_wasm_sdk::{json, Error, Result, Value};
 agent2api_wasm_sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({
+    use agent2api_wasm_sdk::error_rules::{attach, class, rule};
+    let meta = json!({
         "id": endpoints::ID, "label": "MonkeyCode 国际版", "order": 21,
         "capabilities": {
             "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
@@ -48,7 +49,17 @@ fn metadata() -> Value {
         "checkin": { "description": "国际站独立完成官方计算验证和每日签到，提交前保存防重记录，并回读今日状态确认。",
             "modes": [], "daily": true, "onboarding": false, "plans": false, "growth": false },
         "default_models": [], "readiness": gates::status()
-    })
+    });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[409], &["10811", "monkeycode_task_busy"]),
+            class("auth", &[401], &["monkeycode_session_expired"]),
+        ],
+        vec![
+            rule("mc_task_busy", "任务并发名额已满（409）", "账号当前后台任务名额占满时，短冷却该账号并切换其他可用账号。", "rate_limit", &[409], "monkeycode_task_busy", "switch_account", "fixed", 60, true, 300, "account"),
+        ],
+    )
 }
 
 fn admin(params: &Value) -> Result<Value> {

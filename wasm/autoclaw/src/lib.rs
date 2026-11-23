@@ -27,7 +27,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "AutoClaw 国内版", "order": 10,
+    use sdk::error_rules::attach;
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "AutoClaw 国内版", "order": 10,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": true, "claims": false, "web_login": false,
             "sse_model_rewrite": true, "sse_strip_newline_chunks": true,
@@ -38,7 +39,8 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "credit_detail": true, "identifier": ["userId"],
             "expiry": ["expiresAt", "tokenExpiresAt"] },
         "checkin": { "description": "官方客户端每日签到任务，并核对登录活跃活动奖励", "modes": ["checkin"], "daily": true },
-        "settings_schema": config::schema(), "settings_group": { "label": "AutoClaw 国内版" }, "default_models": models::defaults() })
+        "settings_schema": config::schema(), "settings_group": { "label": "AutoClaw 国内版" }, "default_models": models::defaults() });
+    attach(meta, vec![], vec![])
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

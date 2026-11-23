@@ -239,24 +239,7 @@ pub fn failure(status: u16, body: &Value) -> Error {
     error
 }
 
-pub fn retry(params: &Value) -> Value {
-    let status = params["status"].as_u64().unwrap_or(502) as u16;
-    let body = &params["body"];
-    if stop(status, body) {
-        return json!({ "action": "stop", "reason": "上游验证、账号策略或套餐权限未满足，停止重复请求" });
-    }
-    if temporary(body) {
-        let attempt = params["attempt"].as_u64().unwrap_or(0);
-        let budget = params["budget"].as_u64().unwrap_or(0);
-        if attempt < budget && attempt < 2 {
-            return json!({ "action": "retry", "delay_ms": (attempt + 1) * 1000,
-                "reason": "ZCode 短期并发或速率限制，有限等待后在原账号重试" });
-        }
-        return json!({ "action": "stop", "reason": "ZCode 短期限流仍未解除，停止重试；未判定套餐额度耗尽" });
-    }
-    if status == 429 || matches!(code(body), Some(1005 | 1113 | 1308 | 1310)) {
-        return json!({ "action": "stop", "reason": "当前没有可立即恢复的模型额度，未重复发送或切换套餐通道" });
-    }
+pub fn retry(_params: &Value) -> Value {
     json!({ "action": "default" })
 }
 

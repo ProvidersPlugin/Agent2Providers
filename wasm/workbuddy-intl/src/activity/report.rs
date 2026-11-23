@@ -11,10 +11,10 @@ pub(super) fn run(ctx: &mut Context) -> Result<Value> {
         result["reused"] = json!(true);
         return Ok(result);
     }
-    if saved["day"] == ctx.day && saved["pending"] == true {
+    if super::pending_active(&saved, &ctx.day, None) {
         return Ok(
             json!({ "succeeded": false, "uncertain": true, "streakDays": null,
-            "msg": "本日上次活跃上报结果未确认，未重复提交相同日活" }),
+            "msg": "本日上次活跃上报结果未确认，5 分钟内暂缓重复提交相同日活" }),
         );
     }
     let uid = util::text(&ctx.current.secret, &["uid"]);
@@ -41,7 +41,7 @@ pub(super) fn run(ctx: &mut Context) -> Result<Value> {
     // requestModelId是原生事件常量，不作为实际模型调用授权；真正对话仅消费主程序链。
     ctx.put(
         "report",
-        &json!({ "day": ctx.day, "pending": true, "eventId": id }),
+        &json!({ "day": ctx.day, "pending": true, "eventId": id, "at": sdk::now() }),
     )?;
     let reply = match ctx.call("POST", "/v2/report", Some(&json!([event]))) {
         Ok(reply) => reply,
@@ -63,7 +63,7 @@ pub(super) fn run(ctx: &mut Context) -> Result<Value> {
     if ctx
         .put(
             "report",
-            &json!({ "day": ctx.day, "done": succeeded, "pending": uncertain, "result": result }),
+            &json!({ "day": ctx.day, "done": succeeded, "pending": uncertain, "at": sdk::now(), "result": result }),
         )
         .is_err()
     {

@@ -1,5 +1,5 @@
 //! 国际账号保持user-<uid>身份；官方.info嵌套/扁平JSON均可，桌面导入后是独立快照。
-use crate::{desktop, endpoints, headers, network, util};
+use crate::{desktop, endpoints, util};
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 
 pub fn identity(secret: &Value) -> String {
@@ -221,30 +221,10 @@ pub fn bundle(secret: Value) -> Result<Value> {
         json!({ "identity": identity(&secret), "secret": secret, "public": public, "desktop": false }),
     )
 }
-fn legacy_import() -> Result<Value> {
-    let auth = sdk::legacy_credentials::take()?;
-    let token = util::strip(&util::text(&auth, &["accessToken"]));
-    let expected = util::claims(&token).map(|claims| util::text(&claims, &["sub", "userId", "uid"]))
-        .unwrap_or_default();
-    let list = network::raw_timeout("GET", endpoints::ORIGIN, "/v2/plugin/accounts",
-        headers::login_account(&auth, false)?, None, 10_000)?.checked(&[&token])?;
-    let candidates: Vec<_> = list["accounts"].as_array().into_iter().flatten()
-        .filter(|row| expected.is_empty() || util::text(row, &["uid"]) == expected).collect();
-    let recent: Vec<_> = candidates.iter().copied().filter(|row| util::truth(&row["lastLogin"])).collect();
-    let profile = if candidates.len() == 1 { candidates[0].clone() }
-        else if recent.len() == 1 { recent[0].clone() } else { Value::Null };
-    let uid = util::text(&profile, &["uid"]);
-    if uid.is_empty() || !expected.is_empty() && uid != expected {
-        return Err(Error::http(409, "WorkBuddy 国际旧环境凭据的账号身份未确认，请改用网页登录"));
-    }
-    Ok(json!({ "account": profile, "auth": auth, "edition": "intl" }))
-}
-
 pub fn normalize(params: &Value) -> Result<Value> {
     let source = &params["source"];
     let payload = match source["kind"].as_str() {
         Some("desktop") => desktop::read()?,
-        Some("manual") if source["payload"]["methodIndex"] == 3 => legacy_import()?,
         Some("manual") => {
             let payload = &source["payload"];
             if payload.get("methodIndex").is_none() {

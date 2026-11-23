@@ -33,21 +33,34 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": network::PROVIDER, "label": "ZCode 国际版", "order": 14,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": network::PROVIDER, "label": "ZCode 国际版", "order": 14,
         "capabilities": { "chat": true, "stateful": false, "refresh": false,
-            "model_refresh": true, "usage": true, "checkin": true, "claims": true,
+            "model_refresh": true, "usage": true, "checkin": false, "claims": false,
             "web_login": true, "sse_model_rewrite": true, "refresh_uses_account": true,
             "supports_default_model": false, "env_credentials": false },
         "login_methods": [{ "kind": "browser", "button": "网页登录", "hint": "在 Z.AI 授权页完成 ZCode 国际版账号登录" }],
-        "account_features": { "usage": true, "credit_detail": true, "claim": true,
+        "account_features": { "usage": true, "credit_detail": true, "claim": false,
             "plan_channel": true, "edition": true, "identifier": ["userId"], "expiry": ["expiresAt"] },
         "desktop_launch": desktop_launch::summary(),
         "admin_panels": ["captcha_pool"],
-        "checkin": { "description": "每日赠送套餐领取（以上游活动窗口为准）· 国际版",
-            "modes": ["checkin"], "daily": true, "plans": true },
         "default_models": models::list(), "settings_schema": config::schema(),
         "settings_group": { "label": "ZCode 国际版" }
-    })
+    });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[429], &["1302", "1303", "3008", "3009"]),
+            class("quota", &[], &["1005", "1113"]),
+            class("auth", &[401], &["3007", "3012"]),
+            class("bad_request", &[400, 413, 422], &["3001"]),
+            class("content", &[], &["content_filter"]),
+        ],
+        vec![
+            rule("zcode_captcha_3007", "上游人机验证（3007）", "触发官方人机验证时先冷却当前账号并切换其他可用账号。", "auth", &[], "3007", "switch_account", "fixed", 900, true, 3600, "account"),
+            rule("zcode_risk_3012", "上游风控拒绝（3012）", "触发风控提示时冷却当前账号并切换其他账号，不反复重试同一账号。", "auth", &[], "3012", "switch_account", "fixed", 1800, true, 7200, "account"),
+        ],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {
@@ -90,19 +103,8 @@ fn handle(method: &str, params: Value) -> Result<Value> {
             &params["body"],
         )),
         "is_error_response" => Ok(json!(errors::is_error_response(&params))),
-        "error.policy" => Ok(
-            json!({ "stop": errors::risk(params["status"].as_u64().unwrap_or(502) as u16, &params["body"]) }),
-        ),
-        "retry.decision" => Ok(
-            if errors::risk(
-                params["status"].as_u64().unwrap_or(502) as u16,
-                &params["body"],
-            ) {
-                json!({ "action": "stop", "reason": "上游风控拒绝，停止重发、续期和账号轮换" })
-            } else {
-                json!({ "action": "default" })
-            },
-        ),
+        "error.policy" => Ok(json!({ "stop": false })),
+        "retry.decision" => Ok(json!({ "action": "default" })),
         "retry_advice" => Ok(Value::Null),
         "refusal_markers" => Ok(json!({ "finishes": [], "markers": [] })),
         "cooldown_models" => Ok(json!({ "models": [] })),

@@ -32,13 +32,21 @@ pub const PROVIDER_ID: &str = "cline-free";
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": PROVIDER_ID, "label": "Cline 免费池", "order": 17,
+    use sdk::error_rules::{attach, class};
+    let meta = json!({ "id": PROVIDER_ID, "label": "Cline 免费池", "order": 17,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": false, "claims": false, "web_login": true, "sse_model_rewrite": true,
             "refresh_uses_account": false, "anonymous_default_session": false, "env_credentials": false },
         "login_methods": [{ "kind": "browser", "button": "浏览器登录" }],
         "account_features": { "usage": true, "identifier": ["uid", "account"], "expiry": ["expiresAt"], "default_limiters": [] },
-        "admin_panels": ["upstream_headers"], "default_models": models::defaults() })
+        "admin_panels": ["upstream_headers"], "default_models": models::defaults() });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[429], &[]),
+        ],
+        vec![],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

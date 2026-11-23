@@ -57,8 +57,7 @@ pub fn methods(locale: &str) -> Value {
     json!({ "methods": [
         { "methodIndex": 0, "type": "oauth", "label": labels[0], "prompts": [], "browserMode": "choice", "manualCallback": false, "instructions": browser_hint },
         { "methodIndex": 1, "type": "api", "label": labels[1], "instructions": file_hint, "prompts": [{ "key": "credentialJson", "type": "text", "secret": true, "label": labels[2] }] },
-        sdk::login::desktop_method(2, "WorkBuddy International", locale),
-        sdk::legacy_credentials::method(3, locale)
+        sdk::login::desktop_method(2, "WorkBuddy International", locale)
     ] })
 }
 fn allowed(url: &str) -> bool {

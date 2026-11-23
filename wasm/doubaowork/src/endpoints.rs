@@ -5,7 +5,7 @@ pub const PROVIDER: &str = "doubaowork";
 pub const BASE: &str = "https://www.doubao.com";
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 pub const CLIENT_VERSION: &str = "2.33.5";
-pub const CONTROL_VERSION: &str = "2.34.12";
+pub const CONTROL_VERSION: &str = "2.36.11";
 pub const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy)]

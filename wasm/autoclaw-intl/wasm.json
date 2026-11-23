@@ -6,7 +6,7 @@
     "clock.v1", "random.v1", "locks.v1", "state.v1", "catalog.v1",
     "chat.stream.v1", "login.forms.v1", "login.interaction.v1", "runtime.platform.v1", "runtime.architecture.v1",
     "native.helpers.v1", "desktop.credentials.v1", "errors.v1", "checkin.rolling.v1",
-    "login.managed.v1", "login.loopback.v1", "login.captcha.aliyun.v1", "credentials.legacy-import.v1"
+    "login.managed.v1", "login.loopback.v1", "login.captcha.aliyun.v1"
   ],
   "managed_login": {
     "methods": [0, 1],

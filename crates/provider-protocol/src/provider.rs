@@ -494,7 +494,61 @@ pub struct ProviderInfo {
     /// 知识，不该由网关查表。
     #[serde(default)]
     pub checkin: Option<CheckinInfo>,
+    /// 这一家的上游错误识别映射（握手时申报，替代网关硬编码业务码分支）。
+    #[serde(default)]
+    pub error_classifications: Vec<ErrorClassificationRule>,
+    /// 这一家默认的路由错误处理例外规则（展示在「错误处理 — 提供商例外」，用户可覆盖）。
+    #[serde(default)]
+    pub error_rules: Vec<DefaultErrorRule>,
 }
+
+/// 插件声明的错误识别规则：把上游状态码与业务码归类到网关标准错误类型。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ErrorClassificationRule {
+    pub kind: String,
+    #[serde(default)]
+    pub statuses: Vec<u16>,
+    #[serde(default)]
+    pub codes: Vec<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub hard_stop: bool,
+}
+
+/// 插件声明的默认错误处理例外（与路由面板「提供商例外」对齐）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultErrorRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub reason: String,
+    pub kind: String,
+    #[serde(default)]
+    pub statuses: Vec<u16>,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    pub action: String,
+    pub cooldown: String,
+    #[serde(default = "default_error_fallback")]
+    pub fallback_seconds: u64,
+    #[serde(default)]
+    pub exponential: bool,
+    #[serde(default = "default_error_cap")]
+    pub fallback_cap_seconds: u64,
+    #[serde(default = "default_error_scope")]
+    pub scope: String,
+}
+
+fn default_error_fallback() -> u64 { 60 }
+fn default_error_cap() -> u64 { 1800 }
+fn default_error_scope() -> String { "auto".into() }
 
 /// 一个 provider 的**签到能力申报**。
 ///

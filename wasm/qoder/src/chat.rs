@@ -1,9 +1,9 @@
 //! 国内 COSY 对话。编码后原始字节签名，受控 HTTP 输出标准 Chat SSE。
 //! 10605 仅首帧前有限排队、105/401 同账号强刷一次；已出流错误绝不伪造成功。
 use super::{
-    account, client, config, cosy, endpoints, errors, models,
+    account, client, cosy, endpoints, errors, models,
     output::{self, Event, Output},
-    protocol, refresh, util,
+    protocol, refresh,
 };
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
 
@@ -11,7 +11,6 @@ const MAX_ENCODED: usize = 16 * 1024 * 1024;
 struct Failure {
     error: Error,
     started: bool,
-    retry_ms: u64,
 }
 pub fn forward(params: &Value) -> Result<()> {
     let body = &params["body"];
@@ -28,9 +27,6 @@ pub fn forward(params: &Value) -> Result<()> {
     let model_name = body["model"].as_str().unwrap_or("");
     let mut snapshot = refresh::ensure(false)?;
     let mut model = models::resolve(model_name, &snapshot)?;
-    let waits = config::queue_waits()?;
-    let deadline = util::now()?.saturating_add(config::queue_budget()?);
-    let mut queued = 0;
     let mut renewed = false;
     loop {
         account::unchanged(&snapshot)?;
@@ -78,18 +74,8 @@ pub fn forward(params: &Value) -> Result<()> {
             Err(Failure {
                 error,
                 started: false,
-                retry_ms,
+                ..
             }) => {
-                if error.code.as_deref() == Some("qoder_model_busy") && queued < waits {
-                    let now = util::now()?;
-                    let delay = retry_ms.clamp(5000, 30_000);
-                    if now.saturating_add(delay as i64) > deadline {
-                        return Err(error);
-                    }
-                    queued += 1;
-                    sdk::sleep(delay)?;
-                    continue;
-                }
                 if error.code.as_deref() == Some("qoder_auth_expired")
                     && !renewed
                     && snapshot.credentials.can_refresh()
@@ -118,7 +104,6 @@ fn consume(
     let mut output = Output::new(model, thinking).map_err(|error| Failure {
         error,
         started: false,
-        retry_ms: 15_000,
     })?;
     let status = response.status;
     let content_type = response.headers["content-type"]
@@ -132,7 +117,6 @@ fn consume(
         let bytes = response.bytes(1024 * 1024).map_err(|error| Failure {
             error,
             started: false,
-            retry_ms: 15_000,
         })?;
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             json!(String::from_utf8_lossy(&bytes)
@@ -143,27 +127,14 @@ fn consume(
         return Err(Failure {
             error: errors::failure(status, &value),
             started: false,
-            retry_ms: errors::queue_wait(&value),
         });
     }
     let mut decoder = SseDecoder::default();
-    let mut retry_ms = 15_000;
     let result = (|| -> Result<()> {
         while let Some(bytes) = response.read()? {
             account::unchanged(snapshot)?;
             for data in decoder.push(&bytes)? {
-                let event = match output::parse(&data) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        if error.code.as_deref() == Some("qoder_model_busy") {
-                            if let Ok(value) = serde_json::from_str::<Value>(&data) {
-                                retry_ms = errors::queue_wait(&value);
-                            }
-                        }
-                        return Err(error);
-                    }
-                };
-                match event {
+                match output::parse(&data)? {
                     Event::Skip => {}
                     Event::Done => return output.finish(),
                     Event::Chunk(chunk) => output.consume(chunk)?,
@@ -180,14 +151,12 @@ fn consume(
                 return Err(Failure {
                     error: send,
                     started: true,
-                    retry_ms,
                 });
             }
         }
         return Err(Failure {
             error,
             started: output.started,
-            retry_ms,
         });
     }
     Ok(())

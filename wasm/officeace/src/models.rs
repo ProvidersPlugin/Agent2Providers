@@ -138,6 +138,40 @@ fn outcome(mut catalog: Value, refreshed: bool) -> Value {
     catalog
 }
 
+/// 当 `/v2/models` 返回 APIG.1009 时通过控制面核对套餐与可用积分，区分「零积分停用」与密钥失效。
+fn diagnose_apig_1009(credential: &Credentials) -> Option<Error> {
+    let mut context = control::Context::acquire().ok()?;
+    if binding(&context.credential) != binding(credential) {
+        return None;
+    }
+    let snapshot = context.subscription().ok()?;
+    let make_error = |status: u16, code: &str, message: &str| {
+        let mut error = Error::http(status, message).with_code(code);
+        error.upstream_code = Some(1009);
+        error.credential_scope = Some("model".into());
+        error
+    };
+    if matches!(
+        snapshot["subscribe_status"].as_str(),
+        Some("UNSUBSCRIBED" | "EXPIRED" | "FROZEN")
+    ) {
+        return Some(make_error(
+            409,
+            "officeace_subscription_required",
+            "果办套餐未开通、已到期或被冻结，模型网关密钥已失效（APIG.1009），请先核对套餐状态",
+        ));
+    }
+    let summary = super::subscription::summarize(&snapshot);
+    if summary["available"].as_f64().is_some_and(|value| value <= 0.0) {
+        return Some(make_error(
+            429,
+            "officeace_points_exhausted",
+            "果办模型网关拒绝当前密钥（APIG.1009），检测到当前账号剩余可用积分为 0（华为云网关在积分为 0 时会停用模型调用密钥）；请先签到领取今日积分或补充套餐积分后再重试",
+        ));
+    }
+    None
+}
+
 fn fetch(credential: &Credentials, old: &Value) -> Result<Value> {
     let response = client::model(
         "GET",
@@ -157,6 +191,11 @@ fn fetch(credential: &Credentials, old: &Value) -> Result<Value> {
             .get("error_code")
             .is_some_and(|code| !matches!(util::number(code), Some(0.0 | 200.0)))
     {
+        if reply.status == 401 && reply.value["error_code"].as_str() == Some("APIG.1009") {
+            if let Some(diagnosed) = diagnose_apig_1009(credential) {
+                return Err(diagnosed);
+            }
+        }
         return Err(super::errors::model_error(
             reply.status,
             &reply.value,

@@ -22,7 +22,6 @@ members = [
     "monkeycode",
     "monkeycode-intl",
     "lobsterai",
-    "orcaterm",
     "qoder",
     "qoder-intl",
     "quwork",

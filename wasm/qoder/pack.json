@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-qoder",
   "name": "Qoder 中国版",
-  "description": "独立 Qoder 中国版提供商：设备授权、PAT 与 JSON 导入、续期、模型目录、COSY 对话、额度与活动领取；不包含国际版或千问办公。",
+  "description": "提供中国版对话与模型目录查询，支持设备授权与令牌导入及自动续期，可查额度、每日签到并领取活动福利。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

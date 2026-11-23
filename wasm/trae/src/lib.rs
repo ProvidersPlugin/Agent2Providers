@@ -30,7 +30,8 @@ pub const PROVIDER_ID: &str = "trae";
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": PROVIDER_ID, "label": "Trae", "order": 26,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": PROVIDER_ID, "label": "Trae", "order": 26,
         "capabilities": { "chat": true, "stateful": true, "refresh": true, "model_refresh": true,
             "usage": true, "checkin": true, "claims": false, "web_login": true, "sse_model_rewrite": false,
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false,
@@ -41,7 +42,19 @@ fn metadata() -> Value {
             "identifier": ["uid"], "expiry": ["expiresAt", "expiresAtMs"], "long_lived": false },
         "checkin": { "description": "Trae每日积分签到，领取后用账号原设备回查确认；被拒绝或未确认时不记成功", "daily": true, "modes": ["checkin"] },
         "refusal_finishes": ["content_filter"], "refusal_markers": [],
-        "default_models": [] })
+        "default_models": [] });
+    attach(
+        meta,
+        vec![
+            class("quota", &[429], &["trae_plan_limit"]),
+            class("rate_limit", &[429], &["trae_rate_limited"]),
+            class("auth", &[401], &["trae_session_expired"]),
+            class("content", &[], &["trae_content_blocked"]),
+        ],
+        vec![
+            rule("trae_plan", "套餐或模型额度耗尽", "当前套餐或模型额度不足时冷却该对象并切换可用账号。", "quota", &[], "trae_plan_limit", "switch_account", "fixed", 1800, true, 7200, "model"),
+        ],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

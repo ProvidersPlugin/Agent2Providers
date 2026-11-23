@@ -36,12 +36,17 @@ fn request_with_headers(
         )?;
         let status = response.status;
         let bytes = response.bytes(4 * 1024 * 1024)?;
-        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let body = super::errors::parse_body(&bytes);
         Ok(Reply { status, body })
     })();
     result.map_err(|mut error| {
         if error.code.as_deref() != Some("forbidden") {
-            error.message = format!("AutoClaw {operation}连接失败或响应中断");
+            let raw = error.message.trim().to_string();
+            error.message = if raw.is_empty() {
+                format!("AutoClaw {operation}连接失败或响应中断")
+            } else {
+                format!("AutoClaw {operation}连接失败：{raw}")
+            };
         }
         error
     })
@@ -54,7 +59,10 @@ pub fn http_ok(reply: Reply, operation: &str) -> Result<Value> {
     if !reply.body.is_object() {
         return Err(Error::http(
             502,
-            format!("AutoClaw {operation}未返回有效 JSON"),
+            super::errors::append_detail(
+                format!("AutoClaw {operation}未返回有效 JSON（HTTP {}）", reply.status),
+                &reply.body,
+            ),
         ));
     }
     Ok(reply.body)
@@ -110,18 +118,15 @@ pub fn strict_business(payload: &Value, operation: &str) -> Result<()> {
     } else {
         502
     };
-    let mut error = Error::http(
-        status,
-        if status == 401 {
-            format!("AutoClaw 登录态已失效，无法{operation}")
-        } else {
-            format!(
-                "AutoClaw {operation}未完成（业务码 {}）",
-                code.map(|code| code.to_string())
-                    .unwrap_or_else(|| "未返回".into())
-            )
-        },
-    );
+    let code_text = code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "未返回".into());
+    let base = if status == 401 {
+        format!("AutoClaw 登录态已失效，无法{operation}（业务码 {code_text}）")
+    } else {
+        format!("AutoClaw {operation}未完成（业务码 {code_text}）")
+    };
+    let mut error = Error::http(status, super::errors::append_detail(base, payload));
     error.upstream_code = code;
     Err(error)
 }

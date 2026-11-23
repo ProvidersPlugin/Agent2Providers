@@ -6,7 +6,7 @@
     "locks.v1", "state.v1", "catalog.v1", "settings.v1", "settings.schema.v1",
     "runtime.platform.v1", "runtime.architecture.v1", "chat.stream.v1", "errors.v1",
     "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1",
-    "images.v1", "resources.v1", "resources.fetch-public.v1", "credentials.legacy-import.v1"
+    "images.v1", "resources.v1", "resources.fetch-public.v1"
   ],
   "origins": ["https://xiaohuanxiong.com"],
   "helpers": ["desktop.credentials.raccoon.v1", "desktop.refresh.raccoon.v1"],

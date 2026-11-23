@@ -7,7 +7,7 @@ use crate::{
 use agent2api_wasm_sdk::{
     self as sdk, json,
     state::{self, Scope, Snapshot},
-    Error, Result, Value,
+    AccountLock, Error, Result, Value,
 };
 
 fn load(key: &str) -> Result<Snapshot> {
@@ -156,14 +156,67 @@ pub fn cancel() -> Result<Value> {
     }
     Err(Error::http(409, "国际日活状态正在变化，取消未确认"))
 }
+fn step_summary(value: &Value) -> Value {
+    if !value.is_object() {
+        return Value::Null;
+    }
+    json!({
+        "day": value["day"],
+        "done": value["done"] == true,
+        "pending": value["pending"] == true,
+        "model": value["model"],
+        "at": value["at"],
+        "reason": value["reason"],
+        "status": value["status"],
+        "resetAt": value["resetAt"],
+    })
+}
 pub fn status() -> Result<Value> {
     let current = session::snapshot()?;
     let mut saved = load("intl-activity-job")?.value;
-    if saved["binding"] != account::fingerprint(&current.secret) {
-        return Ok(Value::Null);
-    }
-    if saved["until"].as_i64().is_some_and(|at| at <= sdk::now()) {
+    let binding = account::fingerprint(&current.secret);
+    let has_job = saved["binding"] == binding;
+    if has_job && saved["until"].as_i64().is_some_and(|at| at <= sdk::now()) {
         saved["running"] = json!(false);
     }
-    Ok(json!({ "job": saved, "last": get(&current, "last")? }))
+    let last = get(&current, "last")?;
+    let steps = json!({
+        "model": step_summary(&get(&current, "model")?),
+        "web": step_summary(&get(&current, "web")?),
+        "report": step_summary(&get(&current, "report")?),
+    });
+    if !has_job
+        && last.is_null()
+        && steps["model"].is_null()
+        && steps["web"].is_null()
+        && steps["report"].is_null()
+    {
+        return Ok(Value::Null);
+    }
+    Ok(json!({
+        "job": if has_job { saved } else { Value::Null },
+        "last": last,
+        "steps": steps,
+    }))
+}
+pub fn reset_pending() -> Result<Value> {
+    let _lock = AccountLock::acquire()?;
+    let current = session::snapshot()?;
+    let now = sdk::now();
+    let mut cleared = Vec::new();
+    for key in ["model", "web", "report"] {
+        let mut value = get(&current, key)?;
+        if value["pending"] == true && value["done"] != true {
+            value["pending"] = json!(false);
+            value["resetAt"] = json!(now);
+            put(&current, key, &value)?;
+            cleared.push(key);
+        }
+    }
+    let message = if cleared.is_empty() {
+        "当前没有待解除的保活锁定状态".to_string()
+    } else {
+        format!("已解除保活待确认锁定（{}），可立即重试", cleared.join("、"))
+    };
+    Ok(json!({ "cleared": cleared, "message": message }))
 }

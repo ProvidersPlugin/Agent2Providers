@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-officeace",
   "name": "OfficeAce 果办",
-  "description": "独立的 OfficeAce 提供商，支持华为云网页登录、凭据导入与自动续期、对话、账号模型目录、积分查询、每日签到和体验套餐领取。",
+  "description": "提供对话与模型目录查询，支持华为云登录、凭据导入与自动续期，可查积分、每日签到和领体验套餐（仅支持直连）。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "providers": [

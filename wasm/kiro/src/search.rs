@@ -5,12 +5,18 @@ use crate::{client, credentials::Credentials, endpoints, errors, network, refres
 use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 
 pub fn capabilities() -> Value {
-    json!({ "version": 1, "search": true, "fetch": false, "max_query_chars": 200 })
+    json!({
+        "version": 1,
+        "search": true,
+        "fetch": false,
+        "max_query_chars": 200,
+        "supports_max_results": false
+    })
 }
 fn invalid() -> Error {
     Error::http(502, "Kiro搜索返回了无法识别的结果").with_code("provider_unavailable")
 }
-fn sources(value: &Value, c: &Credentials) -> Result<Value> {
+fn sources(value: &Value, c: &Credentials, limit: Option<usize>) -> Result<Value> {
     let result = value.get("result").ok_or_else(invalid)?;
     let result = if let Some(text) = result.as_str() {
         serde_json::from_str::<Value>(text).map_err(|_| invalid())?
@@ -32,7 +38,7 @@ fn sources(value: &Value, c: &Credentials) -> Result<Value> {
         return Err(invalid());
     }
     let items = payload["results"].as_array().ok_or_else(invalid)?;
-    let rows: Vec<_> = items.iter().take(50).filter_map(|item| {
+    let rows: Vec<_> = items.iter().take(limit.unwrap_or(200)).filter_map(|item| {
         let raw = item["url"].as_str()?.trim();
         let url = url::Url::parse(raw).ok()?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() || !url.username().is_empty()
@@ -46,7 +52,7 @@ fn sources(value: &Value, c: &Credentials) -> Result<Value> {
     }).collect();
     Ok(errors::sanitize(&json!({ "sources": rows }), &c.secrets()))
 }
-fn once(c: &Credentials, query: &str, timeout_ms: u64) -> Result<Value> {
+fn once(c: &Credentials, query: &str, timeout_ms: u64, limit: Option<usize>) -> Result<Value> {
     if !c.api_key() && c.profile.is_empty() {
         return Err(
             Error::http(400, "Kiro账号缺少搜索所需profile，请重新登录").with_code("configuration")
@@ -104,7 +110,7 @@ fn once(c: &Credentials, query: &str, timeout_ms: u64) -> Result<Value> {
     if !(200..300).contains(&status) || value.get("error").is_some_and(|value| !value.is_null()) {
         return Err(errors::upstream(status, &value, &c.secrets()));
     }
-    sources(&value, c)
+    sources(&value, c, limit)
 }
 pub fn search(payload: &Value) -> Result<Value> {
     let query = payload["query"].as_str().unwrap_or("").trim();
@@ -113,8 +119,15 @@ pub fn search(payload: &Value) -> Result<Value> {
     }
     let timeout = payload["timeout_seconds"].as_u64().unwrap_or(30);
     if !(5..=600).contains(&timeout) {
-        return Err(Error::http(400, "搜索超时需为5至600秒"));
+        return Err(Error::http(400, "搜索超时需为5至600秒").with_code("invalid_input"));
     }
+    let limit = match payload.get("max_results") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_u64() {
+            Some(count) if count >= 1 => Some((count as usize).min(200)),
+            _ => return Err(Error::http(400, "搜索结果条数需为正整数").with_code("invalid_input")),
+        },
+    };
     let deadline = util::now()?.saturating_add((timeout * 1000) as i64);
     let mut session = refresh::ready()?;
     for attempt in 0..2 {
@@ -122,7 +135,7 @@ pub fn search(payload: &Value) -> Result<Value> {
         if left < 1000 {
             return Err(Error::http(504, "Kiro搜索请求超时").with_code("timed_out"));
         }
-        match once(&session.credentials, query, left as u64) {
+        match once(&session.credentials, query, left as u64, limit) {
             Err(error)
                 if error.status == Some(401) && attempt == 0 && !session.credentials.api_key() =>
             {

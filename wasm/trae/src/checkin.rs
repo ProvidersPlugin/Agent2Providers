@@ -1,5 +1,5 @@
 //! 原生status→claim→同设备status回查，空体{}、9074不换方案重试、1001最多续期后一次。
-//! 设备号仅来自本账号原始绑定，原生checkinDeviceId不再公开。claim code:0不能证明领取成功。
+//! 每轮动态生成独立 16 位数字设备号，并在同轮 status→claim→回查间保持一致（复用静态设备号会触发 9074 风控）。
 //! 没有新手领取端点证据，不能把查询或登录冒充领取。
 
 use super::{account, client, credentials, endpoints, errors, headers, refresh, util};
@@ -127,14 +127,6 @@ pub fn claim(params: &Value) -> Result<Value> {
     let _lock = AccountLock::acquire()?;
     let mut record = refresh::locked(account::current()?, false)?;
     let secret = credentials::parse(&record["secret"])?;
-    if util::text(&secret, &["deviceId"]).is_empty() {
-        return Ok(report(
-            "ineligible",
-            "Trae 凭据缺少原始设备绑定，请重新授权后再签到",
-            None,
-            None,
-        ));
-    }
     let now = util::now()?;
     let old = sdk::state::get(Scope::Account, KEY, 1)?;
     if !old.compatible {
@@ -175,7 +167,7 @@ pub fn claim(params: &Value) -> Result<Value> {
     let reservation = sdk::state::get(Scope::Account, KEY, 1)?;
     let mut result = Err(Error::http(502, "Trae 签到未完成"));
     for attempt in 0..2 {
-        let device = util::text(&credentials::parse(&record["secret"])?, &["deviceId"]);
+        let device = util::digits(16)?;
         result = run(&record, &device);
         let retry = result
             .as_ref()

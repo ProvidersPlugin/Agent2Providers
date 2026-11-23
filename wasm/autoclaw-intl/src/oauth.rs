@@ -49,22 +49,21 @@ fn business(payload: &Value, action: &str) -> Result<()> {
     if code == Some(0) {
         return Ok(());
     }
+    let code_text = code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "未返回".into());
     let message = match code {
-        Some(631_002) => "本轮缺少有效的官方风控验证，请重新发起授权".to_string(),
-        Some(630_014) => "官方风控验证未通过，请重新发起授权".into(),
-        Some(631_001) => "官方授权码无效或已过期，请重新登录".into(),
-        Some(400_001) => "国际版登录请求参数被拒，请重新发起".into(),
-        Some(400_002) => "国际版登录签名校验失败，请校准系统时间后重试".into(),
-        Some(400_005) => "国际版登录请求过于频繁，请稍后再试".into(),
-        _ => format!(
-            "{action}未完成（业务码 {}）",
-            code.map(|code| code.to_string())
-                .unwrap_or_else(|| "未返回".into())
-        ),
+        Some(631_002) => format!("本轮缺少有效的官方风控验证，请重新发起授权（业务码 {code_text}）"),
+        Some(630_014) => format!("官方风控验证未通过，请重新发起授权（业务码 {code_text}）"),
+        Some(631_001) => format!("官方授权码无效或已过期，请重新登录（业务码 {code_text}）"),
+        Some(400_001) => format!("国际版登录请求参数被拒，请重新发起（业务码 {code_text}）"),
+        Some(400_002) => format!("国际版登录签名校验失败，请校准系统时间后重试（业务码 {code_text}）"),
+        Some(400_005) => format!("国际版登录请求过于频繁，请稍后再试（业务码 {code_text}）"),
+        _ => format!("{action}未完成（业务码 {code_text}）"),
     };
     let mut error = Error::http(
         if code == Some(400_005) { 429 } else { 502 },
-        format!("AutoClaw {message}"),
+        super::errors::append_detail(format!("AutoClaw {message}"), payload),
     );
     error.upstream_code = code;
     Err(error)

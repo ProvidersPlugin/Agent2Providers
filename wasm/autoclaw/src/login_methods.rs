@@ -70,7 +70,6 @@ pub fn methods(locale: &str) -> Value {
         { "methodIndex": 2, "type": "api", "label": text[3], "instructions": file_hint, "prompts": [
             { "key": "credentialJson", "type": "text", "label": text[4], "secret": true }
         ] },
-        desktop,
-        agent2api_wasm_sdk::legacy_credentials::method(4, locale)
+        desktop
     ] })
 }

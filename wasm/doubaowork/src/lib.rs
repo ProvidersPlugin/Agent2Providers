@@ -29,7 +29,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 agent2api_wasm_sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "豆包工作", "order": 30,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "豆包工作", "order": 30,
         "capabilities": {
             "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
             "usage": true, "checkin": true, "claims": true, "web_login": true,
@@ -44,7 +45,21 @@ fn metadata() -> Value {
             "default_limiters": [] },
         "default_models": [], "readiness": gates::status(), "migration_status": gates::status(),
         "checkin": {"description": "每日签到先保存待确认记录，只提交一次；以官方今日完成标记为准，再次点击只查结果。其他已完成任务在活动福利逐项领取，不代做任务。",
-            "daily": true, "modes": [], "onboarding": false, "plans": false} })
+            "daily": true, "modes": [], "onboarding": false, "plans": false} });
+    attach(
+        meta,
+        vec![
+            class("quota", &[429], &["doubaowork_quota_limited", "doubaowork_request_limited"]),
+            class("auth", &[401], &["doubaowork_auth_expired", "doubaowork_verification_required"]),
+            class("unsupported", &[403, 501], &["doubaowork_subscription_required", "doubaowork_model_restricted"]),
+            class("bad_request", &[400], &["doubaowork_invalid_input", "unsupported_parameter"]),
+            class("content", &[], &["doubaowork_content_blocked"]),
+        ],
+        vec![
+            rule("doubao_verify", "账号需人机验证", "上游要求在官方页面完成人机验证时，冷却该账号并切换其他账号。", "auth", &[429], "doubaowork_verification_required", "switch_account", "fixed", 1800, true, 7200, "account"),
+            rule("doubao_sub_403", "账号未开通模型权限（403）", "当前账号不支持所选订阅专属模型时，将该账号此模型优先级调到最低并换号尝试。", "unsupported", &[403], "", "switch_account", "deprioritize", 1800, true, 7200, "model"),
+        ],
+    )
 }
 
 fn admin(params: &Value) -> Result<Value> {

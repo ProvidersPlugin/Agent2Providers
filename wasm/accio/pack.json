@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-accio",
   "name": "Accio 国际版",
-  "description": "独立的 Accio 国际版提供商，保留 PKCE 网页登录、手工凭证、自动续期、ADK 对话、工具与图片输入、模型目录和用量查询。",
+  "description": "提供多轮对话、工具调用与图片理解，支持网页登录、凭证导入与自动续期，可查询模型列表及额度用量。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",

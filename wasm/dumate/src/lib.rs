@@ -26,7 +26,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "百度搭子 DuMate", "order": 34,
+    use sdk::error_rules::{attach, class};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "百度搭子 DuMate", "order": 34,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": false,
             "usage": true, "checkin": true, "claims": true, "web_login": true,
             "refresh_uses_account": true, "supports_default_model": false,
@@ -39,7 +40,14 @@ fn metadata() -> Value {
         "checkin": { "description": "每日登录积分先查询官方状态，再提交一次并回查；已发放或结果不明时不重复领取，不自动抽奖或代做任务。",
             "daily": true, "modes": ["checkin"] },
         "refusal_finishes": ["content_filter"], "refusal_markers": [],
-        "default_models": models::rows() })
+        "default_models": models::rows() });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401], &["dumate_session_expired"]),
+        ],
+        vec![],
+    )
 }
 
 fn admin(params: &Value) -> Result<Value> {

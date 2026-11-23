@@ -98,7 +98,6 @@ fn refresh_key(credentials: &AutoClawCredentials) -> String {
         CredentialOrigin::DesktopAuthFile => "auth",
         CredentialOrigin::GatewayConfig => "gw",
         CredentialOrigin::AccountStore => "store",
-        CredentialOrigin::Environment => "env",
     };
     let mut key = format!(
         "{}:{source}:{}",

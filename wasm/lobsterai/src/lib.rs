@@ -15,7 +15,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({
+    use sdk::error_rules::{attach, class};
+    let meta = json!({
         "id": "lobsterai", "label": "LobsterAI", "order": 6,
         "capabilities": {
             "chat": true, "stateful": false, "refresh": true, "model_refresh": true,
@@ -28,7 +29,16 @@ fn metadata() -> Value {
             "identifier": ["userId", "uid"], "expiry": ["expiresAt"] },
         "checkin": { "description": "每日活动签到（先查询是否可领，领取后复核，不重复提交未知结果）", "daily": true, "modes": ["checkin"] },
         "default_models": models::defaults()
-    })
+    });
+    attach(
+        meta,
+        vec![
+            class("rate_limit", &[429], &["42900"]),
+            class("auth", &[401], &["40100", "40101"]),
+            class("unsupported", &[403], &["40300"]),
+        ],
+        vec![],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

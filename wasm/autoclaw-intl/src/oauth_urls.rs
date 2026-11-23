@@ -10,7 +10,7 @@ pub struct Authorization {
     pub url: String,
     pub official_state: String,
 }
-pub enum Callback { Code(String), Denied }
+pub enum Callback { Code(String), Denied(String) }
 
 fn invalid() -> Error { Error::http(400, "AutoClaw 国际版回调地址、授权方式或参数无效") }
 fn url(raw: &str, limit: usize) -> Result<Url> {
@@ -114,7 +114,14 @@ pub fn callback(raw: &str, vendor: Vendor, navigate_uri: &str, official_state: &
     }
     if pairs.contains_key("error") {
         if pairs.contains_key("code") || required(&pairs, "error", 256).is_err() { return Err(invalid()); }
-        return Ok(Callback::Denied);
+        let error = pairs.get("error").map(String::as_str).unwrap_or("").trim();
+        let description = pairs.get("error_description").map(String::as_str).unwrap_or("").trim();
+        let detail = if description.is_empty() {
+            error.to_string()
+        } else {
+            format!("{error}: {description}")
+        };
+        return Ok(Callback::Denied(detail));
     }
     Ok(Callback::Code(required(&pairs, "code", 4096)?.to_string()))
 }

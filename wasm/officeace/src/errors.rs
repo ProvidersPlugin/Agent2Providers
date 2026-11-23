@@ -243,8 +243,18 @@ pub fn classify(status: u16, body: &Value) -> Value {
     if upstream_code(body).is_some_and(|code| [81111, 81112, 81114, 308].contains(&code)) {
         limited = true;
     }
+    let code = upstream_code(body);
+    if status == 401 && code == Some(1009) {
+        return json!({
+            "kind": "fatal",
+            "status": status,
+            "upstream_code": code,
+            "reset_at": null,
+            "message": format!("上游返回 {status}：{detail}（若账号已登录且套餐未到期，通常是因为剩余可用积分为 0 或今日奖励尚未签到，华为云网关会在无积分时停用模型密钥）")
+        });
+    }
     json!({ "kind": if limited { "quota_limited" } else { "fatal" }, "status": status,
-        "message": format!("上游返回 {status}：{detail}"), "upstream_code": upstream_code(body), "reset_at": null })
+        "message": format!("上游返回 {status}：{detail}"), "upstream_code": code, "reset_at": null })
 }
 
 fn upstream_code(body: &Value) -> Option<i64> {

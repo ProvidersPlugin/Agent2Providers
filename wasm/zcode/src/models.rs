@@ -313,12 +313,14 @@ pub fn refresh(params: &Value) -> Result<Value> {
         return Ok(cached);
     }
     let document = released(&config::app_version()?)?;
-    let provider = if account::plan(&record["secret"]) == account::START {
-        "account:zai-start-plan"
+    let mut models = if account::plan(&record["secret"]) == account::START {
+        match configured(&document, "account:bigmodel-start-plan") {
+            Ok(list) if !list.is_empty() => list,
+            _ => configured(&document, "account:zai-start-plan")?,
+        }
     } else {
-        "account:bigmodel-individual-coding-plan"
+        configured(&document, "account:bigmodel-individual-coding-plan")?
     };
-    let mut models = configured(&document, provider)?;
     if account::plan(&record["secret"]) == account::START {
         let data = usage_billing::read(&record)?;
         let sources = usage_sources::billing(&data);
@@ -339,42 +341,32 @@ pub fn refresh(params: &Value) -> Result<Value> {
                 && source["endsAt"].as_i64().is_none_or(|at| at <= 0 || at > now)) {
             return Err(Error::http(502, "ZCode 当前套餐未返回模型范围，未用空清单覆盖旧目录"));
         }
-        for name in names {
-            if !models.iter().any(|model| {
+        if !names.is_empty() {
+            for name in &names {
+                if !models.iter().any(|model| {
+                    model["id"]
+                        .as_str()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(name))
+                }) {
+                    let mut extra = list()
+                        .into_iter()
+                        .find(|model| {
+                            model["id"]
+                                .as_str()
+                                .is_some_and(|id| id.eq_ignore_ascii_case(name))
+                        })
+                        .unwrap_or_else(|| json!({ "supportsToolCall": true }));
+                    extra["id"] = json!(name.to_ascii_lowercase());
+                    extra["name"] = json!(name);
+                    models.push(extra);
+                }
+            }
+            models.retain(|model| {
                 model["id"]
                     .as_str()
-                    .is_some_and(|id| id.eq_ignore_ascii_case(&name))
-            }) {
-                let mut extra = list()
-                    .into_iter()
-                    .find(|model| {
-                        model["id"]
-                            .as_str()
-                            .is_some_and(|id| id.eq_ignore_ascii_case(&name))
-                    })
-                    .unwrap_or_else(|| json!({ "supportsToolCall": true }));
-                extra["id"] = json!(name.to_ascii_lowercase());
-                extra["name"] = json!(name);
-                models.push(extra);
-            }
+                    .is_some_and(|id| names.iter().any(|name| name.eq_ignore_ascii_case(id)))
+            });
         }
-        models.retain(|model| {
-            model["id"].as_str().is_some_and(|id| {
-                sources.iter().any(|source| {
-                    source["endsAt"]
-                        .as_i64()
-                        .is_none_or(|at| at <= 0 || at > now)
-                        && source["models"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .any(|name| {
-                                name.as_str()
-                                    .is_some_and(|name| name.eq_ignore_ascii_case(id))
-                            })
-                })
-            })
-        });
     }
     if serde_json::to_vec(&models)
         .map_err(|_| Error::new("ZCode 目录不能序列化"))?

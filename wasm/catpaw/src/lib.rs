@@ -35,7 +35,8 @@ use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": endpoints::PROVIDER, "label": "CatPaw", "order": 25,
+    use sdk::error_rules::{attach, class};
+    let meta = json!({ "id": endpoints::PROVIDER, "label": "CatPaw", "order": 25,
         "capabilities": {
             "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
             "usage": true, "checkin": false, "claims": false,
@@ -53,7 +54,15 @@ fn metadata() -> Value {
         "account_features": { "usage": true, "credit_detail": false, "credit_expiry": false,
             "identifier": ["uid", "loginName"], "expiry": [], "long_lived": false, "claim": false },
         "migration_status": gates::status(),
-        "default_models": models::fallback()["models"] })
+        "default_models": models::fallback()["models"] });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401], &["catpaw_auth"]),
+            class("bad_request", &[400], &["catpaw_invalid_request"]),
+        ],
+        vec![],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

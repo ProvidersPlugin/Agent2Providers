@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-dumate",
   "name": "百度搭子 DuMate",
-  "description": "独立的百度搭子提供商，支持桌面网页登录、凭据与本机登录态导入、自动续期、流式对话、工具调用、图文与文生图、积分查询和每日签到。",
+  "description": "提供对话、工具、识图与文生图，支持网页登录、凭据及本机导入与令牌续期，可查询积分并每日签到。",
   "version": "0.1.0-beta.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",

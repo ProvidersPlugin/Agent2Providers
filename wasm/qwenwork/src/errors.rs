@@ -214,10 +214,17 @@ pub fn classify(status: u16, body: &Value) -> Value {
             "content_filter",
             "千问办公 内容策略拒绝了当前请求，不是账号额度问题",
         )
-    } else if status == 403 || status == 401 {
+    } else if status == 401 {
+        (
+            "token_expired",
+            401,
+            "qwenwork_auth_expired",
+            "千问办公 登录态已失效，请续期或重新授权",
+        )
+    } else if status == 403 {
         (
             "fatal",
-            status,
+            403,
             "qwenwork_forbidden",
             "千问办公 拒绝访问，请确认当前账号的地区与模型权限",
         )
@@ -233,8 +240,14 @@ pub fn classify(status: u16, body: &Value) -> Value {
             "千问办公 上游请求未完成或返回了无效结果",
         )
     };
+    let reset_at = signals
+        .retry
+        .filter(|_| code == "qwenwork_model_busy" || code == "qwenwork_rate_limited")
+        .and_then(|seconds| seconds.checked_mul(1000))
+        .and_then(|millis| i64::try_from(millis).ok())
+        .and_then(|millis| util::now().ok()?.checked_add(millis));
     json!({ "kind": kind, "status": http, "code": code, "message": message, "upstream_code": upstream,
-        "reset_at": null, "retry_after_ms": signals.retry.map(|seconds| seconds.clamp(5, 30) * 1000) })
+        "reset_at": reset_at, "retry_after_ms": signals.retry.map(|seconds| seconds.clamp(5, 30) * 1000) })
 }
 pub fn queue_wait(body: &Value) -> u64 {
     let mut signals = Signals::default();
@@ -249,6 +262,7 @@ pub fn failure(status: u16, body: &Value) -> Error {
     )
     .with_code(class["code"].as_str().unwrap_or("qwenwork_upstream_error"));
     error.upstream_code = class["upstream_code"].as_i64();
+    error.reset_at = class["reset_at"].as_i64();
     error
 }
 pub fn event(error: &Error) -> Value {

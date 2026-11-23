@@ -3,18 +3,36 @@ use crate::{headers, network, session, util};
 use agent2api_wasm_sdk::{self as sdk, json, AccountLock, Error, Result, Value};
 
 pub fn capabilities() -> Value {
-    json!({ "version": 1, "search": true, "fetch": false, "max_query_chars": 4000 })
+    json!({
+        "version": 1,
+        "search": true,
+        "fetch": false,
+        "max_query_chars": 4000,
+        "supports_max_results": true,
+        "default_max_results": 10,
+        "max_results_limit": 10
+    })
+}
+fn parse_max_results(payload: &Value) -> Result<usize> {
+    match payload.get("max_results") {
+        None | Some(Value::Null) => Ok(10),
+        Some(value) => match value.as_u64() {
+            Some(count) if count >= 1 => Ok((count as usize).clamp(1, 10)),
+            _ => Err(Error::http(400, "搜索结果条数需为正整数").with_code("invalid_input")),
+        },
+    }
 }
 pub fn search(payload: &Value) -> Result<Value> {
     let started = sdk::now();
     let query = util::text(payload, &["query"]);
     if query.is_empty() || query.chars().count() > 4000 {
-        return Err(Error::http(400, "搜索词长度需为1至4000字符"));
+        return Err(Error::http(400, "搜索词长度需为1至4000字符").with_code("invalid_input"));
     }
     let timeout = payload["timeout_seconds"].as_u64().unwrap_or(30);
     if !(5..=600).contains(&timeout) {
-        return Err(Error::http(400, "搜索超时需为5至600秒"));
+        return Err(Error::http(400, "搜索超时需为5至600秒").with_code("invalid_input"));
     }
+    let max_results = parse_max_results(payload)?;
     let _ = session::ensure(false)?;
     let lock = AccountLock::acquire()?;
     let mut current = session::ensure_locked(&lock)?;
@@ -28,7 +46,7 @@ pub fn search(payload: &Value) -> Result<Value> {
         if remaining < 1000 {
             return Err(Error::http(504, "WorkBuddy搜索等待已超时"));
         }
-        let result = search_once(&current, &query, remaining as u64);
+        let result = search_once(&current, &query, max_results, remaining as u64);
         if sdk::now() >= until {
             return Err(Error::http(504, "WorkBuddy搜索等待已超时"));
         }
@@ -41,7 +59,7 @@ pub fn search(payload: &Value) -> Result<Value> {
     }
     Err(Error::http(401, "WorkBuddy搜索认证失败"))
 }
-fn search_once(current: &session::Session, query: &str, timeout_ms: u64) -> Result<Value> {
+fn search_once(current: &session::Session, query: &str, max_results: usize, timeout_ms: u64) -> Result<Value> {
     let mut headers = headers::chat(&current.secret)?;
     headers["Accept"] = json!("application/json");
     let reply = network::raw_timeout(
@@ -49,7 +67,7 @@ fn search_once(current: &session::Session, query: &str, timeout_ms: u64) -> Resu
         &current.endpoint()?,
         "/agenttool/v1/search",
         headers,
-        Some(&json!({ "query": query, "type": "text2text", "max_results": 5 })),
+        Some(&json!({ "query": query, "type": "text2text", "max_results": max_results })),
         timeout_ms,
     )?;
     if reply.code() == Some(15001) {
@@ -67,7 +85,7 @@ fn search_once(current: &session::Session, query: &str, timeout_ms: u64) -> Resu
     let rows = reply.value["results"]
         .as_array()
         .ok_or_else(|| Error::http(502, "搜索响应缺少结果列表"))?;
-    let sources: Vec<_> = rows.iter().take(50).filter_map(|row| {
+    let sources: Vec<_> = rows.iter().take(max_results).filter_map(|row| {
         let raw = row["url"].as_str()?; let url = url::Url::parse(raw).ok()?;
         if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() { return None; }
         let published = row["publishedDate"].as_str().map(str::to_string).or_else(|| row["publishedDate"].as_i64().and_then(chrono::DateTime::from_timestamp_millis).map(|v| v.to_rfc3339()));

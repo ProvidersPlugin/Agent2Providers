@@ -40,16 +40,17 @@ fn code(raw: &str) -> Result<u32> {
 fn success(payload: &Value) -> Result<()> {
     let code = util::integer(&payload["code"]);
     if code == Some(0) || payload.get("code").is_none() && payload["data"].is_object() { return Ok(()); }
-    let message = match code {
-        Some(400_001) => "请求参数有误，请检查手机号与验证码格式",
-        Some(630_202) => "验证码不正确，请检查后重试",
-        Some(630_101) => "获取验证码过于频繁，请稍后再试",
-        Some(410_000 | 400_000 | 401) => "登录态已失效，请重新发起",
-        Some(400_002) => "请求签名校验失败，请校准系统时间后重试",
-        Some(631_002 | 630_014) => "上游要求额外的官方风控验证，当前短信协议没有可用验证步骤；请在官方客户端登录后导入凭据",
-        _ => "AutoClaw 短信登录未完成，请稍后重试或改用凭据导入",
+    let code_text = code.map(|c| c.to_string()).unwrap_or_else(|| "未返回".into());
+    let base = match code {
+        Some(400_001) => format!("请求参数有误，请检查手机号与验证码格式（业务码 {code_text}）"),
+        Some(630_202) => format!("验证码不正确，请检查后重试（业务码 {code_text}）"),
+        Some(630_101) => format!("获取验证码过于频繁，请稍后再试（业务码 {code_text}）"),
+        Some(410_000 | 400_000 | 401) => format!("登录态已失效，请重新发起（业务码 {code_text}）"),
+        Some(400_002) => format!("请求签名校验失败，请校准系统时间后重试（业务码 {code_text}）"),
+        Some(631_002 | 630_014) => format!("上游要求额外的官方风控验证，当前短信协议没有可用验证步骤；请在官方客户端登录后导入凭据（业务码 {code_text}）"),
+        _ => format!("AutoClaw 短信登录未完成（业务码 {code_text}）"),
     };
-    let mut error = Error::http(if code == Some(630_101) { 429 } else { 400 }, message);
+    let mut error = Error::http(if code == Some(630_101) { 429 } else { 400 }, super::errors::append_detail(base, payload));
     error.upstream_code = code;
     Err(error)
 }

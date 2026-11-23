@@ -347,7 +347,7 @@ pub fn retry(params: &Value) -> Value {
         params["status"].as_u64().unwrap_or(502) as u16,
         &params["body"],
     );
-    if local(&policy) || policy.code.as_deref() == Some("antigravity_account_action") {
+    if local(&policy) {
         return json!({ "action": "stop", "reason": "本次请求缺少必要条件，不能自动重发" });
     }
     let advice = advice(params);

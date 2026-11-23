@@ -1,7 +1,7 @@
 {
   "id": "agent2api-wasm-modelscope",
   "name": "ModelScope 国内版",
-  "description": "独立的 ModelScope 国内版提供商，支持令牌导入、对话、账号模型目录、魔粒余额与流水、每日签到和异步图片生成及编辑。",
+  "description": "接入国内站，提供对话与异步生图改图，支持令牌导入、按账号查看模型和魔粒流水，并支持每日签到。",
   "version": "0.1.0-beta.3",
   "protocol": 1,
   "providers": [

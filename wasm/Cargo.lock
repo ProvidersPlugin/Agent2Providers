@@ -301,17 +301,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent2api-wasm-orcaterm"
-version = "0.1.0-beta.2"
-dependencies = [
- "agent2api-wasm-sdk",
- "base64",
- "chrono",
- "serde_json",
- "url",
-]
-
-[[package]]
 name = "agent2api-wasm-qoder"
 version = "0.1.0-beta.2"
 dependencies = [

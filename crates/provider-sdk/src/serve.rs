@@ -374,6 +374,8 @@ impl Serve {
                     admin_panels: meta.admin_panels,
                     account_features: meta.account_features,
                     checkin: meta.checkin,
+                    error_classifications: Vec::new(),
+                    error_rules: Vec::new(),
                 }
             })
             .collect();

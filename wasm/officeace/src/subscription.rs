@@ -104,6 +104,15 @@ fn row(
     value
 }
 
+/// 判断订阅响应中的 `bonus_skus` 是否可信：缺省或 null 在包含 `skus` 数组时视为空数组。
+pub fn valid_bonuses(snapshot: &Value, parsed_count: usize) -> bool {
+    match snapshot.get("bonus_skus") {
+        None | Some(Value::Null) => snapshot["skus"].is_array(),
+        Some(Value::Array(rows)) => rows.len() == parsed_count,
+        Some(_) => false,
+    }
+}
+
 pub fn summarize(snapshot: &Value) -> Value {
     let now = sdk::now();
     let mut plan_total = snapshot["skus"].is_array().then_some(0.0);
@@ -172,9 +181,7 @@ pub fn summarize(snapshot: &Value) -> Value {
         }
     }
     let bonuses = bonuses(snapshot);
-    let valid_bonuses = snapshot["bonus_skus"]
-        .as_array()
-        .is_some_and(|rows| rows.len() == bonuses.len());
+    let valid_bonuses = valid_bonuses(snapshot, bonuses.len());
     let mut bonus_total = valid_bonuses.then_some(0.0);
     let mut bonus_used = bonus_total;
     for bonus in bonuses {

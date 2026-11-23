@@ -5,7 +5,7 @@
     "http.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
     "locks.v1", "state.v1", "catalog.v1", "chat.stream.v1", "protocol.convert.v1", "errors.v1",
     "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1",
-    "images.v1", "resources.v1", "resources.fetch-public.v1", "credentials.legacy-import.v1"
+    "images.v1", "resources.v1", "resources.fetch-public.v1"
   ],
   "origins": ["https://www.workbuddy.ai"],
   "helpers": ["desktop.credentials.workbuddy-intl.v1"],

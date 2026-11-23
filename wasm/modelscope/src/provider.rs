@@ -33,7 +33,8 @@ pub use region::Region;
 use agent2api_wasm_sdk::{json, Error, Result, Value};
 
 fn metadata(region: Region) -> Value {
-    json!({
+    use agent2api_wasm_sdk::error_rules::{attach, class, rule};
+    let meta = json!({
         "id": region.provider_id(), "label": format!("ModelScope {}", region.label()),
         "order": region.order(),
         "capabilities": {
@@ -59,7 +60,16 @@ fn metadata(region: Region) -> Value {
         },
         "refusal_finishes": ["content_filter", "safety"], "refusal_markers": [],
         "default_models": []
-    })
+    });
+    attach(
+        meta,
+        vec![
+            class("auth", &[401, 403], &[]),
+        ],
+        vec![
+            rule("ms_quota", "魔粒额度用完或未验证邮箱", "魔粒额度耗尽或需邮箱验证时，按上游次日恢复时间冷却当前账号并切换其他账号。", "quota", &[], "", "switch_account", "upstream", 3600, true, 43200, "account"),
+        ],
+    )
 }
 
 pub fn handle(region: Region, method: &str, params: Value) -> Result<Value> {

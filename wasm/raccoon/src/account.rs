@@ -199,10 +199,6 @@ pub fn bundle(secret: Value, desktop: bool) -> Result<Value> {
 
 pub fn normalize(params: &Value) -> Result<Value> {
     let source = &params["source"];
-    if source["kind"] == "manual" && source["payload"]["methodIndex"] == 4 {
-        let legacy = sdk::legacy_credentials::take()?;
-        return normalized(&legacy, params["name"].as_str());
-    }
     if source["kind"] == "desktop" {
         return desktop::normalize(params["name"].as_str());
     }

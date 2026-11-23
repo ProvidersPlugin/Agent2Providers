@@ -37,8 +37,7 @@ pub fn methods(locale: &str) -> Value {
                 { "key": "credentialJson", "type": "text", "label": snapshot[2], "secret": true },
                 { "key": "name", "type": "text", "label": manual[5], "optional": true }
             ] },
-        desktop,
-        agent2api_wasm_sdk::legacy_credentials::method(4, locale)
+        desktop
     ] })
 }
 

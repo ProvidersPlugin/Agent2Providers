@@ -284,7 +284,6 @@ pub fn methods(locale: &str) -> Value {
         { "methodIndex": 2, "type": "api", "label": labels[2], "instructions": token_instructions(locale, true), "prompts": [
             { "key": "credentialJson", "label": labels[3], "type": "text", "secret": true }
         ] },
-        desktop,
-        sdk::legacy_credentials::method(4, locale)
+        desktop
     ] })
 }

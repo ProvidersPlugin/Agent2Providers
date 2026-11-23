@@ -17,6 +17,7 @@ const META: &[&str] = &[
     "email",
     "avatar",
     "deviceId",
+    "iid",
     "webId",
     "fingerprint",
     "clientVersion",
@@ -429,6 +430,7 @@ impl Credentials {
         let mut metadata = json!({});
         for (field, cookies) in [
             ("deviceId", &["device_id"][..]),
+            ("iid", &["iid"][..]),
             ("webId", &["web_id"][..]),
             ("fingerprint", &["s_v_web_id", "fp"][..]),
         ] {
@@ -441,6 +443,7 @@ impl Credentials {
         }
         for field in [
             "deviceId",
+            "iid",
             "webId",
             "fingerprint",
             "clientVersion",
@@ -490,7 +493,7 @@ impl Credentials {
             .filter(|value| !value.is_empty())
             .collect();
         protected.push(cookie_header.clone());
-        for field in ["deviceId", "webId", "fingerprint", "teaUuid", "webTabId"] {
+        for field in ["deviceId", "iid", "webId", "fingerprint", "teaUuid", "webTabId"] {
             if let Some(raw) = metadata[field].as_str().filter(|raw| !raw.is_empty()) {
                 protected.push(raw.into());
             }

@@ -42,7 +42,8 @@ pub const PROVIDER_ID: &str = "antigravity";
 sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    json!({ "id": PROVIDER_ID, "label": "Antigravity", "order": 29,
+    use sdk::error_rules::{attach, class, rule};
+    let meta = json!({ "id": PROVIDER_ID, "label": "Antigravity", "order": 29,
         "capabilities": { "chat": true, "stateful": false, "refresh": true,
             "model_refresh": true, "usage": true, "checkin": false, "claims": false,
             "web_login": true, "sse_model_rewrite": true, "sse_strip_newline_chunks": false,
@@ -54,7 +55,19 @@ fn metadata() -> Value {
         ],
         "account_features": { "usage": true, "identifier": ["userId"], "long_lived": true },
         "desktop_launch": desktop_launch::summary(),
-        "default_models": catalog_shape::fallback() })
+        "default_models": catalog_shape::fallback() });
+    attach(
+        meta,
+        vec![
+            class("quota", &[429], &["antigravity_quota"]),
+            class("auth", &[401], &["antigravity_credentials", "antigravity_eligibility", "antigravity_account_action"]),
+            class("transient", &[500, 503, 504], &["antigravity_transient"]),
+            class("content", &[], &["antigravity_content_blocked"]),
+        ],
+        vec![
+            rule("ag_account_action", "官方账号验证或受限（403）", "账号需要完成官方页面验证或订阅受限时，冷却该账号并切换其他账号。", "auth", &[403], "antigravity_account_action", "switch_account", "fixed", 1800, true, 7200, "account"),
+        ],
+    )
 }
 fn status(params: &Value) -> u16 {
     params["status"]

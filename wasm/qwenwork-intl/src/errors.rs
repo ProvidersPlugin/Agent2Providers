@@ -237,8 +237,16 @@ pub fn classify(status: u16, body: &Value) -> Value {
             "千问办公 上游请求未完成或返回了无效结果",
         )
     };
+    let reset_at = signals.reset_at.or_else(|| {
+        signals
+            .retry
+            .filter(|_| code == "qwenwork_model_busy" || code == "qwenwork_rate_limited")
+            .and_then(|seconds| seconds.checked_mul(1000))
+            .and_then(|millis| i64::try_from(millis).ok())
+            .and_then(|millis| util::now().ok()?.checked_add(millis))
+    });
     json!({ "kind": kind, "status": http, "code": code, "message": message, "upstream_code": upstream,
-        "reset_at": signals.reset_at, "retry_after_ms": signals.retry.map(|seconds| seconds.clamp(5, 30) * 1000) })
+        "reset_at": reset_at, "retry_after_ms": signals.retry.map(|seconds| seconds.clamp(5, 30) * 1000) })
 }
 pub fn queue_wait(body: &Value) -> u64 {
     let mut signals = Signals::default();

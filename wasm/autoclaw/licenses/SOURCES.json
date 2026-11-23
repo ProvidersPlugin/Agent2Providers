@@ -1,0 +1,28 @@
+{
+  "formatVersion": 1,
+  "assets": [
+    {
+      "file": "assets/logo.png",
+      "source": "Agent2API/desktop-tauri/ui/assets/providers/autoclaw.png",
+      "change": "Existing AutoClaw brand image copied unchanged; no new trademark license asserted."
+    },
+    {
+      "file": "src/prompt.rs",
+      "source": "Agent2Providers/crates/providers/src/providers/autoclaw/prompt.rs",
+      "references": [
+        {
+          "repository": "https://github.com/magpie-community/plugins",
+          "revision": "7ea611975a40675a6b8e70cb26bba2b4525304d0",
+          "path": "packages/autoclaw/index.mjs",
+          "license": "magpie-community-MIT.txt"
+        },
+        {
+          "repository": "https://github.com/openclaw/openclaw",
+          "purpose": "OpenClaw identity and Tooling prefix retained from the existing native adapter",
+          "licenseUrl": "https://raw.githubusercontent.com/openclaw/openclaw/main/LICENSE",
+          "license": "OpenClaw-MIT.txt"
+        }
+      ]
+    }
+  ]
+}

@@ -34,6 +34,7 @@
  */
 
 import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto'
+import { inflateRawSync } from 'node:zlib'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -126,26 +127,25 @@ function writeZip(entries) {
   return Buffer.concat([...locals, ...centrals, end])
 }
 
-/**
- * 读 zip（只支持 store 模式 —— 我们自己的打包脚本产出的就是这种）。
- *
- * 不支持 deflate 是刻意的：签名要读**内容**，而一个用别家工具打的 deflate 包
- * 需要解压库。真遇到那种包时，正确做法是用 `scripts/pack.mjs` 重新打一次。
- */
+/** 读取本仓打包器的 store / deflate 条目；不接受分卷或数据描述符。 */
 function readZip(buffer) {
   const entries = []
   let offset = 0
   while (offset + 30 <= buffer.length && buffer.readUInt32LE(offset) === 0x04034b50) {
     const method = buffer.readUInt16LE(offset + 8)
-    if (method !== 0) {
-      throw new Error(`zip 条目使用了压缩（method=${method}），请用 scripts/pack.mjs 重新打包`)
+    if (![0, 8].includes(method) || (buffer.readUInt16LE(offset + 6) & 9)) {
+      throw new Error(`zip 条目格式不支持（method=${method}），请使用仓库打包脚本`)
     }
     const size = buffer.readUInt32LE(offset + 18)
     const nameLength = buffer.readUInt16LE(offset + 26)
     const extraLength = buffer.readUInt16LE(offset + 28)
     const name = buffer.toString('utf8', offset + 30, offset + 30 + nameLength)
     const dataStart = offset + 30 + nameLength + extraLength
-    entries.push({ name, data: buffer.subarray(dataStart, dataStart + size) })
+    if (dataStart + size > buffer.length || entries.some(entry => entry.name === name)) throw new Error('zip 内容不完整或条目重名')
+    const packed = buffer.subarray(dataStart, dataStart + size)
+    const data = method === 8 ? inflateRawSync(packed, { maxOutputLength: 128 * 1024 * 1024 }) : packed
+    if (data.length !== buffer.readUInt32LE(offset + 22) || crc32(data) !== buffer.readUInt32LE(offset + 14)) throw new Error('zip 内容校验失败')
+    entries.push({ name, data })
     offset = dataStart + size
   }
   if (!entries.length) throw new Error('读不到任何 zip 条目（不是 store 模式的包？）')
@@ -289,7 +289,12 @@ function sign(argv) {
   }
   const binarySha256 = createHash('sha256').update(binaryEntry.data).digest('hex')
   const uiFiles = collectUiFiles(entries)
-  const payload = signingPayload(manifest, target, binarySha256, uiFiles)
+  let payload = signingPayload(manifest, target, binarySha256, uiFiles)
+  for (const [name, label] of [['wasm.json', 'wasm'], ['host.json', 'host']]) {
+    const extra = entries.find(entry => entry.name === name)
+    if (name === 'wasm.json' && target === 'wasm32-unknown-unknown' && !extra) throw new Error('Wasm 包缺少权限清单')
+    if (extra) payload += `${label}=${createHash('sha256').update(extra.data).digest('hex')}\n`
+  }
   const signature = cryptoSign(null, Buffer.from(payload, 'utf8'), privateKeyPem)
 
   // 把签名写回 pack.json（其余条目原样保留）

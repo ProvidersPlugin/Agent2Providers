@@ -40,7 +40,7 @@ use md5::{Digest as _, Md5};
 use serde_json::Value;
 
 use crate::errors::GatewayError;
-use crate::http::{control_client, describe_chain};
+use crate::http::{control_client, describe_chain, AccountRequest};
 
 /// 换发端点（passport 的 v3 登录 API）
 const PASSPORT_AUTH_URL: &str = "https://passport.baidu.com/v3/login/api/auth";
@@ -101,6 +101,7 @@ pub async fn exchange_genflowpro_stoken(
         .header("User-Agent", ENGINE_UA)
         .body(body)
         .timeout(std::time::Duration::from_secs(20))
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {

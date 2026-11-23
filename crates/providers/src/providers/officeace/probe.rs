@@ -165,8 +165,11 @@ pub fn maybe_spawn(ctx: &PluginCtx, credential: &OfficeAceCredential, models: &[
     let app_secret = credential.model_app_secret.clone();
     // 探测是后台动作（慢模型各要 10~14 秒）：不能阻塞目录刷新的返回。
     // 网关那份走 `spawn_task`（能随进程一起收），插件用 `tokio::spawn`。
+    let route = agent2api_provider_sdk::egress::capture();
     tokio::spawn(async move {
-        let result = run_probe(&base_url, &app_key, &app_secret, &ids).await;
+        let result = agent2api_provider_sdk::egress::scope(
+            route, run_probe(&base_url, &app_key, &app_secret, &ids),
+        ).await;
         let (hidden, undeployed) = with_state(|slot| {
             let Some(state) = slot.as_mut() else { return (Vec::new(), Vec::new()) };
             state.hidden.retain(|id| is_hidden(&result.unknown, id));

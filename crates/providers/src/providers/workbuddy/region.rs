@@ -152,37 +152,10 @@ impl Region {
     }
 
     /// 本地区默认登录态的 access token（脚本 / CI 用户的旁路入口，见
-    /// `ProviderAdapter::allows_anonymous_default_session`）。
-    ///
-    /// ── 变量名为什么要分开 ──────────────────────────────────────
-    /// 一个 token 只属于一个站点：拿国内版的 token 去打国际版端点必然 401。
-    /// 拆家前 `WORKBUDDY_TOKEN` 是「本进程唯一上游」的凭证，端点由
-    /// `WORKBUDDY_EDITION` 决定；现在两个地区同时存在，共用一个变量名会让
-    /// 「只想给国际版配 token」变成「两地一起改」（与 ZCode 的 `env_prefix`
-    /// 同一条理由）。
-    ///
-    /// ── 旧组合仍然可用（有意保留）───────────────────────────────
-    /// `WORKBUDDY_EDITION=intl` + `WORKBUDDY_TOKEN` 是拆家前把整个进程指向
-    /// 国际版的既有用法（headless / CI）。国际版因此还接受这一对旧变量 ——
-    /// 只在**版本明确是 intl** 时生效，不构成「国内版的 token 被国际版误用」
-    /// （那会让一个只配了国内版的机器把请求打到国际站）。
-    pub fn env_token(self) -> Option<String> {
-        match self {
-            Self::Cn => env_text("WORKBUDDY_TOKEN"),
-            Self::Intl => env_text("WORKBUDDY_INTL_TOKEN").or_else(|| {
-                if env_edition_is_intl() {
-                    env_text("WORKBUDDY_TOKEN")
-                } else {
-                    None
-                }
-            }),
-        }
-    }
-
     /// 本地区的端点覆盖（staging、自建网关等场景）。
     ///
     /// 国际版同样保留一对旧变量（`WORKBUDDY_ENDPOINT` + `WORKBUDDY_EDITION=intl`）
-    /// 的兼容读，理由与 [`Self::env_token`] 相同。
+    /// 的兼容读。
     pub fn env_endpoint_override(self) -> Option<String> {
         match self {
             Self::Cn => env_text("WORKBUDDY_ENDPOINT"),

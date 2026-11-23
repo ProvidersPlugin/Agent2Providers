@@ -76,23 +76,66 @@ fn bucket(limit: &Value) -> (Option<f64>, Option<f64>, Option<f64>) {
     )
 }
 
+fn window_view(
+    remaining: Option<f64>,
+    total: Option<f64>,
+    percent: Option<f64>,
+    unlimited: bool,
+) -> String {
+    if unlimited {
+        return "不限".into();
+    }
+    if let Some(remaining) = remaining {
+        return total
+            .map(|total| format!("剩余 {remaining} / {total} 额度"))
+            .unwrap_or_else(|| format!("剩余 {remaining} 额度"));
+    }
+    percent
+        .map(|percent| format!("剩余 {percent:.0}%"))
+        .unwrap_or_else(|| "—".into())
+}
+
+const SUMMARY_PATH: &str = "/alice/commerce/sale/subscription/quota/summary/";
+const OVERVIEW_PATH: &str = "/alice/commerce/sale/subscription/overview/";
+
+fn quota_data(value: &Value) -> Result<&Value, GatewayError> {
+    let data = value.get("data").unwrap_or(value);
+    if !data.is_object()
+        || ![
+            "member_info",
+            "window_limit_section",
+            "enterprise_window_limit_section",
+            "quota_package_section",
+            "incentive_quota_section",
+        ]
+        .iter()
+        .any(|key| data.get(*key).is_some())
+    {
+        return Err(GatewayError::with_status(
+            502,
+            "豆包工作未返回可识别的额度汇总，不能据此判断余额为零，请稍后重新查询",
+        ));
+    }
+    Ok(data)
+}
+
 pub async fn query(ctx: &PluginCtx, account: &str) -> Result<Value, GatewayError> {
     let (_, credentials, client) = api::account(ctx, account, false).await?;
-    let overview = api::post(
-        &client,
-        &credentials,
-        "/alice/commerce/sale/subscription/overview/",
-        &json!({"product_line":"membership"}),
-    )
-    .await?;
-    let entry = api::post(
-        &client,
-        &credentials,
-        "/alice/commerce/sale/subscription/entry/config/",
-        &json!({}),
-    )
-    .await;
-    let data = overview.get("data").unwrap_or(&overview);
+    let body = json!({"product_line":"membership"});
+    // 新版客户端从 quota/summary 读取窗口；overview 只用于订阅信息和旧接口兼容。
+    let (summary, overview) = match api::post(&client, &credentials, SUMMARY_PATH, &body).await {
+        Ok(value) => {
+            quota_data(&value)?;
+            let overview = api::post(&client, &credentials, OVERVIEW_PATH, &body).await;
+            (value, overview)
+        }
+        Err(error) if matches!(error.status_code, 404 | 405) => {
+            let value = api::post(&client, &credentials, OVERVIEW_PATH, &body).await?;
+            (value.clone(), Ok(value))
+        }
+        Err(error) => return Err(error),
+    };
+    let data = quota_data(&summary)?;
     let personal = &data["window_limit_section"];
     let enterprise = &data["enterprise_window_limit_section"];
     let has_personal = data["member_info"]["hasActiveSubscription"] == true;
@@ -132,19 +175,10 @@ pub async fn query(ctx: &PluginCtx, account: &str) -> Result<Value, GatewayError
             stamp(&limit["end_time"])
         };
         let (remain, total, used) = bucket(limit);
-        let view = if unlimited {
-            "不限".to_string()
-        } else if let Some(remain) = remain {
-            total
-                .map(|total| format!("剩 {remain:.2} / {total:.2}"))
-                .unwrap_or_else(|| format!("剩 {remain:.2}"))
-        } else {
-            percent
-                .map(|percent| format!("剩余 {percent:.0}%"))
-                .unwrap_or_else(|| "—".into())
-        };
         windows.push(json!({"key":key,"label":format!("{group_name} {label}").trim(),"group":group_name,"window":code,
-            "remainingPercent":if unlimited {None} else {percent},"view":view,"resetsAt":reset,"unlimited":unlimited}));
+            "remainingPercent":if unlimited {None} else {percent},"remaining":if unlimited {None} else {remain},
+            "limit":if unlimited {None} else {total},"unit":"额度","view":window_view(remain,total,percent,unlimited),
+            "resetsAt":reset,"unlimited":unlimited}));
         let mut source = crate::quota::source(
             PROVIDER_ID,
             &key,
@@ -173,14 +207,10 @@ pub async fn query(ctx: &PluginCtx, account: &str) -> Result<Value, GatewayError
         bonus_remaining = remain;
         let expiry = stamp(&bonus["end_time"]);
         let percent = remaining_percent(bonus);
-        let view = remain
-            .map(|remain| format!("剩 {remain:.2} 额度"))
-            .unwrap_or_else(|| {
-                percent
-                    .map(|percent| format!("剩余 {percent:.0}%"))
-                    .unwrap_or_else(|| "—".into())
-            });
-        windows.push(json!({"key":"bonus","label":"奖励额度","group":"奖励额度","view":view,"remainingPercent":percent}));
+        windows.push(
+            json!({"key":"bonus","label":"奖励额度","group":"奖励额度","remainingPercent":percent,
+            "remaining":remain,"limit":total,"unit":"额度","view":window_view(remain,total,percent,false),"expiresAt":expiry}),
+        );
         credits.push(json!({"id":"bonus","name":"奖励额度","remain":remain,"total":total,"used":used,"unit":"额度","expireAt":expiry}));
         let mut source = crate::quota::source(
             PROVIDER_ID,
@@ -195,19 +225,20 @@ pub async fn query(ctx: &PluginCtx, account: &str) -> Result<Value, GatewayError
         source["remainingPercent"] = json!(percent);
         sources.push(source);
     }
-    let plan_name = entry
+    let plan_name = overview
         .as_ref()
         .ok()
         .and_then(plan)
-        .or_else(|| plan(&overview));
-    let view = if !windows.is_empty() {
-        "分窗口额度"
-    } else {
-        "暂无可用额度"
-    };
-    let mut report = json!({"provider":PROVIDER_ID,"unit":"额度","availableView":view,"windows":windows,"credits":credits,"quotaSources":sources,
+        .or_else(|| plan(&summary));
+    let empty = windows.is_empty();
+    let mut report = json!({"provider":PROVIDER_ID,"unit":"额度","windows":windows,"credits":credits,"quotaSources":sources,
         "subscription":{"planName":plan_name},"bonusLeft":bonus_remaining});
-    if let Err(error) = entry {
+    if empty {
+        report["empty"] = json!(true);
+    } else {
+        report["availableView"] = json!("分窗口额度");
+    }
+    if let Err(error) = overview {
         report["warnings"] = json!([error.message]);
     }
     Ok(report)

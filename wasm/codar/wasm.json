@@ -1,0 +1,16 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1",
+    "clock.v1", "random.v1", "locks.v1", "state.v1", "catalog.v1", "catalog.accounts.v1",
+    "chat.stream.v1", "request.context.v1", "protocol.convert.v1",
+    "login.forms.v1", "login.interaction.v1", "login.captcha.alicom4.v1",
+    "native.helpers.v1", "desktop.credentials.v1", "checkin.rolling.v1", "errors.v1",
+    "resources.v1", "resources.fetch-public.v1", "images.v1", "tasks.v1"
+  ],
+  "origins": ["https://api.claw.speedai.com", "https://api.kuaipaper.com"],
+  "helpers": ["desktop.credentials.codar.v1"],
+  "memory_mib": 128,
+  "concurrency": 8
+}

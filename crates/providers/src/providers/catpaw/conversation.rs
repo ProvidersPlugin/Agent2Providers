@@ -81,6 +81,8 @@ use super::{DEFAULT_BASE_URL, DEFAULT_MODE, DEFAULT_SOURCE, DEFAULT_TOOL_VERSION
 /// 上游 `permissionMode` 的固定取值（原实现写死在 round/turn 请求体里）
 const PERMISSION_MODE: &str = "unsafeBypassPermissions";
 
+pub(super) const INVALID_REQUEST_CODE: &str = "catpaw_invalid_request";
+
 /// 进程级会话注册表。
 ///
 /// ── 为什么是全局单例而不是适配器字段 ─────────────────────────
@@ -203,7 +205,9 @@ pub async fn run_conversation(
             "CatPaw 没有可用的登录凭证：请在账号页添加账号，或配置环境变量",
         ));
     }
-    let prepared = prepare(&request).await.map_err(|error| error.to_gateway())?;
+    let prepared = prepare(&request)
+        .await
+        .map_err(|error| error.to_gateway().with_code(INVALID_REQUEST_CODE))?;
     execute(request, prepared, sink).await
 }
 
@@ -254,7 +258,7 @@ async fn execute(
             if inflight {
                 registry().release_inflight(&request.session_id);
             }
-            return Err(error.to_gateway());
+            return Err(error.to_gateway().with_code(INVALID_REQUEST_CODE));
         }
     };
     // turnRequestId 在 round 之前就定好：它属于本轮，round 之后才有 turn，

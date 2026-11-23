@@ -1,0 +1,34 @@
+{
+  "formatVersion": 1,
+  "provider": "qoder",
+  "modifiedAt": "2026-11-10",
+  "sources": [
+    {
+      "source": "Agent2Providers/crates/providers/src/providers/qoder",
+      "scope": "Site::QoderCn only: accounts, auth, device PKCE, refresh, COSY/body codec, models, context, messages, SSE, usage and campaigns",
+      "license": "Agent2Providers-AGPL-3.0.txt",
+      "changes": "Ported into an isolated wasm32-unknown-unknown provider. Files, environment access, native thread state and direct networking replaced with controlled host services. COSY AES/RSA operations use maintained RustCrypto crates and host-seeded ChaCha20. Other three site identities and UMID/runtime-info are not included.",
+      "historicalAttribution": "Native module comments name Qoder-Proxy/src/{cosy,encoding,protocol,models,upstream,chat}.mjs. Those comments do not identify an exact repository revision; no matching revision is fabricated here."
+    },
+    {
+      "repository": "https://github.com/magpie-community/plugins",
+      "revision": "0ea458b4a5319f025e0828f2600da57941e28867",
+      "path": "packages/qoder",
+      "sourceRecord": "Agent2Providers/licenses/legacy-bun-reference/vendor/qoder/SOURCE.json",
+      "purpose": "Preserve the existing repository's documented Qoder protocol attribution chain",
+      "licenses": ["magpie-community-MIT.txt", "CLIProxyAPI-MIT.txt"],
+      "limitation": "The original CLIProxyAPI import revision is not recorded by the existing source."
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/logo.png",
+      "source": "Agent2API/desktop-tauri/ui/assets/providers/qoder.png",
+      "change": "Copied unchanged from the existing provider asset; no new trademark license asserted."
+    }
+  ],
+  "dependencies": {
+    "source": "Cargo.toml",
+    "note": "Crypto implementations are linked crates rather than copied source; no custom encryption primitive or operating-system random source is added. Dependency notices remain subject to the package collector."
+  }
+}

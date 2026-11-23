@@ -53,13 +53,9 @@
 //!   5. **schema 清洗**（坑 #13）：见 `antigravity_schema.rs`（`type` 转小写、
 //!      去掉上游不认的 JSON Schema 键、展开 `anyOf/oneOf/allOf`、空对象补
 //!      `reason` 占位）；
-//!   6. **`thinkingBudget`**：显式档位（客户端或映射绑定写进 body 的
-//!      `reasoning_effort`）→ Manager 的档位规范值（1000/4000/10000）；
-//!      否则目录条目的 `thinkingBudget`；再否则目录认它支持思考时给
-//!      [`DEFAULT_THINKING_BUDGET`]。**`maxOutputTokens > thinkingBudget` 必须
-//!      成立**（坑 #10）：不够就抬到 `budget + 8192`（Manager 同款），
-//!      上限 [`MAX_OUTPUT_TOKENS`]（9router 的 64000，Manager 的逐模型上限
-//!      本仓拿不到 —— 见报告）；
+//!   6. **思考参数**：Argon 使用 `thinkingLevel`；其他模型的显式档位
+//!      （客户端或映射绑定的 `reasoning_effort`）转为数字预算，否则采用目录预算。
+//!      数字预算模式要求 `maxOutputTokens > thinkingBudget`；Argon 不套用该约束。
 //!   7. **`requestType` 默认不发**（规格 §8.1 的已定决策：两参考矛盾，
 //!      发了有「假 429」风险）；只有图片生成模型带 `"image_gen"`，
 //!      并照 Manager 去掉 `tools`/`systemInstruction`（图片生成不支持）；
@@ -699,6 +695,15 @@ fn generation_config(chat: &Value, model: &str, image_gen: bool) -> Value {
     let client_max = ["max_tokens", "max_completion_tokens"]
         .iter()
         .find_map(|key| chat.get(*key).and_then(Value::as_i64).filter(|value| *value > 0));
+    if super::argon::is_model(model) {
+        if let Some(thinking) = super::argon::thinking_config(chat, model) {
+            config.insert("thinkingConfig".to_string(), thinking);
+        }
+        if let Some(max) = client_max {
+            config.insert("maxOutputTokens".to_string(), json!(max.min(65_536)));
+        }
+        return Value::Object(config);
+    }
     match thinking_budget(chat, model) {
         Some(budget) => {
             let mut max = client_max;

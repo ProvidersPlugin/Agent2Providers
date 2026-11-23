@@ -48,7 +48,11 @@ pub async fn credential_of(
 ) -> Result<OfficeAceCredential, GatewayError> {
     let (secret, credential) = read(ctx, account_id).await?;
     if credential.control_plane_expiring() && can_refresh(&secret) {
-        refresh(ctx, &credential.id, Some(&credential)).await
+        match refresh(ctx, &credential.id, Some(&credential)).await {
+            Ok(renewed) => Ok(renewed),
+            Err(_) if credential.expires_at > crate::logging::now_ms() => Ok(credential),
+            Err(error) => Err(error),
+        }
     } else {
         Ok(credential)
     }
@@ -97,7 +101,12 @@ pub async fn refresh(
         ))?;
     let (renewed, expires_at, _user_name, next_refresh) = oauth::refresh(dpop, &refresh_token)
         .await
-        .map_err(|reason| GatewayError::with_status(401, format!("OfficeAce 续期失败：{reason}")))?;
+        .map_err(|reason| {
+            let hint = if reason.contains("refresh token has been used") {
+                "；这份登录授权的刷新令牌已被使用，请重新网页登录获取独立授权，不要继续复用旧导入凭证"
+            } else { "" };
+            GatewayError::with_status(401, format!("OfficeAce 续期失败：{reason}{hint}"))
+        })?;
     let project_id = if renewed.project_id.is_empty() {
         current.project_id.clone()
     } else {
@@ -133,13 +142,85 @@ pub async fn refresh(
     ))
 }
 
+pub async fn subscription_of(
+    ctx: &PluginCtx,
+    credential: &mut OfficeAceCredential,
+) -> Result<Value, GatewayError> {
+    let project_id = credential.project_id.clone();
+    match subscription::fetch_subscription(credential).await {
+        Err(error) if error.code.as_deref() == Some(subscription::CONTROL_TOKEN_EXPIRED) => {
+            *credential = refresh(ctx, &credential.id, Some(credential)).await?;
+            if credential.project_id.is_empty() { credential.project_id = project_id; }
+            subscription::fetch_subscription(credential).await
+        }
+        result => result,
+    }
+}
+
+pub async fn cloud_call(
+    ctx: &PluginCtx,
+    credential: &mut OfficeAceCredential,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, GatewayError> {
+    let url = format!("{}{path}", oauth::CLOUD_BASE);
+    let project_id = credential.project_id.clone();
+    let request = super::upstream::call(
+        credential, method, &url, super::signer::Algorithm::Sdk, body.clone(), &[],
+    ).await;
+    match request {
+        Err(error) if error.code.as_deref() == Some(subscription::CONTROL_TOKEN_EXPIRED) => {
+            *credential = refresh(ctx, &credential.id, Some(credential)).await?;
+            if credential.project_id.is_empty() { credential.project_id = project_id; }
+            super::upstream::call(
+                credential, method, &url, super::signer::Algorithm::Sdk, body, &[],
+            ).await
+        }
+        result => result,
+    }
+}
+
+pub async fn resolve_project(
+    ctx: &PluginCtx,
+    credential: &mut OfficeAceCredential,
+) -> Result<(), GatewayError> {
+    if !credential.project_id.is_empty() { return Ok(()); }
+    let fetch = |credential: OfficeAceCredential| async move {
+        super::upstream::call(
+            &credential, "GET", "https://iam.myhuaweicloud.com/v3/projects",
+            super::signer::Algorithm::Sdk, None, &[],
+        ).await
+    };
+    let result = match fetch(credential.clone()).await {
+        Err(error) if error.code.as_deref() == Some(subscription::CONTROL_TOKEN_EXPIRED) => {
+            *credential = refresh(ctx, &credential.id, Some(credential)).await?;
+            fetch(credential.clone()).await?
+        }
+        result => result?,
+    };
+    let project = result.get("projects").and_then(Value::as_array)
+        .and_then(|projects| projects.iter().find(|project| {
+            project.get("name").and_then(Value::as_str) == Some(oauth::REGION)
+                && project.get("enabled").and_then(Value::as_bool) != Some(false)
+        }))
+        .and_then(|project| project.get("id")).and_then(Value::as_str)
+        .filter(|id| !id.is_empty()).ok_or_else(|| GatewayError::with_status(
+            409, "果办所在区域尚未初始化，请先在官方客户端完成首次登录；这里不会创建云资源",
+        ))?;
+    credential.project_id = project.to_string();
+    Ok(())
+}
+
 pub async fn claim_bonus(
     ctx: &PluginCtx,
     credential: &mut OfficeAceCredential,
 ) -> Result<Value, GatewayError> {
+    let project_id = credential.project_id.clone();
     match subscription::claim_bonus(credential).await {
         Err(error) if error.code.as_deref() == Some(subscription::CONTROL_TOKEN_EXPIRED) => {
             *credential = refresh(ctx, &credential.id, Some(credential)).await?;
+            if credential.project_id.is_empty() { credential.project_id = project_id; }
             subscription::claim_bonus(credential).await
         }
         result => result,

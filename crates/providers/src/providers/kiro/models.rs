@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use agent2api_provider_sdk::PluginCtx;
+use crate::http::AccountRequest;
 use serde_json::{json, Value};
 
 use super::credentials::Credentials;
@@ -276,7 +277,7 @@ async fn management_models(
         request = request.header("tokentype", kind);
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("拉取 Kiro 模型目录失败：{}", crate::http::describe(&error)))?;
     let status = response.status().as_u16();
@@ -313,7 +314,7 @@ async fn key_models(
             .header("tokentype", "API_KEY")
             .timeout(std::time::Duration::from_millis(20_000))
             .json(&body)
-            .send()
+            .with_account_user_agent().send()
             .await
             .map_err(|error| {
                 format!("拉取 Kiro 模型目录失败：{}", crate::http::describe(&error))

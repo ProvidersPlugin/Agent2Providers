@@ -1,0 +1,20 @@
+{
+  "id": "agent2api-wasm-modelscope-intl",
+  "name": "ModelScope 国际版",
+  "description": "接入国际站独立账号，提供对话与异步生图改图，支持令牌导入、查看模型和魔粒流水，并支持每日签到。",
+  "version": "0.1.0-beta.4",
+  "protocol": 1,
+  "providers": [
+    {
+      "id": "modelscope-intl",
+      "label": "ModelScope 国际版",
+      "order": 3,
+      "default_enabled": true
+    }
+  ],
+  "entry": {
+    "wasm32-unknown-unknown": "modelscope-intl.wasm"
+  },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

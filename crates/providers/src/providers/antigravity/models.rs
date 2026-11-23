@@ -4,7 +4,7 @@
 //! ```text
 //! POST {base}/v1internal:fetchAvailableModels
 //! body   {"project": "<pid>"}（没有 pid 时 `{}`；上游忽略这个字段）
-//! header Authorization: Bearer <token>、User-Agent: vscode/1.X.X (Antigravity/{ver})
+//! header Authorization: Bearer <token>、User-Agent: antigravity/cli/{ver} {os}/{arch}
 //! resp   {"models": { "<model_id>": { quotaInfo: {remainingFraction, resetTime},
 //!                                      displayName, supportsImages, supportsThinking,
 //!                                      thinkingBudget, recommended, maxTokens,
@@ -20,10 +20,8 @@
 //!   - `gemini-*`、`claude-*`、`gpt-oss-*` 三种前缀的条目进广告清单与缓存；
 //!   - 其余的一律不收 —— 「前缀白名单」而不是「黑名单排除已知的」，上游将来
 //!     再下发别的家族（veo 之类）时默认仍是「不接」，而不是误广告一个没实现的通道。
-//! 上游对**所有账号**（免费号与 Pro 号）下发的是同一份全量目录（Manager
-//! `models/quota.rs` 的注释：两档拿到的 33 个模型完全相同），所以「账号里没有
-//! Claude」不是档位问题，而是本仓此前自己把它过滤掉了 —— 放开后能否真正调用
-//! 由上游按订阅档判定，不归本仓预判。
+//! 模型目录不是账号权限清单；上游还会按客户端类型决定是否披露 Argon。
+//! 普通目录未列出 Argon 时，只用同一账号的专属额度组补充，不从套餐名称猜权限。
 //!
 //! Claude 的两条额外要求（规格 §5.3 与坑清单，都在别处落地）：
 //!   1. 请求要带 `anthropic-beta` 头（见 `endpoints::content_headers` 的
@@ -57,9 +55,8 @@
 //! `x-goog-user-project` 时按规格坑 #3 去掉该头再试一次。
 //!
 //! ── 缓存 ────────────────────────────────────────────────────
-//! **只有内存**（迁移时去掉了网关那份 `catalog_cache` 落盘：插件侧没有落盘表，
-//! 而落盘缓存的价值是「重启后首屏就有清单」—— 插件重启的代价是首轮真打一次
-//! 上游，可接受）。本家**没有地区之分**（规格 §6），因此单格。
+//! **只有内存**：插件重启后首轮重新请求上游。模型集合按最近一次目录来源
+//! 对外提供，但 TTL 只复用同一账号的结果，不能让另一个账号沿用其权限证据。
 //! 自动路径 10 分钟 TTL；用户手动「刷新模型清单」时 `force = true` 绕过。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
@@ -71,6 +68,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
 use super::endpoints;
@@ -150,6 +148,9 @@ pub fn upstream_model_id(id: &str) -> String {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return String::new();
+    }
+    if let Some(model) = super::argon::resolve_model(trimmed, None) {
+        return model.to_string();
     }
     let lowered = trimmed.to_ascii_lowercase();
     for (alias, target) in UPSTREAM_ALIASES {
@@ -278,8 +279,9 @@ const FALLBACK_MODELS: [(&str, &str); 29] = [
     ("gpt-oss-120b-medium", "GPT-OSS 120B Medium"),
 ];
 
-/// 进程内缓存（首次访问时从落盘缓存读回）
+/// 当前目录来源与内存快照。
 struct CatalogState {
+    account: String,
     models: Vec<Value>,
     fetched_at: i64,
     /// 这份清单是不是**远程拉到**的（落盘缓存装回来的也算 —— 它当初就是远程的）
@@ -337,7 +339,8 @@ fn fallback_thinking_supported(id: &str) -> bool {
     if lowered.starts_with("claude-") || lowered.starts_with("gpt-oss-") {
         return true;
     }
-    lowered.starts_with("gemini-3") || lowered.contains("pro-agent") || lowered.contains("thinking")
+    lowered.starts_with("gemini-3") || super::argon::is_model(id)
+        || lowered.contains("pro-agent") || lowered.contains("thinking")
 }
 
 /// 兜底清单里的「是否推荐为默认」：规格 §5.2 把 `gemini-3-flash` 标为推荐入口
@@ -376,7 +379,7 @@ pub fn fallback_thinking_budget(id: &str) -> Option<i64> {
 /// 另有三个**非聚合层**的键（聚合层原样忽略未知键）：`quota`（规格 §5 的
 /// `remainingFraction` / `resetTime`）、`supportsThinking`、`thinkingBudget` ——
 /// 留给下一步做思考档映射与界面配额显示。
-fn map_entry(id: &str, info: &Value) -> Option<Value> {
+pub(super) fn map_entry(id: &str, info: &Value) -> Option<Value> {
     if !is_offered_model(id) {
         return None;
     }
@@ -478,12 +481,8 @@ fn is_internal_entry(info: &Value) -> bool {
 /// 官方 Antigravity 文档的模型选择器只列 9 条（Gemini 3.8 / 3.7 / 3.6 Flash、
 /// Gemini 3.1 Pro、Claude Sonnet 5.5 / Opus 5.5 / Sonnet 4.6 / Opus 4.6、
 /// GPT-OSS-120b；<https://antigravity.google/docs/models>）。而
-/// `fetchAvailableModels` 下发的是**全量静态目录** —— Manager 实测免费号与
-/// Pro 号都拿到**同样的 33 个**模型（`Acankao/Antigravity-Manager/
-/// src-tauri/src/models/quota.rs:203`），9router / 10router 的「重要模型清单」
-/// 同样不含 2.5 / 2.0 系列（`open-sse/services/usage/google.js:171-186`）。
-/// 2.5 那一支在本家是**后台任务**的降级模型（Manager 的标题生成 / 摘要用它），
-/// 不是给用户选的。
+/// `fetchAvailableModels` 的模型字典可能大于官方选择器的可用集合，且受客户端
+/// 类型与账号权限影响。2.5 / 2.0 系列用于后台任务，不在官方选择器展示。
 ///
 /// 因此：`gemini-2.x` 与 `gemini-2.0-flash-exp` 一律 `hidden`；其余
 /// `gemini-3*` / `claude-*` / `gpt-oss-*` 都是 `shown`。**只按世代判**，
@@ -550,7 +549,7 @@ fn fallback_models() -> Vec<Value> {
         .collect()
 }
 
-/// 当前模型清单（内存 → 落盘缓存 → 内置兜底；永远非空）
+/// 当前模型清单（内存 → 内置兜底；永远非空）
 pub fn list() -> Vec<Value> {
     with_state(|slot| {
         slot.as_ref()
@@ -593,14 +592,19 @@ async fn fetch_once(
     } else {
         json!({ "project": project_id.trim() })
     };
-    let response = match send_json(&url, access_token, project_id, &body, proxy).await {
+    let response = match send_json(
+        &url,
+        endpoints::catalog_headers(access_token, project_id),
+        &body,
+        proxy,
+    ).await {
         Ok(response) => response,
         Err(reason) => return Attempt::Retry(reason),
     };
     if response.status == 403 && !project_id.trim().is_empty() {
         // 规格坑 #3：403 + 带了 `x-goog-user-project` → 去掉该头重试一次
         // （content 类请求本就不带它；这是非 content 方法上的降级路径）
-        match send_json(&url, access_token, "", &body, proxy).await {
+        match send_json(&url, endpoints::catalog_headers(access_token, ""), &body, proxy).await {
             Ok(retried) if (200..300).contains(&retried.status) => {
                 return parse_payload(&retried.payload)
             }
@@ -639,21 +643,14 @@ pub(super) struct HttpOutcome {
     pub(super) payload: Value,
 }
 
-/// 发一次 JSON POST（头集合与超时统一在这里）。
-///
-/// `pub(super)`：`balance.rs` 的额度摘要直接复用它 —— 同一台主机、同一组头、
-/// 同一超时，两处各写一份必然分叉（该文件不再自建请求口径）。
+/// 目录与额度共用传输、超时和出口；客户端身份由调用方按接口提供。
 pub(super) async fn send_json(
     url: &str,
-    access_token: &str,
-    project_id: &str,
+    headers: Vec<(String, String)>,
     body: &Value,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<HttpOutcome, String> {
-    // 本家统一的出口口径：账号显式配了代理就用它，否则跟随系统代理
-    // （理由见 `super::client_for` 的文档）
     let client = super::client_for(proxy);
-    let headers = endpoints::admin_headers(access_token, project_id);
     let mut builder = client
         .post(url)
         .header("Accept", "application/json")
@@ -663,6 +660,7 @@ pub(super) async fn send_json(
     }
     let response = builder
         .body(body.to_string())
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| egress::describe_chain(&error))?;
@@ -697,7 +695,7 @@ fn upstream_message(payload: &Value) -> String {
         .to_string()
 }
 
-/// 拉一次模型目录并落地（内存 + 持久化缓存）。
+/// 拉取模型目录并更新内存快照。
 ///
 /// `force = false`（自动路径）时 10 分钟 TTL 内早退为 `unchanged()`；
 /// `force = true`（用户手动刷新）真打上游。
@@ -705,6 +703,7 @@ fn upstream_message(payload: &Value) -> String {
 /// 失败时**保留现有清单**（远程清单优先，其次内置兜底）并返回 `failed(原因)`：
 /// 手动路径据此如实汇报，自动路径只打日志。
 pub async fn refresh(
+    account: &str,
     access_token: &str,
     project_id: &str,
     proxy: Option<&ResolvedProxy>,
@@ -714,7 +713,7 @@ pub async fn refresh(
     if !force {
         let fresh = with_state(|slot| {
             slot.as_ref()
-                .map(|state| state.remote && now - state.fetched_at < TTL_MS)
+                .map(|state| state.remote && state.account == account && now - state.fetched_at < TTL_MS)
                 .unwrap_or(false)
         });
         if fresh {
@@ -729,10 +728,28 @@ pub async fn refresh(
     let mut last_error = String::new();
     for base in endpoints::V1_BASE_URLS {
         match fetch_once(base, access_token, project_id, proxy).await {
-            Attempt::Models(models) => {
+            Attempt::Models(mut models) => {
+                let summary = if models.iter().any(|model| {
+                    model.get("id").and_then(Value::as_str).is_some_and(super::argon::is_model)
+                }) {
+                    None
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_millis(REQUEST_TIMEOUT_MS),
+                        super::balance::fetch_summary(access_token, project_id, proxy),
+                    ).await {
+                        Ok(Ok(summary)) => Some(summary),
+                        _ => {
+                            crate::logging::verbose("[Models]", "Antigravity 专属额度未取到，保留本次模型目录结果");
+                            None
+                        }
+                    }
+                };
+                super::argon::supplement(&mut models, summary.as_ref());
                 let count = models.len();
                 with_state(|slot| {
                     *slot = Some(CatalogState {
+                        account: account.to_string(),
                         models: models.clone(),
                         fetched_at: now,
                         remote: true,

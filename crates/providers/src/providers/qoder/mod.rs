@@ -52,7 +52,8 @@
 //!   stream.rs      上游 SSE 信封解包 + 思考标签拆解（跨分片）
 //!   piping.rs      流式首帧预读 + 流式透传（issue #8 的换号修复在这）
 //!   accounts.rs    账号面（PAT / 网页登录两种添加路径 + 归一化）
-//!   checkin.rs     每日签到（中国版的活动领取；国际版没有签到计划）
+//!   checkin.rs     每日签到（两地区每日 Credits 活动）
+//!   benefits.rs    手动活动福利（如 Sonus 限时体验）
 //!
 //! ── panic=abort ────────────────────────────────────────────
 //! 本模块在对话链路上，绝不 unwrap/expect/panic。
@@ -60,6 +61,8 @@
 mod accounts;
 mod auth;
 mod balance;
+mod benefits;
+mod campaigns;
 mod chat;
 mod checkin;
 mod context;
@@ -245,7 +248,7 @@ impl Provider for QoderProvider {
             // 见 `endpoints::Site::supports_checkin`）。能力位按 provider 申报：
             // 千问办公报 false —— 界面上就不会出现一个点了必然报错的入口。
             checkin: self.site.supports_checkin(),
-            claims: false,
+            claims: self.site.supports_checkin(),
             // 四站都有 PKCE 设备授权（`oauth.rs`）
             web_login: true,
             sse_model_rewrite: false,
@@ -427,11 +430,13 @@ impl Provider for QoderProvider {
                     "指定的账号不存在或不可用，请重新选择",
                 ));
             }
-            let Ok(credentials) = credentials::Credentials::from_payload(&record) else {
+            let Ok(mut credentials) = credentials::Credentials::from_payload(&record) else {
                 return Ok(proto::RefreshOutcome::failed(
                     format!("{} 账号凭证无效，请重新登录", self.site.display_name()),
                 ));
             };
+            // mode 只有 cn/global，无法区分 Qoder 与千问办公。
+            credentials.set_site(self.site);
             let proxy = match auth::account_proxy(&record) {
                 Ok(proxy) => proxy,
                 Err(error) => return Ok(proto::RefreshOutcome::failed(error.message)),
@@ -447,6 +452,26 @@ impl Provider for QoderProvider {
                 persist_catalog(ctx, &account_id).await;
             }
             Ok(outcome)
+        })
+    }
+
+    fn refresh_models_snapshot<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        force: bool,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            let outcome = self.refresh_models(ctx, account, force).await?;
+            let mut result = serde_json::to_value(&outcome)
+                .map_err(|_| "刷新结果无法序列化".to_string())?;
+            if outcome.refreshed {
+                // 千问办公的宿主只接收与刷新结果同行的真实远程清单。
+                let list = self.models(ctx, account).await?;
+                result["models"] = serde_json::json!(list.models);
+                result["meta"] = serde_json::json!(list.meta);
+            }
+            Ok(result)
         })
     }
 
@@ -524,6 +549,26 @@ impl Provider for QoderProvider {
                 details: None,
             })
         })
+    }
+
+    fn claim_status<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        _refresh: bool,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            benefits::preview(ctx, self.site, account).await.map_err(GatewayError::into_control_message)
+        })
+    }
+
+    fn claim<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        campaign: &'a str,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(benefits::claim(ctx, self.site, account, campaign))
     }
 
     // ── 账号 ──────────────────────────────────────────────────

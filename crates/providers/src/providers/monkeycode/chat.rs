@@ -5,7 +5,7 @@
 //! 编排层分流到这里）：
 //! ```text
 //!   ① credentials 快照（session + image_id；缺 image_id 直接报可读错误）
-//!   ② 模型名 → 目录条目（upstreamId / cliName）        models::resolve_task_model
+//!   ② 模型名 → 目录条目（upstreamId）                  models::resolve_task_model
 //!   ③ OpenAI messages → prompt（system 单列）          task::build_prompt
 //!   ④ POST /api/v1/users/tasks 建任务                  task::create_task
 //!   ⑤ 等任务环境就绪                                startup::wait_ready
@@ -57,7 +57,7 @@ use crate::logging;
 
 use super::credentials::MonkeyCodeCredentials;
 use super::region::Region;
-use super::{client, credentials, inflight, models, startup, stream, task};
+use super::{client, credentials, endpoints, inflight, models, startup, stream, task};
 
 /// 转发入口（`mod.rs` 的 `Provider::conversation` 转调）。
 pub async fn run_chat(
@@ -132,7 +132,7 @@ async fn run_chat_inner(
             "会话转发 model={} → upstream={} cli={} stream={} account={} region={}",
             requested,
             target.model,
-            target.cli_name,
+            endpoints::TASK_CLI_NAME,
             stream_requested,
             if account_id.is_empty() { "(队首账号)" } else { account_id },
             region.id(),

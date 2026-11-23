@@ -1,0 +1,96 @@
+//! 原生搜索保留/agenttool/v1/search独立通道，不使用聊天生成来源。
+use crate::{headers, network, session, util};
+use agent2api_wasm_sdk::{self as sdk, json, AccountLock, Error, Result, Value};
+
+pub fn capabilities() -> Value {
+    json!({
+        "version": 1,
+        "search": true,
+        "fetch": false,
+        "max_query_chars": 4000,
+        "supports_max_results": true,
+        "default_max_results": 10,
+        "max_results_limit": 10
+    })
+}
+fn parse_max_results(payload: &Value) -> Result<usize> {
+    match payload.get("max_results") {
+        None | Some(Value::Null) => Ok(10),
+        Some(value) => match value.as_u64() {
+            Some(count) if count >= 1 => Ok((count as usize).clamp(1, 10)),
+            _ => Err(Error::http(400, "搜索结果条数需为正整数").with_code("invalid_input")),
+        },
+    }
+}
+pub fn search(payload: &Value) -> Result<Value> {
+    let started = sdk::now();
+    let query = util::text(payload, &["query"]);
+    if query.is_empty() || query.chars().count() > 4000 {
+        return Err(Error::http(400, "搜索词长度需为1至4000字符").with_code("invalid_input"));
+    }
+    let timeout = payload["timeout_seconds"].as_u64().unwrap_or(30);
+    if !(5..=600).contains(&timeout) {
+        return Err(Error::http(400, "搜索超时需为5至600秒").with_code("invalid_input"));
+    }
+    let max_results = parse_max_results(payload)?;
+    let _ = session::ensure(false)?;
+    let lock = AccountLock::acquire()?;
+    let mut current = session::ensure_locked(&lock)?;
+    let until = started.saturating_add((timeout as i64).saturating_mul(1000));
+    // 单请求带剩余总预算，且耗尽后不再启动新搜索步骤。
+    for attempt in 0..2 {
+        if sdk::now() >= until {
+            return Err(Error::http(504, "WorkBuddy搜索等待已超时"));
+        }
+        let result = search_once(&current, &query, max_results, until);
+        if sdk::now() >= until {
+            return Err(Error::http(504, "WorkBuddy搜索等待已超时"));
+        }
+        match result {
+            Err(error) if error.status == Some(401) && attempt == 0 => {
+                current = session::refresh_locked_after_rejection(&current, &lock)?;
+            }
+            result => return result,
+        }
+    }
+    Err(Error::http(401, "WorkBuddy搜索认证失败"))
+}
+fn search_once(current: &session::Session, query: &str, max_results: usize, until: i64) -> Result<Value> {
+    let remaining = until.saturating_sub(sdk::now());
+    if remaining < 1000 {
+        return Err(Error::http(504, "WorkBuddy搜索等待已超时"));
+    }
+    let mut headers = headers::chat(&current.secret)?;
+    headers["Accept"] = json!("application/json");
+    let reply = network::raw_timeout(
+        "POST",
+        &current.endpoint()?,
+        "/agenttool/v1/search",
+        headers,
+        Some(&json!({ "query": query, "type": "text2text", "max_results": max_results })),
+        remaining as u64,
+    )?;
+    if reply.code() == Some(15001) {
+        let mut error = Error::http(429, "WorkBuddy搜索额度已用尽").with_code("rate_limited");
+        error.upstream_code = Some(15001);
+        return Err(error);
+    }
+    if !reply.ok() {
+        return Err(crate::errors::upstream(
+            reply.status,
+            &reply.value,
+            &current.secrets(),
+        ));
+    }
+    let rows = reply.value["results"]
+        .as_array()
+        .ok_or_else(|| Error::http(502, "搜索响应缺少结果列表"))?;
+    let sources: Vec<_> = rows.iter().take(max_results).filter_map(|row| {
+        let raw = row["url"].as_str()?; let url = url::Url::parse(raw).ok()?;
+        if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() { return None; }
+        let published = row["publishedDate"].as_str().map(str::to_string).or_else(|| row["publishedDate"].as_i64().and_then(chrono::DateTime::from_timestamp_millis).map(|v| v.to_rfc3339()));
+        Some(json!({ "url": url.as_str(), "title": row["title"].as_str().unwrap_or(raw).chars().take(300).collect::<String>(),
+            "content": row["snippet"].as_str().unwrap_or("").chars().take(2000).collect::<String>(), "publishedDate": published }))
+    }).collect();
+    Ok(json!({ "sources": sources }))
+}

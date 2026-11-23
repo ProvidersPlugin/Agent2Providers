@@ -64,6 +64,8 @@ pub mod doubaowork;
 pub mod kiro;
 #[cfg(feature = "astudio")]
 pub mod astudio;
+#[cfg(feature = "quwork")]
+pub mod quwork;
 
 use agent2api_provider_sdk::BoxProvider;
 
@@ -78,9 +80,8 @@ pub fn registry() -> Vec<BoxProvider> {
 
     #[cfg(feature = "cline")]
     {
-        // Cline 的两个额度池是两个 provider、两个实例（同一份实现按池参数化）
+        // Cline 订阅池已迁至网关内置 API 模板，旧原生包只保留免费池
         list.push(Box::new(cline::ClineProvider::FREE));
-        list.push(Box::new(cline::ClineProvider::PASS));
     }
 
     #[cfg(feature = "demo")]
@@ -185,6 +186,9 @@ pub fn registry() -> Vec<BoxProvider> {
 
     #[cfg(feature = "astudio")]
     list.push(Box::new(astudio::AStudioProvider));
+
+    #[cfg(feature = "quwork")]
+    list.push(Box::new(quwork::QuWorkProvider));
 
     list
 }

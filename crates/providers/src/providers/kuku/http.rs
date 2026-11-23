@@ -17,7 +17,7 @@
 
 use serde_json::Value;
 
-use crate::http::send_raw;
+use crate::http::{send_raw, AccountRequest};
 use crate::errors::GatewayError;
 
 /// JSON 请求的默认超时（登录 / 换证 / 建会话这类管理接口，30 秒足够）
@@ -123,6 +123,7 @@ pub async fn post_form_value(
         builder = builder.timeout(std::time::Duration::from_millis(timeout));
     }
     let response = builder
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| transport_error("KukuAI 请求", error))?;
@@ -158,6 +159,7 @@ pub async fn sse_post(
     }
     let response = request
         .json(body)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| transport_error(what, error))?;

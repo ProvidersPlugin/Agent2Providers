@@ -63,17 +63,19 @@ pub(super) fn classify(status: u16, body: &Value) -> proto::ErrorClass {
         .any(|marker| lowered.contains(marker));
     if quota || status == 429 {
         let transient = !quota
-            && (code == "rate_limit"
-                || [
-                    "rate limit",
-                    "too many requests",
-                    "请求过于频繁",
-                    "频率",
-                    "rpm",
-                    "tpm",
-                ]
-                .iter()
-                .any(|marker| lowered.contains(marker)));
+            && (matches!(
+                code.as_str(),
+                "rate_limit" | "rate_limit_exceeded" | "user_model_rate_limited"
+            ) || [
+                "rate limit",
+                "too many requests",
+                "请求过于频繁",
+                "频率",
+                "rpm",
+                "tpm",
+            ]
+            .iter()
+            .any(|marker| lowered.contains(marker)));
         return proto::ErrorClass::QuotaLimited {
             reset_at: transient.then(|| crate::logging::now_ms() + 60_000),
             message,

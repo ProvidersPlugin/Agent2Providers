@@ -1,0 +1,27 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1",
+    "accounts.cas.v1",
+    "accounts.identity.v1",
+    "clock.v1",
+    "locks.v1",
+    "state.v1",
+    "catalog.v1",
+    "catalog.accounts.v1",
+    "login.forms.v1",
+    "errors.v1",
+    "random.v1",
+    "sessions.v1",
+    "http.timeout.v1",
+    "chat.stream.v1",
+    "request.context.v1",
+    "http.managed-task.v1",
+    "crypto.monkeycode-cap.v1"
+  ],
+  "managed_task": { "profiles": [{ "profile": "monkeycode.cn.task.v1" }] },
+  "origins": ["https://monkeycode-ai.com"],
+  "memory_mib": 128,
+  "concurrency": 4
+}

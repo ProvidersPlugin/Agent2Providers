@@ -20,13 +20,7 @@
 //! 内网镜像）时把余额请求也一起改道，而这两条链路在源实现里是两个独立配置点。
 //!
 //! ── 出网代理（核对结论）──────────────────────────────────────
-//! 源实现的 `queryPoints` 收到 `client` 参数但**从不使用**它（函数体内直接
-//! `fetch`），余额与订阅都是**裸 fetch**，不走它自己的上游客户端。本网关里
-//! 「裸 fetch」对应的是直连 —— 即 `send_raw(..., proxy = None, ...)`。
-//! 这与刷新鉴权接口的既有取舍同一理由（见 `credentials::call_refresh_api` 的
-//! 注释）：账号级代理是给转发（流式长请求）准备的出口，而主站域与 LLM 域是
-//! 两个不同的站点。**不做**「顺手挂上账号代理」的改动，那会与源实现的行为分叉
-//! （源实现里这条链路是直连的）。
+//! 余额、订阅与转发共用当前账号操作的出口；主站域与 LLM 域不同不改变代理选择。
 //!
 //! ── 超时 ────────────────────────────────────────────────────
 //! 20 秒（源实现 `REQUEST_TIMEOUT_MS = 20_000`）。必须显式设：`egress` 的默认
@@ -222,7 +216,6 @@ pub(super) async fn request_json_ex(
         ),
     ];
     headers.extend(extra_headers.iter().cloned());
-    // 直连（源实现这条链路是裸 fetch，见模块头）
     let response = send_raw(method, &url, None, &headers, None, Some(timeout_ms))
         .await
         .map_err(|error| {

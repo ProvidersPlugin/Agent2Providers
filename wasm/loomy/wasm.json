@@ -1,0 +1,18 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "accounts.cas.v1", "accounts.identity.v1", "locks.v1",
+    "clock.v1", "random.v1", "state.v1", "catalog.v1", "catalog.accounts.v1",
+    "chat.stream.v1", "protocol.convert.v1", "errors.v1", "login.forms.v1",
+    "login.sms.v1", "login.interaction.v1", "images.v1", "resources.v1", "resources.fetch-public.v1",
+    "native.helpers.v1", "desktop.credentials.v1"
+  ],
+  "helpers": ["desktop.credentials.loomy.v1"],
+  "origins": [
+    "https://account.xfinfr.com",
+    "https://loomyad.xunfei.cn"
+  ],
+  "memory_mib": 128,
+  "concurrency": 8
+}

@@ -84,16 +84,13 @@ use agent2api_provider_sdk::ConversationSink;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use super::socket::TaskSocket;
 
 use super::credentials::MonkeyCodeCredentials;
 use super::region::Region;
 use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
 pub use super::translate::Translator;
 use super::{client, endpoints, inflight};
-
-/// 任务流连接类型（TLS 由 tokio-tungstenite 按 `wss` scheme 自动包装）
-pub type TaskSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// 任务总时长上限：与建任务的 `resource.life`（1 小时）对齐。
 ///
@@ -135,12 +132,7 @@ impl TaskStream {
 ///     其余状态 → 502（带上游状态码）；
 ///   - 连不上 / DNS / TLS / 握手超时 → 502 / 504。
 ///
-/// ── 代理为什么不作用于 WS（如实说明）─────────────────────────
-/// `proxy` 在编排层的语义是「账号级出网代理」；本家**建任务与停止任务这两次
-/// HTTP 调用**经过它（reqwest 直连 egress 层）。任务流是 WebSocket，
-/// tokio-tungstenite 没有代理支持，参考实现（Node `ws`）同样不给任务流挂
-/// 代理 —— 因此这里与参考一致地直连，并在配了代理时留一条 verbose 记录，
-/// 避免「以为走了代理」。
+/// HTTP 升级握手复用账号出口，建任务、实时消息与停止任务不得使用不同连接出口。
 pub async fn connect(
     region: Region,
     credentials: &MonkeyCodeCredentials,
@@ -160,21 +152,11 @@ pub async fn connect(
         })?;
         request.headers_mut().insert(header_name, header_value);
     }
-    if proxy.is_some() {
-        logging::verbose(
-            "[MonkeyCode]",
-            "任务流 WebSocket 直连（账号代理只作用于建任务 / 停止任务，与参考实现一致）",
-        );
-    }
     let timeouts = crate::timeouts::current();
     let wait = Duration::from_millis(timeouts.connect_ms().clamp(5_000, 120_000));
-    let (socket, _response) = tokio::time::timeout(
-        wait,
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, None),
-    )
-    .await
-    .map_err(|_| GatewayError::with_status(504, "MonkeyCode 任务流连接超时（WebSocket 握手未完成）"))?
-    .map_err(connect_error)?;
+    let socket = tokio::time::timeout(wait, super::socket::connect(request, proxy))
+        .await
+        .map_err(|_| GatewayError::with_status(504, "MonkeyCode 任务流连接超时（WebSocket 握手未完成）"))??;
     logging::verbose(
         "[MonkeyCode]",
         &format!("任务流已连接 task={task_id}（mode=attach）"),
@@ -186,28 +168,6 @@ pub async fn connect(
         session: credentials.session.clone(),
         proxy: proxy.cloned(),
     })
-}
-
-/// WS 连接 / 握手错误 → 网关错误。
-fn connect_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
-    use tokio_tungstenite::tungstenite::Error as WsError;
-    match error {
-        WsError::Http(response) => {
-            let status = response.status().as_u16();
-            if status == 401 || status == 403 {
-                GatewayError::with_status(
-                    401,
-                    format!("MonkeyCode 任务流鉴权失败（HTTP {status}）：请在账号页重新粘贴 session"),
-                )
-            } else {
-                GatewayError::with_status(
-                    502,
-                    format!("MonkeyCode 任务流握手被拒（HTTP {status}）"),
-                )
-            }
-        }
-        other => GatewayError::with_status(502, format!("MonkeyCode 任务流连接失败：{other}")),
-    }
 }
 
 /// 首轮输入已由创建请求提交，这里只设置后续工具审批策略。
@@ -469,6 +429,7 @@ pub(super) struct StopOnDrop {
     session: String,
     task_id: String,
     proxy: Option<ResolvedProxy>,
+    route: Option<agent2api_provider_sdk::egress::AccountRoute>,
     armed: bool,
 }
 
@@ -479,6 +440,7 @@ impl StopOnDrop {
             session: session.to_string(),
             task_id: task_id.to_string(),
             proxy: proxy.cloned(),
+            route: agent2api_provider_sdk::egress::capture(),
             armed: true,
         }
     }
@@ -500,8 +462,11 @@ impl Drop for StopOnDrop {
         let task_id = std::mem::take(&mut self.task_id);
         let proxy = self.proxy.take();
         // 同步上下文里不能 await：起一个后台任务去停，不等它
+        let route = self.route.take();
         tokio::spawn(async move {
-            client::stop_task(region, &session, &task_id, proxy.as_ref()).await;
+            agent2api_provider_sdk::egress::scope(
+                route, client::stop_task(region, &session, &task_id, proxy.as_ref()),
+            ).await;
         });
     }
 }

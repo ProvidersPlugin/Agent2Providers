@@ -32,6 +32,25 @@ pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 // 计费接口在缺少 User-Agent 时会返回 403 / code=10085；请求级头可覆盖此默认值。
 const DEFAULT_USER_AGENT: &str = "undici";
 
+pub trait AccountRequest: Sized {
+    fn with_account_user_agent(self) -> Self;
+}
+
+impl AccountRequest for reqwest::RequestBuilder {
+    fn with_account_user_agent(self) -> Self {
+        let value = agent2api_provider_sdk::egress::user_agent();
+        if value.is_empty() { return self; }
+        match reqwest::header::HeaderValue::from_str(&value) {
+            Ok(value) => {
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::USER_AGENT, value);
+                self.headers(headers)
+            }
+            Err(_) => self.header(reqwest::header::USER_AGENT, value),
+        }
+    }
+}
+
 type ClientKey = (String, Option<crate::timeouts::Timeouts>);
 
 fn cache() -> &'static Mutex<HashMap<ClientKey, reqwest::Client>> {
@@ -41,8 +60,8 @@ fn cache() -> &'static Mutex<HashMap<ClientKey, reqwest::Client>> {
 
 /// 取控制面客户端，带 20 秒总超时，不能用于读取对话流。
 ///
-/// 账号级代理优先，其次 `gateway_proxy`（空串或 `direct` 表示直连）。
-/// 代理 URL 非法时降级直连。
+/// 账号操作内继承已绑定的出口；没有账号上下文时沿用 `gateway_proxy`。
+/// 配置错误由账号操作入口拦截，不允许降级到默认出口。
 pub fn control_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> reqwest::Client {
     cached_client(proxy, gateway_proxy, None)
 }
@@ -52,15 +71,19 @@ pub fn stream_client(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> r
     cached_client(proxy, gateway_proxy, Some(crate::timeouts::current()))
 }
 
+/// 当前账号操作绑定的出口优先，没有账号上下文时才使用调用方的出口与默认值。
+pub fn proxy_url(proxy: Option<&proto::WireProxy>, gateway_proxy: &str) -> String {
+    agent2api_provider_sdk::egress::current().map(|route| route.url())
+        .or_else(|| proxy.map(agent2api_provider_sdk::egress::proxy_url))
+        .unwrap_or_else(|| gateway_proxy.trim().to_string())
+}
+
 fn cached_client(
     proxy: Option<&proto::WireProxy>,
     gateway_proxy: &str,
     timeouts: Option<crate::timeouts::Timeouts>,
 ) -> reqwest::Client {
-    let proxy_url = match proxy {
-        Some(proxy) => proxy.to_url(),
-        None => gateway_proxy.trim().to_string(),
-    };
+    let proxy_url = proxy_url(proxy, gateway_proxy);
     let key = (proxy_url, timeouts);
     if let Ok(guard) = cache().lock() {
         if let Some(client) = guard.get(&key) {
@@ -99,13 +122,22 @@ fn build(proxy_url: &str, timeouts: Option<crate::timeouts::Timeouts>) -> reqwes
     } else {
         match reqwest::Proxy::all(trimmed) {
             Ok(proxy) => builder = builder.proxy(proxy),
-            Err(_) => {
-                // 见 `control_client` 的说明：降级直连，不阻断链路
-                builder = builder.no_proxy();
-            }
+            Err(_) => return unavailable_client(),
         }
     }
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    builder.build().unwrap_or_else(|_| unavailable_client())
+}
+
+fn unavailable_client() -> reqwest::Client {
+    // 保留旧的 Client 返回形态；构造失败时拦住发送，不能偷偷改走直连或系统代理。
+    let blocked = reqwest::Proxy::custom(|_: &url::Url| Some("http://127.0.0.1:0"));
+    reqwest::Client::builder()
+        .use_rustls_tls()
+        .no_proxy()
+        .proxy(blocked)
+        .timeout(CONTROL_TIMEOUT)
+        .build()
+        .unwrap_or_default()
 }
 
 /// 跟随**系统代理**的客户端（进程级一份）。
@@ -123,6 +155,9 @@ fn build(proxy_url: &str, timeouts: Option<crate::timeouts::Timeouts>) -> reqwes
 /// 即可。系统代理改了要重启插件才生效（reqwest 在 build 时探测一次）——
 /// 登录与 Antigravity 的请求都是低频操作，这个取舍不影响正确性。
 pub fn control_client_system_proxy() -> reqwest::Client {
+    if let Some(route) = agent2api_provider_sdk::egress::current() {
+        return control_client(None, &route.url());
+    }
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
@@ -152,7 +187,7 @@ pub async fn get_json(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     let text = response.text().await.map_err(|error| describe(&error))?;
     Ok((status, parse_json(&text)))
@@ -173,7 +208,7 @@ pub async fn post_json(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     let text = response.text().await.map_err(|error| describe(&error))?;
     Ok((status, parse_json(&text)))
@@ -203,7 +238,7 @@ pub async fn post_stream(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    let response = request.send().await.map_err(|error| describe(&error))?;
+    let response = request.with_account_user_agent().send().await.map_err(|error| describe(&error))?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         let text = response.text().await.unwrap_or_default();
@@ -258,9 +293,7 @@ pub struct ApiResponse {
 /// 30 秒、目录 20 秒、账单 25 秒各不相同），也要在传输失败时拿到
 /// `reqwest::Error` 好判 `is_timeout()`。所以这里原样复刻那个签名。
 ///
-/// `proxy` 为 `None` 时**直连**（与网关 `send_raw` 的语义逐字一致：那个函数
-/// 收 `Option<&ResolvedProxy>`，`None` 走 `client_for(None)` = 直连，**不是**
-/// 跟随网关默认出口）。搬来的「鉴权接口不走账号代理」那几处正是这个语义。
+/// `proxy` 为 `None` 时继承当前账号操作的出口；没有账号上下文时才直连。
 pub async fn send_raw(
     method: &str,
     url: &str,
@@ -293,7 +326,7 @@ pub async fn send_raw(
     if let Some(timeout) = timeout_ms {
         builder = builder.timeout(Duration::from_millis(timeout));
     }
-    let response = builder.send().await?;
+    let response = builder.with_account_user_agent().send().await?;
     let status = response.status().as_u16();
     let ok = response.status().is_success();
     let text = response.text().await?;

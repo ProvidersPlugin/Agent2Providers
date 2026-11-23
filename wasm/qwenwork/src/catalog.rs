@@ -1,0 +1,177 @@
+//! 千问办公国内 qwork 目录：三项静态值各 131072；远程有值读真实值，缺省才用 1024000。
+//! 所有 qwork 项均可展示，enable 是当前账号权益，不是展示开关；不把它当跨账号许可表。
+use super::{context, endpoints, util};
+use agent2api_wasm_sdk::{json, Error, Result, Value};
+
+pub fn fallback() -> Vec<Value> {
+    [
+        ("pro", "高级"),
+        ("flash", "标准"),
+        ("qwen3.8-max-preview", "Qwen3.8-Max"),
+    ]
+    .into_iter()
+    .map(|(key, id)| {
+        let mut model = entry(id, id, key, false, false, endpoints::STATIC_CONTEXT);
+        model["supportsReasoningEffort"] = json!(false);
+        model["permissionKnown"] = json!(false);
+        model["contextSource"] = json!("static");
+        model
+    })
+    .collect()
+}
+fn entry(id: &str, name: &str, key: &str, reasoning: bool, vision: bool, window: i64) -> Value {
+    json!({ "id": id, "name": name, "upstreamKey": key, "providerId": endpoints::PROVIDER,
+        "visibility": "shown", "reasoning": reasoning, "supportsReasoning": reasoning,
+        "supportsImages": vision, "supportsToolCall": true, "efforts": [], "reasoningEffortLevels": [],
+        "maxInputTokens": window, "maxOutputTokens": endpoints::MAX_OUTPUT, "isDefault": false, "kind": "chat",
+        "config": { "key": key, "is_reasoning": reasoning, "is_vl": vision, "source": "system", "max_input_tokens": window } })
+}
+fn valid_name(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+}
+fn client_payload(value: &Value) -> &Value {
+    if value["qwork"].is_array() {
+        value
+    } else {
+        value
+            .get("data")
+            .filter(|data| data.is_object())
+            .unwrap_or(value)
+    }
+}
+pub fn parse(payload: &Value) -> Result<Vec<Value>> {
+    let payload = client_payload(payload);
+    let rows = payload["qwork"]
+        .as_array()
+        .filter(|rows| rows.len() <= 2048)
+        .ok_or_else(|| Error::http(502, "千问办公未返回有效 qwork 目录，已保留现有清单"))?;
+    let mut models = Vec::new();
+    let mut seen = Vec::new();
+    let mut seen_keys = Vec::new();
+    for row in rows {
+        let key = util::text(row, &["key"]);
+        let display = util::text(row, &["display_name"]);
+        let id: String = display.chars().filter(|ch| !ch.is_whitespace()).collect();
+        if !valid_name(&display)
+            || !valid_name(&id)
+            || key.is_empty()
+            || !util::printable(&key, 256)
+        {
+            continue;
+        }
+        let lower = id.to_lowercase();
+        if seen.contains(&lower) || seen_keys.contains(&key) {
+            continue;
+        }
+        seen.push(lower);
+        seen_keys.push(key.clone());
+        let reasoning = util::truthy(&row["is_reasoning"]) || util::truthy(&row["thinking_config"]);
+        let declared = util::integer(&row["max_input_tokens"]).filter(|value| *value > 0);
+        // 基线当前无多档上下文；仍保留未来目录真实下发档位的既有解析，而非自己抬大窗口。
+        let tiers = context::tiers(row);
+        let tier_max = tiers
+            .iter()
+            .filter_map(|tier| tier["tokens"].as_i64())
+            .max();
+        let window = tier_max
+            .or(declared)
+            .unwrap_or(endpoints::REMOTE_CONTEXT_FALLBACK);
+        let current = declared.unwrap_or_else(|| {
+            tiers
+                .iter()
+                .find(|tier| tier["isDefault"] == true)
+                .or_else(|| tiers.first())
+                .and_then(|tier| tier["tokens"].as_i64())
+                .unwrap_or(window)
+        });
+        let mut model = entry(
+            &id,
+            &display,
+            &key,
+            reasoning,
+            util::truthy(&row["is_vl"]),
+            window,
+        );
+        model["permissionKnown"] = json!(row.get("enable").is_some_and(|value| !value.is_null()));
+        model["accountEnabled"] = json!(row["enable"].as_bool().unwrap_or_else(|| matches!(
+            row["enable"].as_str(),
+            Some("true" | "1")
+        )
+            || util::integer(&row["enable"]).is_some_and(|value| value != 0)));
+        model["contextSource"] = json!(if tier_max.is_some() {
+            "remote_tiers"
+        } else if declared.is_some() {
+            "remote"
+        } else {
+            "native_default"
+        });
+        model["config"]["max_input_tokens"] = json!(current);
+        let efforts = row
+            .pointer("/thinking_config/enabled/efforts")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|values| values.keys())
+            .filter(|value| !value.is_empty() && util::printable(value, 64))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !efforts.is_empty() {
+            model["supportsReasoningEffort"] = json!(true);
+        }
+        model["efforts"] = json!(efforts);
+        model["reasoningEffortLevels"] = json!(efforts);
+        if let Some(price) = util::number(&row["price_factor"]).filter(|price| *price >= 0.0) {
+            let text = format!("{price:.2}");
+            let text = text.trim_end_matches('0').trim_end_matches('.');
+            model["credits"] = json!(format!("x{text} credits"));
+        }
+        if let Some(source) = row["source"]
+            .as_str()
+            .filter(|value| !value.is_empty() && util::printable(value, 128))
+        {
+            model["config"]["source"] = json!(source);
+        }
+        if let Some(format) = row["format"]
+            .as_str()
+            .filter(|value| !value.is_empty() && util::printable(value, 64))
+        {
+            model["config"]["format"] = json!(format);
+        }
+        if !tiers.is_empty() {
+            model["config"]["tiers"] = json!(tiers);
+        }
+        models.push(model);
+    }
+    if models.is_empty() && !rows.is_empty() {
+        return Err(Error::http(
+            502,
+            "千问办公模型目录条目均无效，已保留现有清单",
+        ));
+    }
+    Ok(models)
+}
+pub fn public(models: &[Value]) -> Vec<Value> {
+    models
+        .iter()
+        .map(|model| {
+            let mut model = model.clone();
+            if let Some(fields) = model.as_object_mut() {
+                for key in ["accountEnabled", "permissionKnown", "config"] {
+                    fields.remove(key);
+                }
+            }
+            model
+        })
+        .collect()
+}
+pub fn find(models: &[Value], name: &str) -> Option<Value> {
+    for key in ["id", "name", "upstreamKey"] {
+        if let Some(model) = models.iter().find(|model| {
+            model[key]
+                .as_str()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case(name))
+        }) {
+            return Some(model.clone());
+        }
+    }
+    None
+}

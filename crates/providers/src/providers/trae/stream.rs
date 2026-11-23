@@ -234,6 +234,7 @@ pub struct SoloStream {
     reasoning: String,
     last_reasoning: String,
     had_error: bool,
+    saw_output: bool,
     tool_calls_seen: bool,
     saw_done: bool,
     completed: bool,
@@ -249,6 +250,7 @@ impl SoloStream {
             reasoning: String::new(),
             last_reasoning: String::new(),
             had_error: false,
+            saw_output: false,
             tool_calls_seen: false,
             saw_done: false,
             completed: false,
@@ -294,6 +296,7 @@ impl SoloStream {
                 if delta.is_empty() {
                     return Vec::new();
                 }
+                self.saw_output = true;
                 vec![self.chunk(Value::Object(delta), None)]
             }
             SoloEvent::TokenUsage(usage) => {
@@ -360,6 +363,11 @@ impl SoloStream {
 
     pub fn completed(&self) -> bool {
         self.completed
+    }
+
+    /// 补发的 [DONE] 只供客户端收尾，不代表上游正常结束；判定前须冲刷尾事件。
+    pub fn missing_terminal(&self) -> bool {
+        self.saw_output && !self.completed && !self.had_error
     }
 
     pub fn flush_pending(&mut self) -> Vec<Frame> {

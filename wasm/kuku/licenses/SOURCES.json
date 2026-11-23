@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "implementation": {
+    "base": "crates/providers/src/providers/kuku in the Agent2Providers repository; current compiled mod.rs, including uncommitted checkin.rs and checkin/token.rs",
+    "license": "AGPL-3.0-only",
+    "nativeDependency": false,
+    "changes": [
+      "Controlled SDK network, clock, randomness, account CAS/locks and account-scoped persistence",
+      "Latest getJsToken null fallback to bounded same-origin activity-page text; no script execution",
+      "No inferred success, default sign points, invented streak, or missing-usage zero",
+      "Legacy freepoint reports only real completed progress and explicitly claims available daily rewards; no invented chat/invite",
+      "Desktop browser cookies are captured only from the current fixed-site login flow; uploaded SQLite remains gated"
+    ]
+  },
+  "compatibleProtocolReference": {
+    "repository": "https://github.com/IKUNHEIHIE/kuku2api",
+    "revision": "f58938ab0b6c8f3b5b7951223f9904158ffa035a",
+    "license": "0BSD",
+    "licenseUrl": "https://github.com/IKUNHEIHIE/kuku2api/blob/f58938ab0b6c8f3b5b7951223f9904158ffa035a/LICENSE",
+    "licenseBlob": "f5f404bbe6d4685d3aa32088d75a7a0578787a02",
+    "notice": "kuku2api-0BSD.txt",
+    "paymentSemantics": "https://github.com/IKUNHEIHIE/kuku2api/blob/f58938ab0b6c8f3b5b7951223f9904158ffa035a/src/upstream.mjs#L194-L217",
+    "scope": "Protocol evidence only; no noncommercial reference implementation copied or included"
+  },
+  "assets": {
+    "files": ["assets/kuku.png", "assets/logo.png"],
+    "copiedFrom": "desktop-tauri/ui/assets/providers/kuku.png in the Agent2API repository",
+    "sha256": "5b37cbfde3ce16a7eb99af22c3df02c7fdf292bdaba192b7272bdb6cf6b5667a",
+    "note": "Existing brand asset reused unchanged. No new software license or general trademark permission asserted; brand rights remain with their owner."
+  }
+}

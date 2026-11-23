@@ -44,7 +44,7 @@ use serde_json::{json, Value};
 
 use crate::dpop::DpopKey;
 use crate::errors::GatewayError;
-use crate::http::describe_chain;
+use crate::http::{describe_chain, AccountRequest};
 use crate::logging;
 
 use super::signer::{self, Algorithm, Credential as SigningCredential};
@@ -132,7 +132,7 @@ async fn fetch_state() -> Result<String, String> {
         .header("Accept", "application/json")
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body("{}")
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("向云端申请 state 失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -198,7 +198,7 @@ async fn poll_code(state: &str) -> Result<Option<String>, String> {
         .get(&url)
         .header("Accept", "application/json")
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("轮询授权码失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -414,7 +414,7 @@ pub async fn refresh(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(form)
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("续期请求失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -493,7 +493,7 @@ async fn exchange_code(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(form)
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("换取临时凭据失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -538,7 +538,7 @@ async fn exchange_code(
 ///
 /// 返回 `(account_id, principal_id, model_info)`：身份两项只用来给账号名兜底；
 /// `model_info` **可能为空对象**——那是「账号尚未开通」的正常形态。
-async fn fetch_permission(
+pub(super) async fn fetch_permission(
     temporary: &SigningCredential,
 ) -> Result<(String, String, Value), String> {
     let url = format!("{CLOUD_BASE}/v1/claw/client-permission-validate");
@@ -564,7 +564,7 @@ async fn fetch_permission(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
         .map_err(|error| format!("权限校验失败：{}", describe_chain(&error)))?;
     let status = response.status().as_u16();
@@ -615,7 +615,7 @@ async fn resolve_project_id(credential: &SigningCredential, region: &str) -> Opt
     for (name, value) in &headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.ok()?;
+    let response = request.with_account_user_agent().send().await.ok()?;
     if !(200..300).contains(&response.status().as_u16()) {
         return None;
     }
@@ -636,11 +636,21 @@ async fn resolve_project_id(credential: &SigningCredential, region: &str) -> Opt
 ///
 /// `promotion_code` 为 `None` 时 body 发 `{}`（官方首次开通就是这个形状）；
 /// 失败时返回面向用户的中文错误（邀请码族错误码单独给准确提示）。
-async fn subscribe_model_info(
+pub(super) async fn subscribe_model_info(
     cloud_base: &str,
     credential: &SigningCredential,
     promotion_code: Option<&str>,
 ) -> Result<Value, String> {
+    subscribe(cloud_base, credential, promotion_code).await.map_err(GatewayError::into_message)
+}
+
+pub(super) const SUBSCRIPTION_UNCERTAIN: &str = "officeace_subscription_uncertain";
+
+pub(super) async fn subscribe(
+    cloud_base: &str,
+    credential: &SigningCredential,
+    promotion_code: Option<&str>,
+) -> Result<Value, GatewayError> {
     let url = format!("{cloud_base}/v1/claw/client-subscription");
     let body = match promotion_code.map(str::trim).filter(|code| !code.is_empty()) {
         Some(code) => json!({ "promotion_code": code }).to_string(),
@@ -673,9 +683,11 @@ async fn subscribe_model_info(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request
-        .send()
+        .with_account_user_agent().send()
         .await
-        .map_err(|error| format!("开通请求失败：{}", describe_chain(&error)))?;
+        .map_err(|error| GatewayError::with_status(
+            502, format!("开通请求结果待确认：{}", describe_chain(&error)),
+        ).with_code(SUBSCRIPTION_UNCERTAIN))?;
     let status = response.status().as_u16();
     let payload = response.json::<Value>().await.unwrap_or(Value::Null);
     if !(200..300).contains(&status) {
@@ -689,18 +701,23 @@ async fn subscribe_model_info(
             .or_else(|| payload.get("error_message").and_then(Value::as_str))
             .unwrap_or("");
         if let Some(hint) = promotion_hint(error_code) {
-            return Err(format!(
+            return Err(GatewayError::with_status(i32::from(status), format!(
                 "该账号尚未开通果办服务（{hint}）：请先在 OfficeAce 客户端完成开通，再回来重新登录"
-            ));
+            )));
         }
         let shown = if detail.is_empty() { error_code } else { detail };
-        return Err(format!("开通失败（HTTP {status}）：{shown}"));
+        let error = GatewayError::with_status(i32::from(status), format!("开通失败（HTTP {status}）：{shown}"));
+        return Err(if status >= 500 || status == 408 {
+            error.with_code(SUBSCRIPTION_UNCERTAIN)
+        } else { error });
     }
     payload
         .get("model_info")
         .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "开通成功但云端仍未返回模型网关信息，请稍后重试".to_string())
+        .ok_or_else(|| GatewayError::with_status(
+            502, "开通成功但云端仍未返回模型网关信息，请稍后查询确认",
+        ).with_code(SUBSCRIPTION_UNCERTAIN))
 }
 
 /// 邀请码族错误码 → 给用户的中文提示（官方 `PROMOTION_CODE_ERROR_MESSAGES` 的中文口径）。
@@ -715,7 +732,7 @@ fn promotion_hint(error_code: &str) -> Option<&'static str> {
 }
 
 /// 从 `model_info` 解网关三件套：基址（规范化到 `/v2`）+ app key/secret。
-fn gateway_of(model_info: &Value) -> Result<(String, String, String), String> {
+pub(super) fn gateway_of(model_info: &Value) -> Result<(String, String, String), String> {
     let auth_info = model_info.get("model_auth_info").unwrap_or(&Value::Null);
     let app_key = text_in(auth_info, "model_app_key");
     let app_secret = text_in(auth_info, "model_app_secret");

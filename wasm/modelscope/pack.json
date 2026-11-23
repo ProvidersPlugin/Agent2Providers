@@ -1,0 +1,20 @@
+{
+  "id": "agent2api-wasm-modelscope",
+  "name": "ModelScope 国内版",
+  "description": "接入国内站，提供对话与异步生图改图，支持令牌导入、按账号查看模型和魔粒流水，并支持每日签到。",
+  "version": "0.1.0-beta.4",
+  "protocol": 1,
+  "providers": [
+    {
+      "id": "modelscope",
+      "label": "ModelScope 国内版",
+      "order": 2,
+      "default_enabled": true
+    }
+  ],
+  "entry": {
+    "wasm32-unknown-unknown": "modelscope.wasm"
+  },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

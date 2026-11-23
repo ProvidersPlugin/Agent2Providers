@@ -36,20 +36,12 @@
 //!
 //! ── 已迁的能力 ──────────────────────────────────────────────
 //! `chat` / `refresh`（token 续期）/ `model_refresh`（`/v3/config`）/
-//! `usage`（积分简报 + 明细 + 套餐）/ `anonymous_default_session`
-//! （`WORKBUDDY_TOKEN` 旁路）/ `sse_strip_newline_chunks`（上游会插整片换行的
+//! `usage`（积分简报 + 明细 + 套餐）/ `sse_strip_newline_chunks`（上游会插整片换行的
 //! 节拍）/ `web_login`（轮询型浏览器登录）。
 //!
 //! ── 国内版 / 国际版 = 两个实例 ───────────────────────────────
 //! 两端协议完全相同，差别只在站点与客户端身份（UA / platform / 产品名），
 //! 以及**各自独立的模型目录槽**。完整理由见 [`region`] 的模块头。
-//!
-//! ── 默认登录态（`WORKBUDDY_TOKEN` 旁路）─────────────────────
-//! workbuddy 独有的「一个账号都没有时也能转发」能力（脚本 / CI 用户）：
-//! `anonymous_default_session: true` + `ensure_token` 的空 account 分支。
-//! 这是**行为兼容**的一部分 —— 去掉它会让 `WORKBUDDY_TOKEN` 用户的
-//! `/v1/chat/completions` 直接 401。变量按地区分开（国内 `WORKBUDDY_TOKEN`、
-//! 国际 `WORKBUDDY_INTL_TOKEN`，旧组合 `WORKBUDDY_EDITION=intl` 仍可用）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件在对话链路上，**绝不** unwrap/expect/panic。
@@ -153,15 +145,6 @@ pub(super) async fn session_for(
     region: Region,
     account: &str,
 ) -> Result<Value, GatewayError> {
-    if account.is_empty() {
-        if let Some(token) = region.env_token() {
-            return Ok(serde_json::json!({
-                "auth": { "accessToken": token },
-                "account": {},
-                "edition": region.id(),
-            }));
-        }
-    }
     let record = crate::store::record(ctx, region.provider_id(), account).await?;
     Ok(session_of_record(&record, region))
 }
@@ -191,16 +174,13 @@ impl Provider for WorkBuddyProvider {
             sse_model_rewrite: false,
             // 上游会在相邻正文分片之间插「整片只有换行」的节拍（实测 34.5%）
             sse_strip_newline_chunks: true,
-            // `WORKBUDDY_TOKEN` / `WORKBUDDY_INTL_TOKEN` 旁路：一个账号都没有时
-            // 也能转发（脚本 / CI 用户的常规用法）
-            anonymous_default_session: true,
+            anonymous_default_session: false,
             system_proxy_when_unset: false,
             refresh_uses_account: true,
             // config.json 的 `defaultModel`（缺省 auto）：客户端未指定 model 时
             // 网关据此注入 —— 与内置实现逐字一致（唯一覆写这一位的家）
             supports_default_model: true,
-            // `WORKBUDDY_TOKEN` / `WORKBUDDY_INTL_TOKEN` 旁路实现存在
-            env_credentials: true,
+            env_credentials: false,
         })
         .with_login(vec![proto::LoginMethod::Browser {
             button: "网页登录".to_string(),
@@ -832,9 +812,6 @@ impl Provider for WorkBuddyProvider {
 /// 存在时直接用它、完全不看账号库（脚本/CI 用户的旁路入口）。变量名按地区
 /// 分开，见 `Region::env_token`。
 async fn default_session_token(ctx: &PluginCtx, region: Region) -> Result<String, String> {
-    if let Some(token) = region.env_token() {
-        return Ok(token);
-    }
     // 队首账号（`account` 为空串 = 网关给该 provider 的第一个可用账号）
     let record = crate::store::record(ctx, region.provider_id(), "")
         .await

@@ -23,12 +23,11 @@
 //! 账号集合与模型目录各自独立。插件注册表里它们是**两个实例**（`Region`
 //! 参数化），与 Cline 的两个额度池同一手法。
 //!
-//! ── 凭证来源四条，优先级由 [`credentials::snapshot_for`] 决定 ─────
+//! ── 凭证来源三条，优先级由 [`credentials::snapshot_for`] 决定 ─────
 //! ```text
 //!   账号记录（手动添加 / 网页登录）  → 记录里的 token（`enc:` 自动解密）
 //!   桌面端实时登录态                → %APPDATA%/AutoClaw/auth.json（DPAPI 解密）
 //!   网关配置                        → ~/.openclaw-autoclaw/openclaw.json（明文）
-//!   环境变量                        → AUTOCLAW_TOKEN（国际版 AUTOCLAW_INTL_TOKEN）
 //! ```
 //! 桌面端两条来源**按设计不回写**（safeStorage 会写坏用户登录态，且服务端
 //! 轮换 refresh_token 会与桌面端自己顶掉）；只有账号记录来源回写。
@@ -174,14 +173,12 @@ impl Provider for AutoClawProvider {
             sse_model_rewrite: true,
             // 上游把每帧都拼成 `{role, content}`，纯换行的节拍帧要丢
             sse_strip_newline_chunks: true,
-            // 有环境变量旁路（`AUTOCLAW_TOKEN`）：账号为空时仍可用默认登录态
-            anonymous_default_session: true,
+            anonymous_default_session: false,
             system_proxy_when_unset: false,
             refresh_uses_account: true,
             // 本家没有「默认模型」概念：不指定模型时应由它自己的路由层回落
             supports_default_model: false,
-            // `AUTOCLAW_TOKEN` 旁路实现存在
-            env_credentials: true,
+            env_credentials: false,
         })
         .with_login(login_methods(region))
         .with_models(models::list(region))
@@ -438,8 +435,7 @@ impl Provider for AutoClawProvider {
 
     /// 查积分 + 订阅（`balance.rs`：资产钱包 + `subscribe-info` 合成一次调用）。
     ///
-    /// 两条链路都在 userapi 域、都带那套 `X-Auth-Sign` 签名头 + Bearer，且源
-    /// 实现是裸 fetch（不走账号代理）—— 与刷新接口同一取舍。
+    /// 两条链路都在 userapi 域，带同一套 `X-Auth-Sign` 签名头与 Bearer。
     fn quota_sources(&self, report: &Value) -> Vec<Value> {
         crate::quota::sources(&self.meta().id, report)
     }
@@ -691,14 +687,10 @@ async fn persist_refresh(
     }
     let account_id = refreshed.id.as_str();
     let record = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    // 记录里必须仍是刷新前那份凭证，否则说明别处已经换过（不回写）
-    let current_token = crate::store::pick(&record, &["token", "accessToken"]);
-    let current_refresh = crate::store::pick(&record, &["refreshToken"]);
-    if current_token != previous.token || current_refresh != previous.refresh_token {
-        if current_token.is_empty() {
-            return Err(GatewayError::with_status(409, "AutoClaw 续期时账号凭据发生变化，请重新登录"));
-        }
-        return Ok(current_token);
+    // 两份凭证必须按相同规则解析；原始 secret 仍用于后续的原子条件写入。
+    let current = credentials::credentials_from_record(&record, refreshed.region)?;
+    if current.token != previous.token || current.refresh_token != previous.refresh_token {
+        return Ok(current.token);
     }
     let mut next = crate::store::secret_view(&record);
     // 两套键同时写：`token` / `tokenExpiresAt` 是本插件与旧投影的口径，
@@ -726,11 +718,11 @@ async fn persist_refresh(
         return Ok(refreshed.token.clone());
     }
     let latest = crate::store::record(ctx, refreshed.region.provider_id(), account_id).await?;
-    let token = crate::store::pick(&latest, &["token", "accessToken"]);
-    if token.is_empty() || token == previous.token {
+    let current = credentials::credentials_from_record(&latest, refreshed.region)?;
+    if current.token == previous.token && current.refresh_token == previous.refresh_token {
         return Err(GatewayError::with_status(409, "AutoClaw 续期结果未能落盘，请重新登录该账号"));
     }
-    Ok(token)
+    Ok(current.token)
 }
 
 // ─── 请求头 ────────────────────────────────────────────────────

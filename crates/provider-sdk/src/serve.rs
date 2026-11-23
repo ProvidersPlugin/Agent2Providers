@@ -374,11 +374,37 @@ impl Serve {
                     admin_panels: meta.admin_panels,
                     account_features: meta.account_features,
                     checkin: meta.checkin,
+                    error_classifications: Vec::new(),
+                    error_rules: Vec::new(),
                 }
             })
             .collect();
         match serde_json::to_value(&infos) {
-            Ok(value) => self.reply(id, value).await,
+            Ok(mut value) => {
+                if let Some(infos) = value.as_array_mut() {
+                    for (info, provider) in infos.iter_mut().zip(&self.providers) {
+                        if let Some(schema) = provider.settings_schema() {
+                            match serde_json::to_value(schema) {
+                                Ok(schema) => info["settings_schema"] = schema,
+                                Err(_) => {
+                                    self.reply_err(id, proto::WireError::with_code("插件设置声明无法序列化", proto::WireError::INTERNAL)).await;
+                                    return;
+                                }
+                            }
+                            if let Some(group) = provider.settings_group() {
+                                match serde_json::to_value(group) {
+                                    Ok(group) => info["settings_group"] = group,
+                                    Err(_) => {
+                                        self.reply_err(id, proto::WireError::with_code("插件设置分组无法序列化", proto::WireError::INTERNAL)).await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                self.reply(id, value).await;
+            }
             Err(e) => {
                 self.reply_err(
                     id,
@@ -395,6 +421,18 @@ impl Serve {
     /// 控制面方法（全部一问一答）。
     async fn handle_control(self: &Arc<Self>, id: i64, method: &str, params: Value) {
         let Some(provider) = self.provider_of(&params) else {
+            self.handle_control_scoped(id, method, params).await;
+            return;
+        };
+        let ctx = self.ctx(&provider.provider_id());
+        match crate::egress::for_request(&ctx, method, &params).await {
+            Ok(route) => crate::egress::scope(route, self.handle_control_scoped(id, method, params)).await,
+            Err(message) => self.reply_err(id, crate::errors::to_wire_error(message)).await,
+        }
+    }
+
+    async fn handle_control_scoped(self: &Arc<Self>, id: i64, method: &str, params: Value) {
+        let Some(provider) = self.provider_of(&params) else {
             self.reply_err(
                 id,
                 proto::WireError::with_code(
@@ -409,6 +447,10 @@ impl Serve {
         let account = params.get("account").and_then(Value::as_str).unwrap_or("").to_string();
 
         let outcome: Result<Value, String> = match method {
+            crate::settings::OVERRIDES_METHOD => Ok(provider.settings_overrides()),
+            "native.helpers" => Ok(Value::Array(provider.native_helpers())),
+            "native.call" => provider.native_call(&ctx, params["caller"].as_str().unwrap_or(""),
+                params["helper"].as_str().unwrap_or(""), params["operation"].as_str().unwrap_or(""), &params["payload"]).await,
             crate::provider::SCHEDULES_LIST_METHOD => {
                 serde_json::to_value(provider.schedules())
                     .map_err(|error| format!("排程申报无法序列化: {error}"))
@@ -556,7 +598,10 @@ impl Serve {
             }
             proto::methods::gateway::ADMIN_ACTION => {
                 let action = params.get("action").and_then(Value::as_str).unwrap_or("");
-                if action.trim().is_empty() {
+                if action == "network.user-agent" && self.options.account_user_agent.is_some() {
+                    Ok(serde_json::json!({ "accountWide": self.options.account_user_agent
+                        .is_some_and(|supports| supports(&provider.provider_id())) }))
+                } else if action.trim().is_empty() {
                     Err("admin.action 缺少 action".to_string())
                 } else {
                     let payload = params.get("payload").cloned().unwrap_or(Value::Null);
@@ -594,7 +639,7 @@ impl Serve {
             }
             proto::methods::gateway::LOGIN_CALLBACK => {
                 match serde_json::from_value::<proto::LoginCallback>(params.clone()) {
-                    Ok(callback) => provider.login_callback(&ctx, callback).await.and_then(|poll| {
+                    Ok(callback) => provider.login_callback_result(&ctx, callback).await.and_then(|poll| {
                         serde_json::to_value(poll).map_err(|e| format!("登录回调无法序列化: {e}"))
                     }),
                     Err(e) => Err(format!("callback 参数无法解析: {e}")),
@@ -636,7 +681,8 @@ impl Serve {
             .await;
             return;
         };
-        let req = match serde_json::from_value::<proto::ConversationRequest>(params) {
+        let ctx = self.ctx(&provider.provider_id());
+        let req = match serde_json::from_value::<proto::ConversationRequest>(params.clone()) {
             Ok(req) => req,
             Err(e) => {
                 self.reply_err(
@@ -658,7 +704,6 @@ impl Serve {
             .await
             .insert(id, Running { cancel: cancel.clone(), credit: credit.clone() });
 
-        let ctx = self.ctx(&provider.provider_id());
         let mut sink = StreamSink {
             host: self.clone(),
             id,
@@ -672,7 +717,10 @@ impl Serve {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Err("调用已被取消".to_string()),
-                result = provider.conversation(&ctx, req, view) => result,
+                result = async {
+                    let route = crate::egress::for_request(&ctx, proto::methods::gateway::CONVERSATION, &params).await?;
+                    crate::egress::scope(route, provider.conversation(&ctx, req, view)).await
+                } => result,
             }
         };
 

@@ -15,11 +15,11 @@
 //! 且同名模型的意义也不同。缓存按 [`Site`] 分开。
 //!
 //! ── 千问办公的目录形状与 Qoder 不同 ─────────────────────────
-//! Qoder：`{"chat": [ {key, display_name, enable, price_factor, …} ]}`，
-//! 只列 `enable` 为真的条目，场景是 `app` + `chat` 合并。
+//! Qoder：读取 `chat`，再补充 `app` 独有的 OpenAI 格式模型；同 key 以 `chat` 为准。
+//! `enable` 只表示账号权益，保留未启用条目，不让 `app` 覆盖聊天价格或权限。
 //! 千问办公：`{"qwork": [ {key, display_name, max_input_tokens, …} ]}`，
 //! **整份目录都在 `qwork` 这一个场景里**（含上游标了 `enable: false` 的），
-//! 所以要读的那一个数组与「要不要过滤 enable」都由 [`Site`] 决定。
+//! 场景与启用状态的处理由 [`Site`] 决定。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：零 unwrap/expect/panic；持锁期间绝不做网络请求
@@ -604,28 +604,40 @@ fn envelope_error(payload: &Value) -> Option<String> {
 
 /// 解析目录响应。
 ///
-/// Qoder：`{ chat: [ { key, display_name, enable, is_vl, … } ] }`，只收 `chat`
-/// 数组，缺 `key` 或缺 `display_name` 的条目丢弃，且只保留 `enable` 为真的条目。
+/// Qoder：按 key 合并 `chat` 与 `app` 独有的 OpenAI 模型，同 key 以 `chat` 为准，
+/// 包括禁用条目；缺 `key` 或 `display_name` 的条目丢弃。
 /// 千问办公：`{ qwork: [ … ] }`，读 `qwork`，**整份保留**（含 `enable: false`）。
 ///
 /// 两边的对外模型 id 都用 `display_name` **去掉空白**（源实现 `toModelId`）——
 /// 于是客户端看到的名称可读，请求时再映射回 `key`。
 fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
     let scene = site.model_scene();
-    let rows: &[Value] = match scene {
-        Some(name) => {
-            match payload.get(name).and_then(Value::as_array) {
-                Some(items) => items,
-                None => return Vec::new(),
+    let mut rows: Vec<&Value> = payload
+        .get(scene.unwrap_or("chat"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    if scene.is_none() {
+        let mut seen_keys: Vec<&str> = rows
+            .iter()
+            .copied()
+            .filter_map(|item| item.get("key").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .collect();
+        for item in payload.get("app").and_then(Value::as_array).into_iter().flatten() {
+            let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
+            if key.is_empty()
+                || seen_keys.contains(&key)
+                || item.get("format").and_then(Value::as_str) != Some("openai")
+            {
+                continue;
             }
+            seen_keys.push(key);
+            rows.push(item);
         }
-        None => {
-            match payload.get("chat").and_then(Value::as_array) {
-                Some(items) => items,
-                None => return Vec::new(),
-            }
-        }
-    };
+    }
     let mut models: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for item in rows {

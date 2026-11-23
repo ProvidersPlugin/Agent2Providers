@@ -56,6 +56,7 @@ use serde_json::{json, Value};
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 use crate::logging;
 
 use super::endpoints;
@@ -145,6 +146,7 @@ async fn post_json(
     }
     let response = builder
         .body(body.to_string())
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {

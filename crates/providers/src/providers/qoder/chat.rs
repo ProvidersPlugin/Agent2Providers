@@ -33,6 +33,7 @@ use serde_json::{json, Map, Value};
 use agent2api_provider_sdk::PluginCtx;
 use crate::telemetry::RequestTelemetry;
 use crate::http as egress;
+use crate::http::AccountRequest;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
 use crate::errors::GatewayError;
@@ -299,7 +300,7 @@ pub async fn send(
     let budget = std::time::Duration::from_millis(
         crate::timeouts::current().headers_ms(),
     );
-    match tokio::time::timeout(budget, builder.send()).await {
+    match tokio::time::timeout(budget, builder.with_account_user_agent().send()).await {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(error)) if error.is_timeout() => {
             // `send()` 阶段的超时只可能来自连接（等待响应头由外层计时器管）：

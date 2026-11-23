@@ -1,42 +1,76 @@
-//! OfficeAce 的每日签到：`POST /v1/subscription/bonus/claim` 领奖励积分。
-//!
-//! ── 与「新手任务」的关系 ─────────────────────────────────────
-//! 上游**一次调用**把当天所有可领的奖励（每日签到 + 一次性新人礼）一起发下来，
-//! 所以签到与新手任务在服务端是**同一个动作**（见 `onboarding` 的模块头）。
-//! 本模块是签到链（`billing::checkin_for`）要的 `{success, msg}` 形状。
-//!
-//! ── 幂等由上游保证 ──────────────────────────────────────────
-//! 一天一个活动只能领一次，**重复领不报错**（返回同一份列表，`current_value` 不变），
-//! 所以这里没有「已领过」这条分支 —— 上游不回错，重复调就是安全的空动作。
+//! 签到只触发当天奖励结算，不代替套餐开通或协议确认。
 
 use serde_json::{json, Value};
 
 use agent2api_provider_sdk::PluginCtx;
-
 use crate::errors::GatewayError;
-
 use super::{control, subscription};
 
-/// 领今天的奖励积分（`billing::checkin_for` 的 `{success, msg}` 契约）。
 pub async fn claim_daily_checkin(
     ctx: &PluginCtx,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let mut credential = control::credential_of(ctx, account_id).await?;
-    // 领之前记一份余额好算增量；读失败不阻断签到（只是少一个读数，不能因此判签到失败）
-    let before = subscription::fetch_subscription(&credential).await.ok();
-    let after = control::claim_bonus(ctx, &mut credential).await?;
-    // 签到与新手任务是同一个上游动作：签到成功即新手任务也已完成 —— 顺手把
-    // 当天所有奖励记进新手任务台账，免得面板一直显示「未完成」（见 `onboarding`）。
-    super::onboarding::mark_claimed(ctx, account_id, &subscription::bonuses_of(&after)).await;
-    let gained = before
-        .as_ref()
-        .map(|before| subscription::gained_between(before, &after));
-    let msg = match gained {
-        Some(points) if points > 0.0 => format!("已领取 {points} 积分"),
-        Some(_) => "今天没有可领的奖励（或已领过）".to_string(),
-        // 增量算不出（领取前的读数没拿到）时如实说「已签到」，不编一个数字
-        None => "已签到".to_string(),
+    let previous = ctx.ledger_get(account_id, "dailyCheckin").await.ok();
+    let result = claim_inner(ctx, account_id).await;
+    let (completed, status, message) = match &result {
+        Ok(value) => (
+            true,
+            if value.get("gained").and_then(Value::as_f64).unwrap_or(0.0) > 0.0 { "claimed" } else { "done" },
+            value.get("msg").and_then(Value::as_str).unwrap_or("已签到").to_string(),
+        ),
+        Err(error) => (false, "failed", error.message.clone()),
     };
-    Ok(json!({ "success": true, "msg": msg, "gained": gained }))
+    let already_completed = previous.as_ref().is_some_and(|value| {
+        value.get("completed").and_then(Value::as_bool) == Some(true)
+            && value.get("at").and_then(Value::as_i64).and_then(crate::beijing::date_key_of_ms)
+                .is_some_and(|day| day == crate::beijing::today_key())
+    });
+    if !completed && already_completed { return result; }
+    let daily = json!({
+        "kind": "daily", "at": crate::logging::now_ms(), "completed": completed,
+        "status": status, "message": message, "completedCount": usize::from(completed),
+        "totalCount": 1, "sourcesComplete": completed,
+    });
+    if let Err(error) = ctx.ledger_put(account_id, "dailyCheckin", &daily).await {
+        crate::logging::verbose("[OfficeAce]", &format!("签到状态保存失败：{error}"));
+    }
+    result
+}
+
+async fn claim_inner(
+    ctx: &PluginCtx,
+    account_id: &str,
+) -> Result<Value, GatewayError> {
+    let mut credential = control::credential_of(ctx, account_id).await?;
+    let before = control::subscription_of(ctx, &mut credential).await?;
+    match before.get("subscribe_status").and_then(Value::as_str) {
+        Some("UNSUBSCRIBED") => return Err(GatewayError::with_status(
+            409, "果办尚未开通体验套餐，请先到签到中心开通零元体验套餐，再领取奖励",
+        ).with_code("officeace_subscription_required")),
+        Some("EXPIRED" | "FROZEN") => return Err(GatewayError::with_status(
+            409, "果办套餐已到期或被冻结，请到官方客户端处理；这里不会自动续费",
+        )),
+        Some("SUBSCRIBED") => {}
+        _ => return Err(GatewayError::with_status(502, "无法确认果办套餐状态，未执行签到，请先查询套餐")),
+    }
+    control::resolve_project(ctx, &mut credential).await?;
+    let claimed = control::claim_bonus(ctx, &mut credential).await?;
+    let items = claimed.get("bonus_skus").and_then(Value::as_array)
+        .ok_or_else(|| GatewayError::with_status(502, "官方未返回有效的奖励领取结果，请查询积分后再操作"))?;
+    let bonuses = subscription::bonuses_of(&claimed);
+    let gained: f64 = bonuses.iter().map(subscription::Bonus::remaining).sum();
+    if items.len() != bonuses.len() || !gained.is_finite() || !items.is_empty() && gained <= 0.0 {
+        return Err(GatewayError::with_status(502, "官方返回了奖励条目，但未能确认到账积分，请查询积分明细"));
+    }
+    super::onboarding::mark_claimed(ctx, account_id, &bonuses).await;
+    let message = if gained > 0.0 {
+        format!("已领取 {gained:.0} 积分")
+    } else {
+        "今天没有可领的奖励（或已领过）".to_string()
+    };
+    let rewards: Vec<Value> = bonuses.iter().map(|bonus| json!({
+        "key": bonus.activity_id, "title": bonus.name, "ok": true,
+        "already": false, "gained": bonus.remaining(),
+    })).collect();
+    Ok(json!({ "success": true, "msg": message, "gained": gained, "rewards": rewards }))
 }

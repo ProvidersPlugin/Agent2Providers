@@ -63,16 +63,13 @@ pub async fn query(
         proxy.as_ref(),
     )
     .await?;
-    if quota_response.status == 401 || quota_response.status == 403 {
-        return Err(GatewayError::with_status(401, "Accio 凭证已失效，请重新登录"));
-    }
     let quota = auth::payload(quota_response, "额度查询").map(auth::unwrap_data)?;
     let usage_percent = quota
         .get("usagePercent")
         .or_else(|| quota.get("usage_percent"))
         .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-        .clamp(0.0, 100.0);
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+        .ok_or_else(|| GatewayError::with_status(502, "Accio 额度查询未返回有效用量，无法确认剩余额度"))?;
     let countdown = quota
         .get("refreshCountdownSeconds")
         .or_else(|| quota.get("refresh_countdown_seconds"))
@@ -89,13 +86,13 @@ pub async fn query(
     )
     .await
     {
-        Ok(response) if response.ok => response
-            .payload
-            .map(auth::unwrap_data)
-            .map(|value| subscription_shape(&value))
-            .unwrap_or(Value::Null),
-        // 免费账号没有订阅：失败当「没有」，不影响额度那一半的展示
-        _ => Value::Null,
+        Ok(response) => match auth::payload(response, "订阅查询") {
+            Ok(payload) => subscription_shape(&auth::unwrap_data(payload)),
+            Err(error) if error.status_code == 401 => return Err(error),
+            Err(_) => Value::Null,
+        },
+        // 免费账号可以没有订阅；鉴权失败仍需触发调用方的刷新重试。
+        Err(_) => Value::Null,
     };
 
     let mut wallet = json!({

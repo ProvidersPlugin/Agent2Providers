@@ -33,6 +33,9 @@ pub mod eventstream;
 pub mod image;
 pub mod local;
 pub mod login;
+mod login_callback;
+mod login_methods;
+mod login_oauth;
 pub mod models;
 pub mod refresh;
 pub mod request;
@@ -77,11 +80,7 @@ impl Provider for KiroProvider {
             .with_login(vec![
                 proto::LoginMethod::Browser {
                     button: "Kiro 网页登录".into(),
-                    hint: Some(
-                        "在弹出的登录页里选 Google、GitHub、AWS Builder ID 或 IAM Identity Center；\
-                         回调会回到本机，完成后自动添加账号。"
-                            .into(),
-                    ),
+                    hint: Some(login_methods::INSTRUCTIONS.into()),
                 },
                 proto::LoginMethod::Desktop {
                     button: "导入 kiro-cli / Kiro IDE 登录态".into(),
@@ -183,8 +182,8 @@ impl Provider for KiroProvider {
         Box::pin(async move {
             let mut account_id = account.to_string();
             if account_id.is_empty() {
-                if let Ok((id, _)) = refresh::ensure(ctx, "").await {
-                    account_id = id;
+                if let Ok(stored) = ctx.store_get(PROVIDER_ID, "").await {
+                    account_id = stored.id;
                 }
             }
             Ok(models::list(&account_id))
@@ -244,7 +243,7 @@ impl Provider for KiroProvider {
                 crate::native_search::CAPABILITIES | crate::native_search::SEARCH => {
                     search::dispatch(ctx, account, action, payload).await
                 }
-                "auth.methods" => Ok(login_methods()),
+                "auth.methods" => Ok(login_methods::methods()),
                 other => Err(agent2api_provider_sdk::unsupported(format!(
                     "Kiro 不支持管理动作「{other}」"
                 ))),
@@ -295,12 +294,14 @@ impl Provider for KiroProvider {
                 Some(1) => login::start_local().await,
                 // 2 = API key，走「粘贴凭证」而不是登录流程
                 Some(2) => Err("Kiro API key 请用「粘贴 API key」方式添加".to_string()),
-                // 0 / 旧入口 = Kiro 门户浏览器登录
-                _ => {
-                    let proxy = payload.get("proxy").filter(|value| !value.is_null());
-                    let proxy = proxy.and_then(|value| serde_json::from_value(value.clone()).ok());
-                    login::start(proxy.as_ref()).await
+                Some(0) | None => {
+                    let proxy = payload.get("proxy").filter(|value| !value.is_null())
+                        .map(|value| serde_json::from_value::<proto::WireProxy>(value.clone()))
+                        .transpose().map_err(|_| "Kiro 登录代理配置无效")?;
+                    let inputs = payload.get("inputs").unwrap_or(&Value::Null);
+                    login::start(proxy.as_ref(), inputs).await
                 }
+                Some(_) => Err("请选择有效的 Kiro 登录方式".into()),
             }
         })
     }
@@ -313,57 +314,18 @@ impl Provider for KiroProvider {
         Box::pin(async move { Ok(login::poll(flow).await) })
     }
 
+    fn login_callback_result<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        callback: proto::LoginCallback,
+    ) -> SendFuture<'a, agent2api_provider_sdk::LoginCallbackResult> {
+        Box::pin(async move { Ok(login::callback(callback).await) })
+    }
+
     fn login_cancel<'a>(&'a self, _ctx: &'a PluginCtx, flow: &'a str) -> SendFuture<'a, ()> {
         Box::pin(async move {
             login::cancel(flow);
             Ok(())
         })
     }
-}
-
-/// 界面上的三种登录方式（字段名按网关 `auth.methods` 的 camelCase 契约）。
-fn login_methods() -> Value {
-    serde_json::json!({
-        "methods": [
-            {
-                "methodIndex": 0,
-                "type": "oauth",
-                "label": "Kiro 网页登录",
-                "instructions": "在弹出的登录页里选 Google、GitHub、AWS Builder ID 或 IAM Identity Center；回调会回到本机，完成后自动添加账号。",
-                "prompts": [],
-                "localOnly": false,
-                "manualCallback": false,
-                "callbackInput": "url"
-            },
-            {
-                "methodIndex": 1,
-                "type": "oauth",
-                "label": "导入 kiro-cli / Kiro IDE 登录态",
-                "instructions": "直接使用本机 kiro-cli 或 Kiro IDE 已登录的账号，不需要复制令牌；续期后会写回原处。",
-                "prompts": [],
-                "localOnly": true,
-                "manualCallback": false,
-                "callbackInput": "url"
-            },
-            {
-                "methodIndex": 2,
-                "type": "api",
-                "label": "Kiro API key",
-                "instructions": "粘贴 ksk_ 开头的 API key。",
-                "prompts": [
-                    {
-                        "key": "apiKey",
-                        "type": "text",
-                        "label": "API key",
-                        "placeholder": "ksk_…",
-                        "secret": true,
-                        "optional": false
-                    }
-                ],
-                "localOnly": false,
-                "manualCallback": false,
-                "callbackInput": "url"
-            }
-        ]
-    })
 }

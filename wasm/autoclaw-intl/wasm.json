@@ -1,0 +1,20 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "resources.v1", "accounts.cas.v1", "settings.v1", "settings.schema.v1",
+    "clock.v1", "random.v1", "locks.v1", "state.v1", "catalog.v1",
+    "chat.stream.v1", "login.forms.v1", "login.interaction.v1", "runtime.platform.v1", "runtime.architecture.v1",
+    "native.helpers.v1", "desktop.credentials.v1", "errors.v1", "checkin.rolling.v1",
+    "login.managed.v1", "login.loopback.v1", "login.captcha.aliyun.v1"
+  ],
+  "managed_login": {
+    "methods": [0, 1],
+    "loopback_profiles": ["autoclaw-intl.google.v1", "autoclaw-intl.zai.v1"],
+    "authorization_origins": ["https://accounts.google.com"]
+  },
+  "helpers": ["desktop.credentials.autoclaw-intl.v1", "desktop.refresh.autoclaw-intl.v1"],
+  "origins": ["https://autoglm-api.autoglm.ai"],
+  "memory_mib": 128,
+  "concurrency": 8
+}

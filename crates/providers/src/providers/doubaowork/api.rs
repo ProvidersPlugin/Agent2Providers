@@ -9,11 +9,31 @@ use serde_json::{json, Value};
 
 use super::PROVIDER_ID;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 pub const BASE_URL: &str = "https://www.doubao.com";
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 // 上游按 pc_version 下发模型菜单；只有 runtime_version 时会成功返回空菜单。
 const DEFAULT_CLIENT_VERSION: &str = "2.33.5";
+const CONTROL_CLIENT_VERSION: &str = "2.34.12";
+
+fn control_path(path: &str) -> bool {
+    matches!(path, "/alice/basic/launch" | "/alice/user/launch")
+        || path.starts_with("/alice/commerce/")
+        || path.starts_with("/alice/ug/")
+}
+
+fn client_version<'a>(credentials: &'a Value, path: &str) -> &'a str {
+    credentials["clientVersion"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(if control_path(path) {
+            CONTROL_CLIENT_VERSION
+        } else {
+            DEFAULT_CLIENT_VERSION
+        })
+}
 
 pub fn client(
     proxy: Option<&proto::WireProxy>,
@@ -22,9 +42,7 @@ pub fn client(
 ) -> Result<reqwest::Client, GatewayError> {
     type Key = (String, Option<crate::timeouts::Timeouts>);
     static CLIENTS: OnceLock<Mutex<HashMap<Key, reqwest::Client>>> = OnceLock::new();
-    let proxy = proxy
-        .map(proto::WireProxy::to_url)
-        .unwrap_or_else(|| gateway_proxy.trim().to_string());
+    let proxy = crate::http::proxy_url(proxy, gateway_proxy);
     let timeouts = stream.then(crate::timeouts::current);
     let key = (proxy.clone(), timeouts);
     let clients = CLIENTS.get_or_init(Mutex::default);
@@ -116,11 +134,8 @@ pub fn headers(credentials: &Value) -> Result<Vec<(String, String)>, GatewayErro
 /// 拦下 —— 生图走的就是同一个 `/chat/completion`，没有例外。所以两边共用本
 /// 函数，编码按 [`encode`] 的 RFC3986 未保留字符集自己来。
 pub fn endpoint(credentials: &Value, path: &str) -> Result<String, GatewayError> {
-    let client_version = credentials["clientVersion"]
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_CLIENT_VERSION);
+    let client_version = client_version(credentials, path);
+    let control = control_path(path);
     let mut query = vec![
         ("aid", "1044603".to_string()),
         ("real_aid", "1044603".into()),
@@ -131,7 +146,7 @@ pub fn endpoint(credentials: &Value, path: &str) -> Result<String, GatewayError>
         ("doubao_device_platform", "desktop".into()),
         ("client_platform", "pc_client".into()),
         ("pkg_type", "release_version".into()),
-        ("runtime", "web".into()),
+        ("runtime", if control { "local_web" } else { "web" }.into()),
         ("runtime_version", "3.42.2".into()),
         ("pc_version", client_version.to_string()),
         ("doubao_pc_version", client_version.to_string()),
@@ -162,12 +177,24 @@ pub fn endpoint(credentials: &Value, path: &str) -> Result<String, GatewayError>
     }
     if let Some(device) = device.as_deref() {
         query.push(("device_id", device.into()));
-        query.push(("fp", format!("verify_{device}")));
-    } else if let Some(fingerprint) = credentials["fingerprint"]
+    }
+    if let Some(fingerprint) = credentials["fingerprint"]
         .as_str()
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty() && (control || device.is_none()))
     {
         query.push(("fp", fingerprint.into()));
+    } else if let Some(device) = device.as_deref() {
+        query.push(("fp", format!("verify_{device}")));
+    }
+    if control {
+        for (wire, field) in [("tea_uuid", "teaUuid"), ("web_tab_id", "webTabId")] {
+            if let Some(value) = credentials[field]
+                .as_str()
+                .filter(|value| !value.is_empty())
+            {
+                query.push((wire, value.into()));
+            }
+        }
     }
     let query = query
         .iter()
@@ -183,7 +210,25 @@ pub fn request(
     path: &str,
 ) -> Result<reqwest::RequestBuilder, GatewayError> {
     let mut builder = client.post(endpoint(credentials, path)?);
-    for (key, value) in headers(credentials)? {
+    let control = control_path(path);
+    let mut headers = headers(credentials)?;
+    if control {
+        for (key, value) in &mut headers {
+            if key == header::REFERER.as_str() && path.starts_with("/alice/ug/") {
+                *value = format!("{BASE_URL}/pc/agent-explore");
+            } else if key == header::USER_AGENT.as_str() && value.trim() == USER_AGENT {
+                *value = format!(
+                    "{USER_AGENT} SamanthaDoubaoWork/{}",
+                    client_version(credentials, path)
+                );
+            }
+        }
+        headers.push((
+            header::ACCEPT.as_str().into(),
+            "application/json, text/plain, */*".into(),
+        ));
+    }
+    for (key, value) in headers {
         builder = builder.header(key, value);
     }
     Ok(builder)
@@ -273,12 +318,24 @@ fn verify_message(scene: &str) -> String {
 }
 
 pub fn error(status: u16, value: &Value) -> GatewayError {
+    let detail = value.get("error").filter(|value| value.is_object()).unwrap_or(value);
+    if let Some(code) = detail["code"].as_str().or_else(|| value["code"].as_str()) {
+        if matches!(code, "doubaowork_subscription_required" | "doubaowork_model_restricted") {
+            return GatewayError::with_status(403, if code == "doubaowork_subscription_required" {
+                "豆包工作官方确认当前账号不能使用此订阅专属模型；这不是登录过期，也不是已确认的请求频率限制"
+            } else {
+                "豆包工作官方限制了当前模型的使用；请在官方客户端核对订阅与模型权限，未将限制提示当作正常回答"
+            }).with_code(code);
+        }
+    }
     let detail = value
         .get("error_detail")
         .filter(|value| value.is_object())
         .or_else(|| value.get("error").filter(|value| value.is_object()))
         .unwrap_or(value);
-    let code = number(&detail["code"])
+    let code = number(&detail["upstream_code"])
+        .or_else(|| number(&value["upstream_code"]))
+        .or_else(|| number(&detail["code"]))
         .or_else(|| number(&detail["error_code"]))
         .or_else(|| number(&value["code"]))
         .or_else(|| number(&value["error_code"]));
@@ -316,7 +373,8 @@ pub fn error(status: u16, value: &Value) -> GatewayError {
 }
 
 pub fn error_body(error: &GatewayError) -> Value {
-    json!({"message":error.message,"code":error.upstream_code,"error":{"message":error.message,"code":error.upstream_code}})
+    json!({"message":error.message,"code":error.code,"status":error.status_code,"upstream_code":error.upstream_code,
+        "error":{"message":error.message,"code":error.code,"status":error.status_code,"upstream_code":error.upstream_code}})
 }
 
 pub async fn json_response(
@@ -324,6 +382,7 @@ pub async fn json_response(
     ug: bool,
 ) -> Result<Value, GatewayError> {
     let mut response = builder
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| GatewayError::with_status(502, crate::http::describe(&error)))?;

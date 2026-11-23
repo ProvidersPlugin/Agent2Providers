@@ -1,0 +1,17 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "resources.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1",
+    "random.v1", "locks.v1", "sessions.v1", "state.v1", "catalog.v1",
+    "chat.stream.v1", "login.forms.v1", "login.callback.v1", "catalog.accounts.v1",
+    "checkin.rolling.v1", "errors.v1", "http.timeout.v1"
+  ],
+  "origins": [
+    "https://lobsterai-server.youdao.com",
+    "https://lobsterai.youdao.com",
+    "https://api-overmind.youdao.com"
+  ],
+  "memory_mib": 128,
+  "concurrency": 8
+}

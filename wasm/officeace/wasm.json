@@ -1,0 +1,30 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "resources.v1", "http.account-origin.v1", "accounts.cas.v1", "accounts.identity.v1", "locks.v1",
+    "clock.v1", "random.v1", "state.v1", "catalog.v1", "catalog.accounts.v1",
+    "chat.stream.v1", "protocol.convert.v1", "errors.v1", "tasks.v1",
+    "login.forms.v1", "login.interaction.v1"
+  ],
+  "origins": [
+    "https://agentarts.cn-southwest-2.myhuaweicloud.com",
+    "https://auth.huaweicloud.com",
+    "https://sts.cn-north-4.myhuaweicloud.com",
+    "https://iam.myhuaweicloud.com"
+  ],
+  "account_origin": {
+    "secret_field": "baseUrl",
+    "base_path": "/v2",
+    "host_suffix": ".officeace.cn-southwest-2.huaweicloud-agentarts.com",
+    "routes": [
+      { "method": "GET", "path": "/v2/models" },
+      { "method": "POST", "path": "/v2/chat/completions" },
+      { "method": "GET", "path": "/v1/subscription" },
+      { "method": "GET", "path": "/v1/model-token-rates" },
+      { "method": "POST", "path": "/v1/subscription/bonus/claim" }
+    ]
+  },
+  "memory_mib": 128,
+  "concurrency": 8
+}

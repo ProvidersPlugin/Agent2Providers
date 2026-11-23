@@ -1,8 +1,6 @@
-//! 小浣熊 1.1.5 的请求头：组织身份、桌面端身份、请求 id 与外部覆盖。
+//! 组织身份、页面业务身份与对话请求的外部头部覆盖。
 //!
 //! 组织身份取自同一份凭证；个人身份不发送 X-Org-Code。
-
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
@@ -51,29 +49,6 @@ pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
         ("X-Client-Platform".to_string(), platform.to_string()),
         ("X-Client-Version".to_string(), "v1.1.5".to_string()),
     ]
-}
-
-/// 每请求唯一的 `X-Request-Id`，形态与官方 `createRequestID` 相同：
-/// `relay_js_<毫秒时间戳>_<8 位十六进制>`。
-///
-/// 官方用 xorshift 生成短随机串；这里也是 xorshift64，种子混入纳秒时间戳与
-/// 进程内单调计数器 —— 同一毫秒内的并发请求不会撞车，也不引入新依赖。
-pub(super) fn request_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let mut state = (now.as_nanos() as u64)
-        ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ u64::from(std::process::id());
-    if state == 0 {
-        state = 1;
-    }
-    state ^= state << 13;
-    state ^= state >> 7;
-    state ^= state << 17;
-    format!("relay_js_{}_{:08x}", now.as_millis(), (state >> 32) as u32)
 }
 
 /// 合并外部头部文件：同名（大小写不敏感）覆盖，其余追加。

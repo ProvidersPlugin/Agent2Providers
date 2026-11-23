@@ -1,0 +1,71 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
+    "runtime.platform.v1", "runtime.architecture.v1", "locks.v1", "state.v1",
+    "catalog.v1", "chat.stream.v1", "protocol.convert.v1",
+    "login.forms.v1", "login.callback.v1", "errors.v1",
+    "images.v1", "resources.v1", "resources.fetch-public.v1", "desktop.launch.v1"
+  ],
+  "origins": [
+    "https://accounts.google.com",
+    "https://oauth2.googleapis.com",
+    "https://www.googleapis.com",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    "https://daily-cloudcode-pa.googleapis.com",
+    "https://cloudcode-pa.googleapis.com"
+  ],
+  "desktop_launch": {
+    "version": 1,
+    "clients": [
+      {
+        "id": "classic", "label": "Antigravity", "platform": "windows",
+        "executables": ["Antigravity.exe", "antigravity.exe"],
+        "locations": [
+          {"root":"local_app_data","path":"Programs/Antigravity/Antigravity.exe"},
+          {"root":"local_app_data","path":"Antigravity/Antigravity.exe"},
+          {"root":"program_files","path":"Antigravity/Antigravity.exe"},
+          {"root":"program_files_x86","path":"Antigravity/Antigravity.exe"}
+        ],
+        "identity": {"kind":"pe_product","values":["Antigravity"],"minimum_version":[2,0,0],"absent":["resources/app/product.json"]},
+        "hot_switch": {"service_executables":["language_server.exe","language_server_windows_x64.exe"],"respawn_timeout_ms":15000},
+        "proxy_launch": {"kind":"chromium_env"},
+        "resources": [
+          {"id":"oauth","label":"Antigravity 登录凭证","storage":{"kind":"keyring","target":"gemini:antigravity","username":"antigravity"}}
+        ]
+      },
+      {
+        "id": "ide", "label": "Antigravity IDE", "platform": "windows",
+        "executables": ["Antigravity.exe", "Antigravity IDE.exe", "antigravity-ide.exe", "antigravity_ide.exe"],
+        "locations": [
+          {"root":"local_app_data","path":"Programs/Antigravity IDE/Antigravity IDE.exe"},
+          {"root":"local_app_data","path":"Programs/Antigravity IDE/Antigravity.exe"},
+          {"root":"local_app_data","path":"Programs/antigravity-ide/antigravity-ide.exe"},
+          {"root":"local_app_data","path":"Programs/antigravity_ide/antigravity_ide.exe"},
+          {"root":"local_app_data","path":"Programs/Antigravity/Antigravity.exe"},
+          {"root":"local_app_data","path":"Antigravity IDE/Antigravity IDE.exe"},
+          {"root":"local_app_data","path":"Antigravity IDE/Antigravity.exe"},
+          {"root":"program_files","path":"Antigravity IDE/Antigravity IDE.exe"},
+          {"root":"program_files","path":"Antigravity IDE/Antigravity.exe"},
+          {"root":"program_files","path":"Antigravity/Antigravity.exe"}
+        ],
+        "identity": {"kind":"json_product","path":"resources/app/product.json","field":"nameShort","values":["Antigravity IDE"]},
+        "proxy_launch": {"kind":"chromium_env"},
+        "resources": [
+          {"id":"state","label":"Antigravity IDE 登录状态","storage":{"kind":"sqlite",
+            "location":{"root":"app_data","path":"Antigravity IDE/User/globalStorage/state.vscdb"},
+            "variants":[
+              {"root":"app_data","path":"antigravity-ide/User/globalStorage/state.vscdb"},
+              {"root":"app_data","path":"antigravity_ide/User/globalStorage/state.vscdb"},
+              {"root":"installation","path":"data/user-data/User/globalStorage/state.vscdb"}
+            ],
+            "table":"ItemTable","key_column":"key","value_column":"value",
+            "keys":["antigravityUnifiedStateSync.oauthToken","antigravityUnifiedStateSync.userStatus","antigravityUnifiedStateSync.enterprisePreferences","antigravityOnboarding","jetskiStateSync.agentManagerInitState"]}}
+        ]
+      }
+    ]
+  },
+  "memory_mib": 128,
+  "concurrency": 8
+}

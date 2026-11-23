@@ -15,9 +15,9 @@
 //! `systemPromptContext.systemPromptOverride`（来自 `system` 消息）与
 //! `rulesMessage`（来自 `developer` 消息）。
 //!
-//! ── 归一化规则总览（每条都对应原实现的一段，改前请先读它）────
-//!   1. `system` / `developer` 抽离，不进 `messages`；且必须位于所有对话
-//!      消息之前（顺序错了，模型的「指令 vs 历史」分层就错了）；
+//! ── 归一化规则总览 ──────────────────────────────────────────
+//!   1. `system` / `developer` 无论位于何处，都按各自出现顺序抽离到独立字段；
+//!      上游不接受指令消息，抽离须早于相邻消息合并，避免打断工具结果配对；
 //!   2. 连续多条 `tool` 消息（OpenAI 并行工具调用）**合并**为单条 tool 消息的
 //!      多个 `tool_result` 块 —— 上游明确拒绝 tool 消息连续出现；
 //!   3. 相邻 `assistant` 消息合并（上游要求 assistant 不带 toolCall 时
@@ -104,12 +104,10 @@ pub struct NormalizeOptions {
     pub allow_trailing_tool_calls: bool,
 }
 
-/// 中间形态：归一化 + 相邻合并后、抽离 system/developer 之前的一条消息。
+/// 单条消息归一化后的中间形态。
 ///
-/// 为什么需要中间层：原实现先 `normalizeMessage` 全部消息、再做相邻合并扫描，
-/// 最后在第二次遍历里抽离 system/developer 并做工具配对校验 —— 合成 tool 消息
-/// （打断补配对）插在「pending 工具调用」与新 user 消息之间，位置不能变
-/// （插错会让上游看到 tool 结果出现在它对应的 tool_call 之前）。
+/// 指令必须先抽离，不能参与聊天消息合并与工具配对；合成 tool 结果仍须插在
+/// 待响应工具调用与新 user 消息之间。
 enum Stage1 {
     /// system / developer：此时只记角色与文本
     Directive { role: DirectiveRole, text: String },
@@ -123,13 +121,8 @@ enum DirectiveRole {
     Developer,
 }
 
-impl DirectiveRole {
-    fn name(self) -> &'static str {
-        match self {
-            DirectiveRole::System => "system",
-            DirectiveRole::Developer => "developer",
-        }
-    }
+pub(super) fn is_directive(message: &Value) -> bool {
+    matches!(message.get("role").and_then(Value::as_str), Some("system" | "developer"))
 }
 
 /// 把 OpenAI `messages` 归一化成上游消息块（原实现 `normalizeMessages`）。
@@ -142,34 +135,35 @@ pub fn normalize_messages(
     if messages.is_empty() {
         return Err(GatewayError::with_status(400, "messages 必须是非空数组"));
     }
-    let mut stage: Vec<Stage1> = Vec::with_capacity(messages.len());
+    let mut stage: Vec<(usize, Value)> = Vec::with_capacity(messages.len());
+    let mut system_parts = Vec::new();
+    let mut developer_parts = Vec::new();
     for (index, message) in messages.iter().enumerate() {
-        stage.push(normalize_message(message, index)?);
+        match normalize_message(message, index)? {
+            Stage1::Directive { role: DirectiveRole::System, text } => system_parts.push(text),
+            Stage1::Directive { role: DirectiveRole::Developer, text } => developer_parts.push(text),
+            Stage1::Message(message) => stage.push((index, message)),
+        }
     }
-    assemble(merge_adjacent(stage), options)
+    Ok(NormalizedMessages {
+        messages: assemble(merge_adjacent(stage), options)?,
+        system_prompt: join_directives(&system_parts),
+        rules_message: join_directives(&developer_parts),
+    })
 }
 
 /// 工具结果续接请求的归一化（原实现 `normalizeContinuationMessages`）。
 ///
-/// 与 [`normalize_messages`] 的区别：**只做 `normalizeMessage` + tool 合并**，
-/// 不合并相邻 assistant、不抽离 system/developer、不做配对校验。
-/// 用途是「工具续接时从历史里切出那一条 tool 消息」
-/// （对应 `session-registry.mjs` 的 `continuationToolMessage`，T-d3 会用）。
+/// 与 [`normalize_messages`] 的区别：不合并相邻 assistant、不做配对校验。
+/// 用途是「工具续接时从历史里切出那一条 tool 消息」。
 ///
-/// 空输入返回空 Vec（原实现同，不报错 —— 调用方拿它判「没有可续接的内容」）。
-/// 出现 system/developer 时返回错误：续接片段里它们没有意义，原实现会在
-/// 调用点的「只能有一条 tool」校验里失败，这里提前给出更准确的文案。
+/// 空输入返回空 Vec；system/developer 仍需校验，但不进入续接消息，
+/// 完整指令已由准备阶段抽离，并随本次 turn 的独立字段提交。
 pub fn normalize_continuation_messages(messages: &[Value]) -> Result<Vec<Value>, GatewayError> {
     let mut normalized: Vec<Value> = Vec::with_capacity(messages.len());
     for (index, message) in messages.iter().enumerate() {
-        match normalize_message(message, index)? {
-            Stage1::Directive { role, .. } => {
-                return Err(GatewayError::with_status(400, format!(
-                    "messages[{index}] 的 {} 必须位于所有对话消息之前",
-                    role.name()
-                )));
-            }
-            Stage1::Message(value) => normalized.push(value),
+        if let Stage1::Message(value) = normalize_message(message, index)? {
+            normalized.push(value);
         }
     }
     let mut merged: Vec<Value> = Vec::with_capacity(normalized.len());
@@ -373,73 +367,45 @@ fn normalize_tool(object: &Map<String, Value>, index: usize) -> Result<Stage1, G
 ///   - 相邻 assistant 且**至少一条没有 tool_use**：`content` 追加合并；
 ///     两条都带 tool_use 时**不合并**（原实现同：无法安全合并，
 ///     留到配对校验里报错，比静默错位好）。
-fn merge_adjacent(stage: Vec<Stage1>) -> Vec<Stage1> {
-    let mut merged: Vec<Stage1> = Vec::with_capacity(stage.len());
-    for item in stage {
-        let Stage1::Message(message) = &item else {
-            // system/developer 不参与合并（它们在下一步被抽离）
-            merged.push(item);
+fn merge_adjacent(stage: Vec<(usize, Value)>) -> Vec<(usize, Value)> {
+    let mut merged: Vec<(usize, Value)> = Vec::with_capacity(stage.len());
+    for (index, message) in stage {
+        let Some((_, previous)) = merged.last() else {
+            merged.push((index, message));
             continue;
         };
-        let previous = match merged.last() {
-            Some(Stage1::Message(previous)) => previous,
-            // 前一条是指令，或列表为空：不合并
-            _ => {
-                merged.push(item);
-                continue;
-            }
-        };
-        let current_type = message_type(message);
+        let current_type = message_type(&message);
         let previous_type = message_type(previous);
         let mergeable = if current_type == Some("tool") && previous_type == Some("tool") {
             true
         } else if current_type == Some("assistant") && previous_type == Some("assistant") {
-            !has_tool_use(previous) || !has_tool_use(message)
+            !has_tool_use(previous) || !has_tool_use(&message)
         } else {
             false
         };
         if mergeable {
-            if let Some(Stage1::Message(previous)) = merged.last_mut() {
-                append_content(previous, message);
+            if let Some((_, previous)) = merged.last_mut() {
+                append_content(previous, &message);
             }
             continue;
         }
-        merged.push(item);
+        merged.push((index, message));
     }
     merged
 }
 
-/// 抽离 system/developer + 工具配对校验 + 合成打断消息（原实现第 266-341 行）。
+/// 工具配对校验 + 合成打断消息；下标保留客户端原始位置。
 fn assemble(
-    merged: Vec<Stage1>,
+    merged: Vec<(usize, Value)>,
     options: NormalizeOptions,
-) -> Result<NormalizedMessages, GatewayError> {
+) -> Result<Vec<Value>, GatewayError> {
     let mut conversation: Vec<Value> = Vec::with_capacity(merged.len());
-    let mut system_parts: Vec<String> = Vec::new();
-    let mut developer_parts: Vec<String> = Vec::new();
     // 已出现过的 tool_call_id：重复出现说明客户端把同一轮工具调用塞了两次
     let mut known_tool_calls: Vec<String> = Vec::new();
     // 待响应工具调用：tool_call_id → toolName（assistant 声明、等 tool 结果）
     let mut pending_tool_calls: Vec<(String, String)> = Vec::new();
 
-    for (index, item) in merged.into_iter().enumerate() {
-        let message = match item {
-            Stage1::Directive { role, text } => {
-                if !conversation.is_empty() {
-                    return Err(GatewayError::with_status(400, format!(
-                        "messages[{index}] 的 {} 必须位于所有对话消息之前",
-                        role.name()
-                    )));
-                }
-                match role {
-                    DirectiveRole::System => system_parts.push(text),
-                    DirectiveRole::Developer => developer_parts.push(text),
-                }
-                continue;
-            }
-            Stage1::Message(message) => message,
-        };
-
+    for (index, message) in merged {
         match message_type(&message) {
             Some("assistant") => {
                 if !pending_tool_calls.is_empty() {
@@ -486,13 +452,7 @@ fn assemble(
         ));
     }
 
-    // 多条 system/developer 用空行连接（原实现 `filter(Boolean).join('\n\n')`；
-    // 单条时结果就是它自己）
-    Ok(NormalizedMessages {
-        messages: conversation,
-        system_prompt: join_directives(&system_parts),
-        rules_message: join_directives(&developer_parts),
-    })
+    Ok(conversation)
 }
 
 /// 历史以 tool 结果结尾时补的那条合成 user 消息（见 `SYNTHETIC_CONTINUE_TEXT`）。

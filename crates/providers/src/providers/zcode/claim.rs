@@ -140,7 +140,7 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 /// 空 `plans`，所以这张表要跟着官方 changelog（zcode.z.ai/cn/changelog）
 /// 一起更新；排障时也可以先用 `ZCODE_APP_VERSION` 环境变量试几个版本，
 /// 不必改代码重发版。
-const DEFAULT_APP_VERSION: &str = "3.18.0";
+pub(super) const DEFAULT_APP_VERSION: &str = "3.18.0";
 
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
@@ -299,7 +299,7 @@ pub const SETTING_APP_VERSION: &str = "appVersion";
 /// [`DEFAULT_APP_VERSION`] 的表：门槛不分地区）。用固定的 `"zcode"` 让
 /// 两家读到同一份设置 —— 用户在设置页填一次，两个地区同时生效；
 /// 若按地区分开存，用户改完国内版还得记得再改一次国际版。
-const APP_VERSION_SETTING_OWNER: &str = "zcode";
+pub(super) const APP_VERSION_SETTING_OWNER: &str = "zcode";
 
 /// 从网关读一次版本号覆盖，写进进程内快照（在拿到 ctx 的异步入口里调）。
 ///

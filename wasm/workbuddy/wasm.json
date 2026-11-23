@@ -1,0 +1,19 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "http.timeout.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
+    "locks.v1", "state.v1", "catalog.v1",
+    "chat.stream.v1", "protocol.convert.v1", "errors.v1", "tasks.v1",
+    "login.forms.v1", "login.interaction.v1", "native.helpers.v1", "desktop.credentials.v1",
+    "images.v1", "resources.v1", "resources.fetch-public.v1"
+  ],
+  "origins": [
+    "https://www.workbuddy.cn", "https://copilot.tencent.com", "https://www.codebuddy.cn",
+    "https://wb.tencentbuddy.com", "https://static.workbuddy.cn",
+    "https://acc-1258344699.cos.accelerate.myqcloud.com"
+  ],
+  "helpers": ["desktop.credentials.workbuddy.v1"],
+  "memory_mib": 128,
+  "concurrency": 8
+}

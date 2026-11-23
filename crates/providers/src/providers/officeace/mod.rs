@@ -42,6 +42,9 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! 本 crate 编译期禁止 unwrap/expect/panic（见 `main.rs` 的 deny）。
 
+mod activation;
+mod activation_state;
+mod agreement;
 pub mod balance;
 pub mod chat;
 pub mod checkin;
@@ -53,6 +56,8 @@ pub mod onboarding;
 pub mod probe;
 pub mod signer;
 pub mod subscription;
+mod trial;
+mod upstream;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture};
@@ -387,6 +392,26 @@ impl Provider for OfficeAceProvider {
         })
     }
 
+    fn admin_action<'a>(
+        &'a self,
+        ctx: &'a PluginCtx,
+        account: &'a str,
+        action: &'a str,
+        payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            match action {
+                "subscription.preview" => activation::preview(ctx, account).await,
+                "subscription.ensure" => activation::ensure(
+                    ctx, account, payload.get("confirmAgreements").and_then(Value::as_bool) == Some(true),
+                ).await,
+                _ => Err(agent2api_provider_sdk::unsupported(format!(
+                    "该提供商没有实现管理动作「{action}」"
+                ))),
+            }
+        })
+    }
+
     // ── 账号 ──────────────────────────────────────────────────
 
     /// 添加账号：手工导入网关凭据（`baseUrl` + `modelAppKey` / `modelAppSecret`）。
@@ -531,20 +556,6 @@ fn request_is_too_large(lower: &str) -> bool {
 
 // ─── 账号记录 / 视图 ───────────────────────────────────────────
 
-/// 取一条账号记录（网关记录形态：secret 摊平 + `id` / `provider` / `name`）。
-///
-/// 非空 account 必须命中，否则报「不存在或不可用」—— 与网关
-/// `store.officeace_account_record().ok_or_else(...)` 同一文案。
-async fn record_of(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
-    match crate::store::record(ctx, ID, account_id).await {
-        Ok(record) => Ok(record),
-        Err(_) => Err(GatewayError::with_status(
-            400,
-            "OfficeAce 账号不存在或不可用，请重新选择",
-        )),
-    }
-}
-
 /// 账号公开视图（界面账号页读的那几个键）。
 ///
 /// ── 为什么把「有没有控制面凭据」显式给出来 ──────────────────
@@ -666,6 +677,19 @@ async fn normalize(input: proto::NormalizeInput) -> Result<proto::NormalizedAcco
     }
     if credential.expires_at > 0 {
         secret["expiresAt"] = Value::from(credential.expires_at);
+    }
+    let refresh_token = crate::store::pick(&payload, &["refreshToken", "refresh_token"]);
+    if !refresh_token.is_empty() {
+        secret["refreshToken"] = Value::String(refresh_token);
+    }
+    if let Some(key_pair) = payload.get("dpopKeyPair").filter(|value| value.is_object()) {
+        secret["dpopKeyPair"] = key_pair.clone();
+    }
+    for key in ["accountId", "principalId", "accountName"] {
+        let value = crate::store::pick(&payload, &[key]);
+        if !value.is_empty() {
+            secret[key] = Value::String(value);
+        }
     }
     if let Some(name) = input
         .name

@@ -1,0 +1,23 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "resources.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
+    "runtime.platform.v1", "locks.v1", "state.v1", "catalog.v1", "catalog.accounts.v1",
+    "chat.stream.v1", "login.forms.v1", "login.interaction.v1", "login.managed.v1", "login.loopback.v1",
+    "checkin.rolling.v1", "errors.v1"
+  ],
+  "managed_login": {
+    "methods": [0],
+    "loopback_profiles": ["trae.pkce.v1"],
+    "authorization_origins": ["https://www.trae.cn"]
+  },
+  "origins": [
+    "https://trae-api-cn.mchost.guru",
+    "https://api.trae.cn",
+    "https://api.trae.com.cn",
+    "https://www.trae.cn"
+  ],
+  "memory_mib": 128,
+  "concurrency": 8
+}

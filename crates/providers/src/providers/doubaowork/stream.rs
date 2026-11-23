@@ -115,6 +115,9 @@ pub struct Decoder {
     images: Vec<Image>,
     pub done: bool,
     received: usize,
+    restriction: Option<GatewayError>,
+    active_block: Option<(String, bool)>,
+    chunk_channel: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -239,6 +242,13 @@ impl Decoder {
         for block in value.as_array().into_iter().flatten() {
             let kind = api::number(&block["block_type"]);
             if kind == Some(10040) {
+                let id = api::identifier(&block["block_id"]).unwrap_or_else(|| "default".into());
+                self.reasoning_blocks.insert(id.clone());
+                if append { self.active_block = Some((id.clone(), true)); }
+                if let Some(text) = block["content"]["thinking_block"]["text"].as_str()
+                    .or_else(|| block["content"]["thinking_block"]["content"].as_str()) {
+                    output.extend(self.blocks(&json!([{"block_id":id,"block_type":10000,"content":{"text_block":{"text":text}}}]), append)?);
+                }
                 continue;
             }
             if kind == Some(IMAGE_BLOCK) {
@@ -276,11 +286,9 @@ impl Decoder {
                 || id
                     .as_ref()
                     .is_some_and(|id| self.reasoning_blocks.contains(id));
-            let key = format!(
-                "{}:{}",
-                if reasoning { "reasoning" } else { "text" },
-                id.unwrap_or_else(|| "default".into())
-            );
+            let id = id.unwrap_or_else(|| "default".into());
+            if append { self.active_block = Some((id.clone(), reasoning)); }
+            let key = format!("{}:{id}", if reasoning { "reasoning" } else { "text" });
             let prior = self.blocks.entry(key).or_default();
             let delta = if append {
                 prior.push_str(text);
@@ -333,25 +341,50 @@ impl Decoder {
         {
             return Err(api::error(200, &value));
         }
+        for ext in [value.get("ext"), value.pointer("/message/ext"), value.pointer("/content/ext")]
+            .into_iter().flatten() {
+            if let Some(error) = super::restriction::error(ext) { self.restriction.get_or_insert(error); }
+        }
+        for patch in value["patch_op"].as_array().into_iter().flatten() {
+            if api::number(&patch["patch_object"]) == Some(50) {
+                if let Some(error) = super::restriction::error(&patch["patch_value"]["ext"]) {
+                    self.restriction.get_or_insert(error);
+                }
+            }
+        }
         if self.done {
             return Ok(Vec::new());
         }
         match event {
-            "SSE_REPLY_END" => { self.done = true; Ok(Vec::new()) },
+            "SSE_REPLY_END" if api::number(&value["end_type"]) == Some(3) => { self.done = true; Ok(Vec::new()) },
             "STREAM_MSG_NOTIFY" => self.blocks(&value["content"]["content_block"], true),
-            "CHUNK_DELTA" if value["text"].is_string() => self.blocks(&json!([{"block_id":"delta","block_type":10000,"content":{"text_block":{"text":value["text"]}}}]), true),
+            "CHUNK_DELTA" if value["text"].is_string() => {
+                let id = api::identifier(&value["block_id"]).or_else(|| self.active_block.as_ref().map(|(id, _)| id.clone()))
+                    .ok_or_else(|| GatewayError::with_status(502, "豆包工作紧凑文本增量缺少已确认的所属内容块"))?;
+                if self.chunk_channel.contains(&id) { return Ok(Vec::new()); }
+                self.blocks(&json!([{"block_id":id,"block_type":10000,"content":{"text_block":{"text":value["text"]}}}]), true)
+            },
             "FULL_MSG_NOTIFY" if api::number(&value["message"]["user_type"]) == Some(2) => self.blocks(&value["message"]["content_block"], false),
             "STREAM_CHUNK" => {
                 let mut deltas = Vec::new();
                 for patch in value["patch_op"].as_array().into_iter().flatten() {
                     if api::number(&patch["patch_object"]) != Some(1) { continue; }
+                    self.chunk_channel.extend(patch["patch_value"]["content_block"].as_array().into_iter().flatten()
+                        .filter(|block| block["content"]["text_block"]["text"].as_str()
+                            .or_else(|| block["content"]["thinking_block"]["text"].as_str())
+                            .or_else(|| block["content"]["thinking_block"]["content"].as_str())
+                            .is_some_and(|text| !text.is_empty()))
+                        .filter_map(|block| api::identifier(&block["block_id"])));
                     deltas.extend(self.blocks(&patch["patch_value"]["content_block"], api::number(&patch["patch_type"]) == Some(1))?);
                 }
                 Ok(deltas)
             }
+            "ASYNC_CHUNK_SNAPSHOT" => self.blocks(&value["message"]["content_block"], false),
             _ => Ok(Vec::new()),
         }
     }
+
+    pub(super) fn restriction(&self) -> Option<&GatewayError> { self.restriction.as_ref() }
 }
 
 pub struct Turn {

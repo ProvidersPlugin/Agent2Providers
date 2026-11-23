@@ -281,8 +281,6 @@ pub async fn refresh(
         &url,
         None,
         &headers,
-        // 鉴权域与 LLM 域是两个站点：不套账号级出网代理
-        // （与本家刷新 / 余额查询的既有取舍一致）
         None,
         Some(REQUEST_TIMEOUT_MS),
     )

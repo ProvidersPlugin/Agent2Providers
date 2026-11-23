@@ -7,6 +7,8 @@
 
 mod account_view;
 pub mod balance;
+mod client_identity;
+mod conversation;
 pub mod credentials;
 mod desktop;
 mod fallback;
@@ -59,14 +61,12 @@ impl Provider for RaccoonProvider {
                 // 上游会把 chunk 里的 model 换成内部名，客户端认自己请求的那个
                 sse_model_rewrite: true,
                 sse_strip_newline_chunks: false,
-                // RACCOON_TOKEN 是脚本/CI 的常规入口
-                anonymous_default_session: true,
+                anonymous_default_session: false,
                 system_proxy_when_unset: false,
                 refresh_uses_account: true,
                 // 小浣熊不认「默认模型」概念（与内置实现同一条结论）
                 supports_default_model: false,
-                // `RACCOON_TOKEN` 旁路实现存在
-                env_credentials: true,
+                env_credentials: false,
             })
             .with_login(vec![
                 proto::LoginMethod::Browser {
@@ -126,23 +126,31 @@ impl Provider for RaccoonProvider {
             }
             let mut headers: Vec<(String, String)> = vec![
                 ("Content-Type".to_string(), "application/json".to_string()),
-                // 源实现给的是 `Accept: */*`（LLM 网关两种响应形态都可能回）
-                ("Accept".to_string(), "*/*".to_string()),
+                ("Accept".to_string(), "application/json".to_string()),
                 ("Authorization".to_string(), format!("Bearer {token}")),
             ];
             headers::append_org(&mut headers, &org_code)?;
-            // 对话链路与 onboarding / balance / iam 带同一套桌面端身份头：
-            // 少了它们，上游看到的就是一个只会发 Bearer 的裸 API 客户端
-            headers.extend(headers::desktop_client_headers());
-            // 官方客户端每条请求都带新的 X-Request-Id（relay_js_<ms>_<hex>）
-            headers.push(("X-Request-Id".to_string(), headers::request_id()));
+            headers.extend(client_identity::headers());
+            headers.extend(conversation::headers(&req, &token, &org_code));
             headers::append_external(&mut headers);
+            let mut body = reasoning::normalize(&req.body, &req.wire_model)?;
+            if req.stream {
+                body["stream"] = json!(true);
+                if !body.get("stream_options").is_some_and(Value::is_object) {
+                    body["stream_options"] = json!({});
+                }
+                body["stream_options"]["include_usage"] = json!(true);
+            }
             Ok(ChatPlan::chat(
                 format!("{}/chat/completions", llm_base_url()),
                 headers,
-                reasoning::normalize(&req.body, &req.wire_model),
+                body,
             ))
         })
+    }
+
+    fn chat_policy(&self, _body: &Value) -> Value {
+        json!({ "respectModelCooldown": true })
     }
 
     fn supports_image_generation(&self) -> bool {
@@ -190,17 +198,6 @@ impl Provider for RaccoonProvider {
     /// - `account` 为空 → 环境变量凭证（若配置）→ 桌面端实时登录态
     fn ensure_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
-            // 环境变量凭证优先于账号列表 —— 仅在**没有指定账号**时才看它
-            // （源实现 `resolveCredentials` 的真实优先级是「账号列表 > 环境变量」，
-            // 但那条链里的「账号列表」指的是**用户显式选中的账号**）。
-            if account.is_empty() {
-                if let Some(token) = env_access_token() {
-                    if jwt::is_iam_token(&token) {
-                        jwt::validate_iam_token(&token).map_err(GatewayError::into_message)?;
-                    }
-                    return Ok(token);
-                }
-            }
             let credentials = credentials::snapshot(ctx, account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -218,14 +215,6 @@ impl Provider for RaccoonProvider {
     /// refreshToken 轮换）。此时只调 ensure 会拿回同一个被拒的 token。
     fn refresh_token<'a>(&'a self, ctx: &'a PluginCtx, account: &'a str) -> SendFuture<'a, String> {
         Box::pin(async move {
-            if account.is_empty() && env_access_token().is_some() {
-                // 环境变量凭证是静态的，没有可续期的来源
-                return Err(GatewayError::with_status(
-                    401,
-                    "环境变量凭证（RACCOON_TOKEN）无法续期，请改用账号列表添加账号",
-                )
-                .into_message());
-            }
             let credentials = credentials::snapshot(ctx, account)
                 .await
                 .map_err(GatewayError::into_message)?;
@@ -495,14 +484,6 @@ pub fn identity_of(secret: &Value) -> String {
 
 /// 一次请求的凭证与组织身份必须来自同一份快照。
 async fn request_identity(ctx: &PluginCtx, account: &str) -> Result<(String, String), String> {
-    if account.is_empty() {
-        if let Some(token) = env_access_token() {
-            if jwt::is_iam_token(&token) {
-                jwt::validate_iam_token(&token).map_err(GatewayError::into_message)?;
-            }
-            return Ok((token, String::new()));
-        }
-    }
     let credentials = credentials::snapshot(ctx, account)
         .await
         .map_err(GatewayError::into_message)?;
@@ -510,14 +491,6 @@ async fn request_identity(ctx: &PluginCtx, account: &str) -> Result<(String, Str
         .await
         .map_err(GatewayError::into_message)?;
     Ok((credentials.token, credentials.org_code))
-}
-
-/// 环境变量里的 access token（`RACCOON_TOKEN`，空白串视为未设置）。
-fn env_access_token() -> Option<String> {
-    std::env::var("RACCOON_TOKEN")
-        .ok()
-        .map(|value| jwt::strip_bearer(&value))
-        .filter(|value| !value.is_empty())
 }
 
 /// LLM 网关地址（`RACCOON_LLM_BASE_URL` 可覆盖，末尾斜杠去掉）。

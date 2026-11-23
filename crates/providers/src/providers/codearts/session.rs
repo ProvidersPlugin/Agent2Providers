@@ -30,6 +30,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 use super::credentials::Credential;
 use super::oauth::signer_credential;
@@ -94,6 +95,7 @@ impl ChatSession {
             },
             language: options.language.to_string(),
             id: id.clone(),
+            client: crate::http::control_client(None, "direct"),
         };
         let accepted = heartbeat.send("busy").await;
         match accepted {
@@ -113,7 +115,8 @@ impl ChatSession {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         ticker.tick().await; // 第一次 tick 立即触发，跳过
         let renewal = heartbeat.clone();
-        tokio::spawn(async move {
+        let route = agent2api_provider_sdk::egress::capture();
+        tokio::spawn(agent2api_provider_sdk::egress::scope(route, async move {
             loop {
                 tokio::select! {
                     _ = stop_rx.changed() => break,
@@ -132,7 +135,7 @@ impl ChatSession {
                 crate::logging::log("[CodeArts]", &format!("chat-session idle 未被确认：{}", error.message));
             }
             let _ = done_tx.send(()).await;
-        });
+        }));
         Ok(ChatSession { id, stop, done: done_rx })
     }
 
@@ -170,6 +173,7 @@ struct Heartbeat {
     credential: Credential,
     language: String,
     id: String,
+    client: reqwest::Client,
 }
 
 impl Heartbeat {
@@ -198,14 +202,14 @@ impl Heartbeat {
             true, // 心跳签名带 Host —— 与区域 API 不同，别统一
         )
         .map_err(|reason| GatewayError::with_status(500, reason))?;
-        let mut request = crate::http::control_client(None, "direct")
+        let mut request = self.client
             .put(&endpoint)
             .timeout(Duration::from_secs(30))
             .body(b"{}".to_vec());
         for (name, value) in signed {
             request = request.header(name.as_str(), value.as_str());
         }
-        let response = request.send().await.map_err(|error| {
+        let response = request.with_account_user_agent().send().await.map_err(|error| {
             GatewayError::with_status(
                 502,
                 format!("CodeArts 会话心跳传输失败：{}", crate::http::describe_chain(&error)),

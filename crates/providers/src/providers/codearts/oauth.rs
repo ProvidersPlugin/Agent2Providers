@@ -8,7 +8,7 @@
 //! ── 请求形状（三条都不能省）────────────────────────────────
 //!   * `Content-Type: application/x-www-form-urlencoded`，body 是表单而不是 JSON
 //!   * `DPoP: <proof>`，proof 的 `htm` / `htu` 必须与本次请求逐字一致
-//!   * `client_id` = `vscode-codebot`，`code_verifier` = 首次登录生成的那个
+//!   * `client_id` 与 `code_verifier` 均沿用首次登录时的值
 //!
 //! ── 续期为什么也要 verifier ─────────────────────────────────
 //! 上游把 `refresh_token` 绑在「当初那次授权的 PKCE 上下文」上（官方扩展同样
@@ -27,12 +27,13 @@ use sha2::{Digest, Sha256};
 use crate::logging;
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 use super::chat;
 use super::credentials::{Credential, OAuthContext, PkcePair};
 use super::dpop::DpopKey;
 
-/// 与官方扩展一致的固定 client_id。
+/// 网页登录与缺少客户端标识的旧凭据使用的默认值。
 pub const CLIENT_ID: &str = "vscode-codebot";
 /// 令牌端点与身份端点（两个地区目前共用同一套 STS 主机）。
 pub const TOKEN_URL: &str = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens";
@@ -79,7 +80,7 @@ pub async fn exchange_authorization_code(
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Credential, GatewayError> {
     let form = vec![
-        ("client_id".to_string(), CLIENT_ID.to_string()),
+        ("client_id".to_string(), client_id_of(context).to_string()),
         ("code".to_string(), code.trim().to_string()),
         ("code_verifier".to_string(), verifier(context)?),
         ("grant_type".to_string(), "authorization_code".to_string()),
@@ -105,7 +106,7 @@ pub async fn refresh_credential(
         return Err(GatewayError::with_status(400, "CodeArts 凭据没有 refresh token，请重新登录"));
     }
     let form = vec![
-        ("client_id".to_string(), CLIENT_ID.to_string()),
+        ("client_id".to_string(), client_id_of(context).to_string()),
         ("code_verifier".to_string(), verifier(context)?),
         ("grant_type".to_string(), "refresh_token".to_string()),
         ("refresh_token".to_string(), existing.refresh_token.trim().to_string()),
@@ -144,6 +145,7 @@ async fn token_request(
         .header("DPoP", proof)
         .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
         .body(body)
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| {
@@ -292,7 +294,7 @@ async fn fetch_identity(
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("CodeArts 身份查询失败：{}", crate::http::describe_chain(&error)),
@@ -327,6 +329,15 @@ pub(crate) fn signer_credential(credential: &Credential) -> super::signer::Crede
         security_token: credential.security_token.clone(),
         domain_id: credential.domain_id.clone(),
     }
+}
+
+fn client_id_of(context: &OAuthContext) -> &str {
+    context
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CLIENT_ID)
 }
 
 fn verifier(context: &OAuthContext) -> Result<String, GatewayError> {
@@ -392,6 +403,7 @@ pub fn new_login_context() -> Result<OAuthContext, String> {
     let code_verifier = URL_SAFE_NO_PAD.encode(seed);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
     Ok(OAuthContext {
+        client_id: Some(CLIENT_ID.to_string()),
         pkce_pair: PkcePair {
             code_verifier,
             code_challenge: challenge,
@@ -622,7 +634,7 @@ pub async fn poll_ticket(base: &str, pending: &PendingLogin, proxy: Option<&Reso
     for (name, value) in headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = request.with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             // 传输错误的文本里带着**完整 URL**，而这条 URL 的查询串就是 ticket_id + secret
@@ -819,6 +831,7 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         let context = OAuthContext {
+            client_id: None,
             pkce_pair: Pkce {
                 code_verifier: "probe-verifier-not-a-real-one".to_string(),
                 code_challenge_method: "SHA-256".to_string(),

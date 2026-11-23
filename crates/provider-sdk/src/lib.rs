@@ -33,19 +33,23 @@
 
 mod checkin;
 pub mod ctx;
+pub mod egress;
 mod errors;
 pub mod extensions;
 pub mod images;
 mod log_context;
+mod login;
 pub mod provider;
 pub mod retry;
 pub mod serve;
+pub mod settings;
 mod serve_options;
 pub mod timeouts;
 
 pub use checkin::CheckinResult;
 pub use ctx::{PluginCtx, StoreAccount, StoreError, StoreProxy};
 pub use errors::control_error;
+pub use login::LoginCallbackResult;
 pub use provider::{
     local_precondition, split_local_precondition, split_unsupported, unsupported, BoxProvider,
     ChatPlan, ConversationSink, Provider, ProviderMeta, SendFuture, LOCAL_PRECONDITION_PREFIX,

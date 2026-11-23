@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-codearts",
+  "license": "AGPL-3.0-only",
+  "licenseText": "AGPL-3.0.txt",
+  "code": {
+    "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+    "baselineCommit": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+    "codeartsLastChangedCommit": "b5241335aaa21c9d7aefc70a55ecae9d36a0e3af",
+    "baselinePath": "crates/providers/src/providers/codearts",
+    "treeGitObject": "b40b3310f8df84b7f3094a4aaac8589fbe05028b",
+    "licenseGitObject": "be3f7b28e564e7dd05eaf59d64adba1a4065ac0e",
+    "licenseSha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "files": {
+      "accounts.rs": "8363f59fd93e8434efad1b91d44f5d28fe001e44",
+      "credentials.rs": "633703243781ad18a63cffe630f4af45e1f258a0",
+      "dpop.rs": "cea4ddfaac0b78aae70fc0e582e3ce2c13367b51",
+      "signer.rs": "fdbc9cdf0fcf1a0e424b39140f1c507aae60ff73",
+      "models.rs": "86830abf9eb64850f0b4838e33e8671a7c616dc9",
+      "balance.rs": "db129e41af0803d67a5a026e1ee59d3d5e54d861",
+      "refresh.rs": "3a050b9b195aebe56b1d85065f901e9b2c409b3a",
+      "authorization.rs": "18333c9cd4e02eddedb067e2c1b8d0411ab3526c",
+      "oauth.rs": "8e28d8a391567db51240e147e69e888e078fae86"
+    },
+    "modifiedAt": "2026-11-12",
+    "notice": "基于本仓已核验 AGPL 许可与固定代码树改写账号、签名、三源目录、余额、对话、流内错误及福利领取；PKCE/DPoP 登录、一次性续期交换和心跳由固定宿主入口执行。取消只收尾原会话，未知领取结果不重发。未运行真实账号验收，不包含官方客户端二进制。"
+  },
+  "cryptography": {
+    "package": "p256",
+    "version": "0.13.2",
+    "source": "crates.io",
+    "registryChecksum": "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b",
+    "license": "Apache-2.0 OR MIT",
+    "selectedLicense": "MIT",
+    "licenseText": "p256-MIT.txt",
+    "licenseSha256": "233b95ccbf90dc67e32f3e8995c489f6312d9191ebd141a931c3b684f1e3be6d",
+    "verification": "读取本机 crates.io 缓存的 p256-0.13.2 Cargo.toml 与 LICENSE-MIT；使用正常 Cargo 依赖，不复制或执行官方客户端。关闭默认特性，DPoP 核心只使用纯 Rust ECDSA；随机数来自主程序 SDK。"
+  },
+  "assets": {
+    "source": "Agent2API/desktop-tauri/ui/assets/providers/codearts.png",
+    "workspaceRevision": "aba58858c7f3ae695c5e71d388d7d0e31c7dd7cf",
+    "sha256": "90a52805bcac3266d566893ccf77a2274fdd0ebfa0bdd91e24a5cc4274511457",
+    "files": ["assets/codearts.png", "assets/logo.png"],
+    "notice": "复用工作区已有 CodeArts 标识，未修改；图像与商标权利归原权利人，不臆造额外许可。"
+  },
+  "publicProtocolCrossChecks": [
+    {
+      "url": "https://github.com/zyxzjyzjj/cpa-codearts-plugin/blob/d8881d8e1ee9bd5aae22cd48b53baeaaaa09e35f/credential_refresh.go",
+      "scope": "只读核对15分钟提前量、同账号刷新令牌轮换串行和持久化窗口；未复制实现，不作为外部许可证证明或真实账号验收。"
+    },
+    {
+      "url": "https://github.com/zyxzjyzjj/cpa-codearts-plugin/blob/d8881d8e1ee9bd5aae22cd48b53baeaaaa09e35f/oauth.go",
+      "scope": "只读核对固定STS端点、client_id、code_verifier、DPoP及临时凭据响应字段；未复制实现，未发出业务请求。"
+    }
+  ],
+  "externalImplementationCopied": false,
+  "proprietaryClientIncluded": false,
+  "unverifiedHistoricalReferences": [
+    {
+      "name": "cpa-codearts-plugin v0.1.18",
+      "status": "本仓原生注释中的历史来源线索；未下载、未直接引用，未把注释当作外部许可证明。"
+    },
+    {
+      "name": "HITZY2002/codearts2api PR #6",
+      "status": "本仓原生对话代码的历史线索；本包依据本仓 AGPL 代码与现有通信证据改写，未下载或复制此外部项目。"
+    }
+  ]
+}

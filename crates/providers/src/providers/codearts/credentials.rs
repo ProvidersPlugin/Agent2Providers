@@ -61,6 +61,9 @@ pub struct DpopKeyPair {
 /// 长期那一半：续期要用、短期材料可以整块替换的东西。
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct OAuthContext {
+    /// 刷新令牌与首次授权的客户端绑定；缺失时兼容旧账号的默认客户端。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     #[serde(default)]
     pub pkce_pair: PkcePair,
     #[serde(default)]

@@ -19,6 +19,7 @@
 //!   4. 错误返回 `Err(String)`，不要 panic（crate 已 deny unwrap/expect）。
 
 use std::collections::BTreeMap;
+use crate::http::AccountRequest;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{
@@ -158,12 +159,13 @@ impl Provider for DemoProvider {
                 .filter(|value| !value.is_empty())
                 .or_else(|| std::env::var("DEMO_UPSTREAM").ok())
                 .unwrap_or_else(|| "http://127.0.0.1:18080".to_string());
-            let client = reqwest::Client::new();
+            let client = crate::http::stream_client(req.proxy.as_ref(), &ctx.env.proxy);
             let response = client
                 .post(format!("{base}/v1/chat/completions"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer demo-{account_hint}"))
                 .json(&req.body)
+                .with_account_user_agent()
                 .send()
                 .await
                 .map_err(|e| format!("上游请求失败: {e}"))?;

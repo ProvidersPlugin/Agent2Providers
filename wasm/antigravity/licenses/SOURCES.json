@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-antigravity",
+  "migration_date": "2026-11-10",
+  "release_status": "blocked_pending_historical_derivation_rights_review",
+  "notice": "本次只迁移本仓现有实现与已确认协议事实，没有从 CC-BY-NC-SA 上游新增复制代码。历史核对已找到部分 9router 实现的固定 MIT 版本对应，也找到部分 Manager 派生片段的固定 CC-BY-NC-SA 版本对应；原始复制修订和额外授权未获证实。Cargo 的 AGPL-3.0-only 声明或附上参考许可证均不能解除整包分发阻塞。本批不发布。",
+  "sources": [
+    {
+      "name": "Agent2Providers existing Rust implementation",
+      "repository": "https://github.com/ProvidersPlugin/Agent2Providers",
+      "checkout_head": "c5f3305f970851787c7b57df6a32bc759c1d69f7",
+      "source_root": "crates/providers/src/providers/antigravity",
+      "license_file": "Agent2Providers-AGPL-3.0.txt",
+      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "changes": "异步原生网络/账号存储改为WASM SDK；按职责拆分；取消线程/本机监听/全局缓存；严格state回调与CAS；大信封及图片按调用资源承接。工作区原文件校验值另列，不能假定均与checkout_head相同。"
+    },
+    {
+      "name": "9router",
+      "native_reference": "Acankao/9router (relative local reference path, not a GitHub owner)",
+      "native_reference_license_lookup": "The earlier https://github.com/Acankao/9router address was inferred incorrectly from a local path. Its HTTP 404 is not evidence of a missing historical fork. The original reference checkout and exact copied revision were not recovered.",
+      "verified_reference": "https://github.com/decolua/9router/blob/e7b5f09d506072baec14c45119bc9acd9bec623e/LICENSE",
+      "license": "MIT",
+      "license_blob_sha": "92192354269f1f44d50229750674c29e336c27c4",
+      "license_file": "9router-MIT.txt",
+      "license_sha256": "2e51fac8d7c32794775e690e2f6af5ebe846cf7ddf6fdd8877d3e03b9656d92c",
+      "license_added_commit": "https://github.com/decolua/9router/commit/753a04b49ea2e6dbe73e797b1fedbbbe36a080f9",
+      "matching_history": "https://github.com/decolua/9router/blob/e7b5f09d506072baec14c45119bc9acd9bec623e/open-sse/translator/formats/gemini.js",
+      "use": "2026-09-09 固定版本与本仓 schema 清洗键表、3/2/1 选枝、reason 占位、同角色归并及同版本 appConstants.js 提示词替换有历史对应，且同提交已有 MIT 许可证；这不是原复制 checkout 的证明，也不覆盖混入的 Manager fallback。保留版权及许可通知。"
+    },
+    {
+      "name": "Antigravity-Manager",
+      "native_reference": "Acankao/Antigravity-Manager (relative local reference path, not a GitHub owner)",
+      "native_reference_license_lookup": "The local reference directory exists and its current shallow HEAD is 0067fe045ddd77f4462ea8e2c25384839d869f32 (2026-10-24), verified in lbjlaq/Antigravity-Manager. It does not establish the revision referenced when the code was first introduced on 2026-10-10. The earlier inferred Acankao GitHub URL and its HTTP 404 do not establish a missing fork.",
+      "verified_reference": "https://github.com/lbjlaq/Antigravity-Manager/blob/33d5afcfe32a5872be3e7a0d211233845d4b0489/LICENSE",
+      "license": "CC-BY-NC-SA-4.0",
+      "license_blob_sha": "f1ba7b85b2b4ca4547d28599413dc48592d648f6",
+      "license_file": "Antigravity-Manager-CC-BY-NC-SA-4.0.txt",
+      "license_sha256": "6f0afc78b16f446941c6201dcc0a53e1d19dcb96b9fc2ccb497b1bf029aa3512",
+      "matching_history": "https://github.com/lbjlaq/Antigravity-Manager/commit/33d5afcfe32a5872be3e7a0d211233845d4b0489",
+      "session_algorithm_history": "https://github.com/lbjlaq/Antigravity-Manager/commit/128249ed423d1618c5593574312c40f897b8e0cf",
+      "use": "2026-09-21 固定版本对应本包 21 条别名、裸 Flash 规则、回退文案、默认预算及部分订阅处理；FNV 会话算法可追至 2026-02-25，两个对应提交均为 CC-BY-NC-SA。匹配源码不等于已确定原复制修订；未找到额外授权，不能以更早 README 的 MIT 声明覆盖后来新增代码。本次未新增复制该上游代码，整包分发阻塞保留。"
+    },
+    {
+      "name": "Antigravity provider icon",
+      "source": "desktop-tauri/ui/assets/providers/antigravity.png",
+      "repository": "https://github.com/aimod-cc/Agent2API",
+      "checkout_head": "aba58858c7f3ae695c5e71d388d7d0e31c7dd7cf",
+      "sha256": "c06addcce996958d4d9493acd1717abc89d29c2bce58d7a44198d7185186cd4d",
+      "destination": "assets/logo.png",
+      "rights": "本仓现有资源原样复制；未查得独立品牌资源许可，不主张Google商标或官方背书。"
+    }
+  ],
+  "historical_reference_review": [
+    {
+      "native_modules": ["endpoints.rs", "oauth.rs", "login.rs", "credentials.rs"],
+      "native_passages": ["OAuth scopes/client metadata", "authorization form and token refresh", "32-byte state and /oauth-callback", "900-second refresh skew"],
+      "wasm_modules": ["endpoints.rs", "oauth.rs", "login.rs", "callback.rs", "credentials.rs", "refresh.rs"],
+      "basis": "原生注释引用Manager modules/oauth.rs、oauth_server.rs、get_auth_url_with_client和TOKEN_REFRESH_SKEW_SECONDS；本次沿本仓实现重写SDK流程。"
+    },
+    {
+      "native_modules": ["project.rs"],
+      "native_passages": ["metadata ideType=ANTIGRAVITY", "default allowed tier / legacy-tier", "paidTier/currentTier order"],
+      "wasm_modules": ["project.rs", "control.rs"],
+      "basis": "原生注释引用Manager project_resolver.rs/modules/quota.rs与9router prod onboarding端点；无复制新增CC上游源码。"
+    },
+    {
+      "native_modules": ["models.rs", "argon.rs"],
+      "native_passages": ["UPSTREAM_ALIASES", "FALLBACK_MODELS", "tiered Flash", "fallback_thinking_budget", "isInternal / visibility"],
+      "wasm_modules": ["aliases.rs", "catalog_shape.rs", "models.rs", "argon.rs"],
+      "basis": "原生模型清单/别名注释标明Manager CLAUDE_TO_GEMINI、SPEC_CLAUDE_*和SPEC_GPT_OSS_120B，部分称逐条/逐字；需历史派生权利核对，不能以当前MIT对照免除。"
+    },
+    {
+      "native_modules": ["antigravity_outbound.rs", "antigravity_schema.rs", "antigravity_signatures.rs"],
+      "native_passages": ["FALLBACK_USER_TEXT and CLAUDE_THOUGHT_PLACEHOLDER", "sanitize_prompt / rewrite_opencode", "FNV session_id / agent request_id", "generation_config and level_budget", "three-pass schema cleaning"],
+      "wasm_modules": ["outbound.rs", "contents.rs", "schema.rs", "reasoning.rs", "signatures.rs"],
+      "basis": "原生outbound注释把多段常量/算法归因Manager，schema主体声明按9router并保留容器不清洗差异；本次仅复制本仓schema纯函数，其他按现有Rust协议拆分。官方哨兵沿用原生，不生成伪签名。"
+    },
+    {
+      "native_modules": ["balance.rs", "image_generation.rs"],
+      "native_passages": ["retrieveUserQuotaSummary groups and windows", "normalize_subscription_tier", "group name cleanup", "image_gen envelope"],
+      "wasm_modules": ["usage.rs", "usage_windows.rs", "images.rs", "image_config.rs", "image_output.rs"],
+      "basis": "原生balance注释引用Manager modules/quota.rs、models/quota.rs与AccountTable.tsx；生图参数来自本仓image_generation.rs。图片响应只沿本仓主程序Gemini聚合协议重写资源输出。"
+    }
+  ],
+  "historical_source_review": {
+    "review_date": "2026-11-10",
+    "original_upstream_revision": null,
+    "additional_permission_found": false,
+    "release_block_cleared": false,
+    "evidence_boundary": "本仓引入提交、引入日前可验证的匹配上游提交、现存本地浅克隆是三组不同证据。匹配不证明原复制 checkout；早期 MIT README 不覆盖当时尚未存在的后续代码。这里只记录来源核对，不作法律许可结论。",
+    "local_introductions": [
+      { "date": "2026-10-10T04:35:46+08:00", "commit": "https://github.com/aimod-cc/Agent2API/commit/f1e6dbb07bf774b1b983210d09b975c00d03d9f2", "scope": "OAuth、续期、项目发现、目录骨架" },
+      { "date": "2026-10-10T05:00:16+08:00", "commit": "https://github.com/aimod-cc/Agent2API/commit/b10a9fd1f1f63eca948e19cff9d676b77ca6b0bd", "scope": "Gemini 别名、工具参数清洗、出站转换及会话算法" },
+      { "date": "2026-10-16T01:49:53+08:00", "commit": "https://github.com/aimod-cc/Agent2API/commit/fde1b872a46e3ffdbcadd27bff55b2aff6fb5bb1", "scope": "额度窗口、订阅等级及组名处理" },
+      { "date": "2026-10-17T04:48:27+08:00", "commit": "https://github.com/aimod-cc/Agent2API/commit/4f0040ff8bedce6197e78d3e25e880fa56157a28", "scope": "Claude 旧名映射、默认预算及思考块补齐" },
+      { "date": "2026-10-22", "commit": "https://github.com/ProvidersPlugin/Agent2Providers/commit/51bc99e38a848b50318f47f58b9229af212c401c", "scope": "搬入独立插件仓库，不是首次上游引入" }
+    ],
+    "manager_history": {
+      "early_mit_readme": "https://github.com/lbjlaq/Antigravity-Manager/blob/99f6ad73ace2aaa2860d34abcf208c847cdac79d/README_EN.md",
+      "cc_license_added": "https://github.com/lbjlaq/Antigravity-Manager/blob/2a05a88b2f790ec3ec8384d5828cfb7f63051001/LICENSE",
+      "new_root": "https://github.com/lbjlaq/Antigravity-Manager/commit/94a8b069e8081ec9b4f4b40ed7fb88373290010f",
+      "boundary": "2025 年旧标签链和 2026 年新根分别核对，不假定连续祖先。现存本地 2026-10-24 快照只证实参考目录身份，不能倒推本仓 10 月引入时的实际修订。"
+    },
+    "remaining_fragment_review": [
+      { "wasm_modules": ["aliases.rs"], "scope": "21 条映射及裸 Flash 规则", "source": "Manager CC 历史对应" },
+      { "wasm_modules": ["catalog_shape.rs", "reasoning.rs"], "scope": "兜底选择、家族预算及档位处理", "source": "Manager 明确派生部分" },
+      { "wasm_modules": ["outbound.rs", "contents.rs"], "scope": "会话算法及历史回退处理；已有 MIT 对应的提示词替换单独归因", "source": "Manager 与 9router 混合来源" },
+      { "wasm_modules": ["usage_windows.rs"], "scope": "订阅归一及组名规则", "source": "原生明确归因 Manager" },
+      { "wasm_modules": ["schema.rs"], "scope": "主体已有 MIT 历史对应；全 null 类型按 properties/items 回退仍须单独审查", "source": "9router 主体与 Manager fallback" }
+    ],
+    "scope_limit": "上述清单定位具体待审片段，不代表整文件或所有协议事实均受同一许可覆盖，也不把共享思考等级工具或新增隔离缓存仅因被此插件使用就一并归为受阻。"
+  },
+  "native_file_sha256": {
+    "accounts.rs": "c3a114028910fa1a17689c6a181f38819ccb6b1f0a54e09b75476a2edb731fee",
+    "credentials.rs": "0b85fa493db13f78277f1d539d26549a756a3f73c11dc76a1dac793eaf95dbde",
+    "endpoints.rs": "f8b83486307eb65a7a3320d0476be1794bab664969a92c96a66faa86f433076c",
+    "oauth.rs": "d3c213d653b92cd93feeeea02492a8e407a4a4c580f055592ce18068a0f900a7",
+    "project.rs": "dd7cda752fe5c8093a724deddc825431dc609ae04769edd96e0f3e3bb3cb8cb3",
+    "login.rs": "7182fa7b8d6154872aef8de9cb99f45ba79e6262af41c537e2029d426942c6a0",
+    "adapter.rs": "232319c20b565787a0d0c1547dc2e4629c2fe1990398d6ccc68c988d7017fff6",
+    "models.rs": "97612f0d4462ff3601c30f68c2151f3eed04bb458c0f28ca6f03f98041481fec",
+    "argon.rs": "f54f712fdbda3c1077922370b693e39a105a0ade225dee849fbb4dc7182341d7",
+    "balance.rs": "f77a900febcc56bb36c693197f19fa1f01597bfacf9de9123fcac22d0fd9525d",
+    "image_generation.rs": "1e78ff9c12a35a7b715ac06d0f4473a770b57ef74b2d09ee7b4bc9358be843d2",
+    "antigravity_outbound.rs": "6191ef059b2b0cb065ec4326e1d9b4bb086daec73d510dedf5cb9de816f87708",
+    "antigravity_schema.rs": "d364d8a39e29beca054a93d9bcc874430f2fb242fd39b7b00ce11bae5971a7e9",
+    "antigravity_signatures.rs": "258ce7ced11fe771cae26112c1c2b52e7e840ca7ff54a2f798469b982cdb6bcd",
+    "crates/providers/src/model_rules.rs": "d847c6e83a6d432f23402026999485262946f58bc7d4c8be17b65f43f4d82065"
+  }
+}

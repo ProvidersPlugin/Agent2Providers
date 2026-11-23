@@ -1,14 +1,12 @@
 //! CatPaw 凭证来源（Agent2API 二期 W5-T-d4；移植来源 `catpaw-local-auth.mjs`
 //! 与 `account-store.mjs`）。
 //!
-//! ── 三处凭证来源（优先级照抄原项目 `resolveCredentials`）───────
+//! ── 两处凭证来源 ─────────────────────────────────────────────
 //! ```text
 //!   1. 账号记录（add_catpaw_account 手动添加 / 旧数据导入）
 //!      → record.accessToken + record.uid|loginName
 //!   2. 桌面端实时登录态：~/.meituan-catpaw/auth.json
 //!      → auth.accessToken + account.uid|loginName（原项目 DESKTOP_ACCOUNT_ID）
-//!   3. 环境变量旁路：CATPAW_COOKIE（+ CATPAW_USER_UID）
-//!      → 脚本 / CI 用户的常规用法（原项目 `runtimeConfig` 的 explicitAuth）
 //! ```
 //! 与 workbuddy / 小浣熊的**本质差别**：CatPaw 的凭证不是 Bearer 也不是 JWT，
 //! 而是桌面端会话 Cookie 里的 `X-Passport-Token` 值，且 `uid` 是**独立的请求头**
@@ -96,66 +94,6 @@ pub fn upstream_base_url() -> String {
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
-}
-
-// ─── 环境变量旁路 ──────────────────────────────────────────────
-
-/// 环境变量凭证（`CATPAW_COOKIE` + `CATPAW_USER_UID`）；没配时 None。
-///
-/// `CATPAW_COOKIE` 在原项目里是**整个 Cookie 头的值**（形如
-/// `X-Passport-Token=xxx; other=yyy`），直接拼进 `headers.Cookie`。
-/// 本网关的传输层只发 `Cookie: X-Passport-Token=<token>`（架构文档 §9.1 的头集合），
-/// 所以这里把 token 从 cookie 串里**解析出来**：认得出 `X-Passport-Token=…` 就用
-/// 它的值，认不出就把整串当 token（原项目也允许只给裸 token 的场景）。
-pub fn env_credentials() -> Option<CatPawCredentials> {
-    let cookie = std::env::var("CATPAW_COOKIE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let uid = std::env::var("CATPAW_USER_UID")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .unwrap_or_default();
-    Some(CatPawCredentials::new(passport_token_of(&cookie), uid))
-}
-
-/// 环境变量旁路凭证此刻是否存在（聚合目录的可用性判据用）
-/// 环境变量凭证此刻是否存在。
-///
-/// `#[allow(dead_code)]`：网关用它判「这家现在有没有可用登录态」（聚合目录
-/// 那一列），插件协议里没有这个能力位 —— 目录刷新自己会读一次并回
-/// `unchanged()`（见 `adapter::refresh_models`）。
-#[allow(dead_code)]
-pub fn env_credentials_present() -> bool {
-    env_credentials().is_some()
-}
-
-/// 从 Cookie 串里取 `X-Passport-Token` 的值；取不到时原样返回整串。
-///
-/// 匹配规则：分号分隔的每一段去空白后前缀匹配 `X-Passport-Token=`（大小写不敏感），
-/// 值取到下一个分号为止。没有匹配项时把传入串当 token —— 原项目允许
-/// `CATPAW_COOKIE` 直接是 `X-Passport-Token=<token>` 也可能是裸 token。
-///
-/// ── 为什么用 `get(..)` 而不是 `split_at`（panic=abort 的硬约束）────
-/// `split_at(17)` 在**第 17 个字节落在一个多字节字符中间**时会 panic
-/// （例如整串以四个字节的 emoji 开头），而这是用户可粘贴的任意文本。
-/// `str::get(..n)` 越界或不在字符边界都只返回 None。本项目 release 是
-/// panic=abort，一次 panic 会带走整个桌面应用，所以这类切片一律走安全取值。
-fn passport_token_of(cookie: &str) -> String {
-    const KEY: &str = "x-passport-token=";
-    for segment in cookie.split(';') {
-        let trimmed = segment.trim();
-        let Some(head) = trimmed.get(..KEY.len()) else {
-            continue;
-        };
-        if head.eq_ignore_ascii_case(KEY) {
-            let value = trimmed[KEY.len()..].trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-    cookie.trim().to_string()
 }
 
 // ─── 桌面端登录态 ─────────────────────────────────────────────

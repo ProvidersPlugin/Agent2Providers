@@ -15,7 +15,7 @@
 //! ── 建任务请求体（逐字对照 `task-runner.ts::createTask`）──────────
 //! ```jsonc
 //! { "content": <prompt>, "host_id": "public_host", "image_id": <账号字段>,
-//!   "model_id": <目录 upstreamId>, "cli_name": "opencode|codex|claude",
+//!   "model_id": <目录 upstreamId>, "cli_name": "opencode",
 //!   "resource": {"core": 1, "memory": 1073741824, "life": 3600},
 //!   "repo": {"repo_url": "", "branch": "master", "repo_filename": "", "zip_url": ""} }
 //! ```
@@ -48,6 +48,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::http as egress;
+use crate::http::AccountRequest;
 
 use agent2api_provider_protocol::WireProxy as ResolvedProxy;
 
@@ -145,7 +146,7 @@ pub fn build_body(
     );
     body.insert("image_id".to_string(), Value::String(image_id.to_string()));
     body.insert("model_id".to_string(), Value::String(target.model_id.clone()));
-    body.insert("cli_name".to_string(), Value::String(target.cli_name.clone()));
+    body.insert("cli_name".to_string(), Value::String(endpoints::TASK_CLI_NAME.to_string()));
     body.insert(
         "resource".to_string(),
         json!({ "core": 1, "memory": 1073741824, "life": 3600 }),
@@ -194,6 +195,7 @@ pub async fn create_task(
     let response = builder
         .json(&body)
         .timeout(Duration::from_millis(CREATE_TIMEOUT_MS))
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| transport_error("MonkeyCode 建任务请求", error))?;
@@ -218,7 +220,7 @@ pub async fn create_task(
         &format!(
             "建任务成功 model={} cli={} task={} promptLen={} systemPrompt={} region={}",
             target.model,
-            target.cli_name,
+            endpoints::TASK_CLI_NAME,
             task_id,
             prompt.content.chars().count(),
             if prompt.system_prompt.is_some() { "有" } else { "无" },

@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-codar",
+  "license": "AGPL-3.0-only",
+  "attributions": [
+    {
+      "project": "codar2api",
+      "repository": "https://github.com/AiXiaoc/codar2api",
+      "commit": "b565055b66f65ec806e755ca97a45352f2f50aea",
+      "license": "MIT",
+      "paths": ["internal/gateway/login.go", "internal/gateway/upstream.go", "internal/gateway/relay.go", "internal/gateway/image_generation.go", "internal/gateway/image_models.go", "internal/gateway/defaults.json"],
+      "licenseText": "codar2api-MIT.txt",
+      "scope": "以 Rust / WASM 改写登录、凭据续期、目录、积分、签到、免费模型和图片工具协议；不复制账号池、管理面板、客户端身份改写或代理封控规避功能。"
+    },
+    {
+      "project": "magpie-plugin-codar",
+      "repository": "https://github.com/MisonL/magpie-plugin-codar",
+      "commit": "c90d4d945798875a8a979c83a2d7acb607f9c583",
+      "license": "MIT",
+      "paths": ["catalog.mjs", "internal.mjs"],
+      "licenseText": "magpie-plugin-codar-MIT.txt",
+      "scope": "参考模型快照、协议字段、积分别名和滚动签到窗口判据；未包含 JavaScript 插件运行时代码。"
+    }
+  ],
+  "assets": [
+    {
+      "path": "assets/logo.png",
+      "source": "https://github.com/AiXiaoc/codar2api/blob/b565055b66f65ec806e755ca97a45352f2f50aea/docs/images/codar-icon.png",
+      "owner": "SpeedAI / Codar",
+      "license": "Official product mark; used only to identify the provider, not relicensed under AGPL or MIT."
+    }
+  ],
+  "catalogEvidence": {
+    "source": "https://api.claw.speedai.com/v1/codar/models",
+    "readWithoutCredentials": true,
+    "curatedModels": 17,
+    "scope": "内置清单、协议鉴权和 JSON Pointer 思考规则已与官方公开目录核对；不代表模型对话或账号能力已验收。"
+  },
+  "proprietaryClientIncluded": false,
+  "externalExecutableIncluded": false,
+  "liveAccountVerified": false
+}

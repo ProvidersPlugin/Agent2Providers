@@ -31,7 +31,7 @@ use agent2api_provider_sdk::PluginCtx;
 use crate::errors::GatewayError;
 use crate::logging;
 
-use super::{credentials, subscription};
+use super::{control, subscription};
 
 /// 任务分组名（签到中心按它分块显示）。
 const TASK_GROUP: &str = "奖励积分";
@@ -145,15 +145,6 @@ fn build_tasks(bonuses: &[subscription::Bonus], _ledger: &Ledger) -> (Vec<Value>
     (tasks, total, total, 0)
 }
 
-/// 取账号与其网关/控制面凭据（两处入口共用）。
-async fn credential_of(
-    ctx: &PluginCtx,
-    account_id: &str,
-) -> Result<credentials::OfficeAceCredential, GatewayError> {
-    let record = super::record_of(ctx, account_id).await?;
-    credentials::from_record(Some(&record))
-}
-
 /// 任务状态（只读）：列订阅里的奖励活动。
 ///
 /// ── `refresh` 在本家为什么**不改变取数**────────────────────
@@ -172,8 +163,8 @@ pub async fn get_tasks(
     account_id: &str,
     _refresh: bool,
 ) -> Result<Value, GatewayError> {
-    let credential = credential_of(ctx, account_id).await?;
-    let subscription = subscription::fetch_subscription(&credential).await?;
+    let mut credential = control::credential_of(ctx, account_id).await?;
+    let subscription = control::subscription_of(ctx, &mut credential).await?;
     let bonuses = subscription::bonuses_of(&subscription);
     let ledger = ledger_of(ctx, account_id).await;
     let (tasks, total, earned, unclaimed) = build_tasks(&bonuses, &ledger);
@@ -189,76 +180,20 @@ pub async fn get_tasks(
     }))
 }
 
-/// 领取全部未领的奖励（与每日签到同一个上游动作，见模块头）。
-///
-/// ── 为什么 claim 之后要再查一次订阅（2026-10-13 修）──────────
-/// claim 的响应只带**本次新发放的**条目（实测：今天已结算时是空列表
-/// `{"bonus_skus": []}`）。上一版直接拿它当展示账本 ⇒ 已发放的奖励全从界面
-/// 消失、前端只好「为空就保留旧数据」⇒ 用户看到的是「点了没反应」。
-/// 现在：claim 成功后**重查一次** `GET /v1/subscription` 拿全量账本（查不到
-/// 就退 claim 前那份），并返回一句 `message` 交代本次到底有没有新到账。
+/// 领取后重新读取完整奖励账本；领取响应只包含本次新发放的条目。
 pub async fn claim_all(ctx: &PluginCtx, account_id: &str) -> Result<Value, GatewayError> {
-    let credential = credential_of(ctx, account_id).await?;
-    let before = subscription::fetch_subscription(&credential).await?;
-    // claim 本身失败要如实抛错（凭据失效 / 上游拒绝）—— 那与「没有新可领」不是一回事
-    let newly = subscription::bonuses_of(&subscription::claim_bonus(&credential).await?);
-    let snapshot = match subscription::fetch_subscription(&credential).await {
-        Ok(snapshot) => snapshot,
-        Err(_) => before.clone(),
-    };
-    let previous = subscription::remaining_map(&before);
-    let bonuses = subscription::bonuses_of(&snapshot);
-    let mut ledger = ledger_of(ctx, account_id).await;
-    let mut results = Vec::new();
-    let mut claimed = 0usize;
-    let mut claimed_points = 0.0f64;
-    for bonus in &bonuses {
-        let key = bonus.activity_id.clone();
-        let title = bonus.name.clone();
-        let remaining = bonus.remaining();
-        // 增量口径与签到一致：对得上 claim 前读数的看差值；claim 后新出现的
-        // 条目（`previous` 里没有）整笔都算本次到账
-        let gained = match previous.get(&key) {
-            Some(prev) => (remaining - prev).max(0.0),
-            None => remaining,
-        };
-        let already = gained <= 0.0;
-        if !already {
-            claimed += 1;
-            claimed_points += gained;
-        }
-        ledger.claimed.insert(key.clone());
-        results.push(json!({
-            "key": key,
-            "title": title,
-            "ok": true,
-            "already": already,
-            "gained": gained,
-        }));
-    }
-    // 一次 claim 把整个集合都结算了：置「今天整体领过」位（settled 用，见 build_tasks）
-    ledger.all = true;
-    persist_ledger(ctx, account_id, &ledger).await;
-    let (tasks, total, earned, unclaimed) = build_tasks(&bonuses, &ledger);
-    let message = if claimed > 0 {
-        format!("本次到账 {claimed_points:.0} 积分")
-    } else if newly.is_empty() {
-        // claim 返回空 = 今天已由上游结算过（官方客户端每小时会自动打这一发）
-        "今天的奖励已发放，无需重复领取".to_string()
-    } else {
-        "奖励已在账上".to_string()
-    };
-    Ok(json!({
-        "results": results,
-        "claimed": claimed,
-        "failed": 0,
-        "claimedPoints": claimed_points,
-        "tasks": tasks,
-        "earned": earned,
-        "total": total,
-        "unclaimed": unclaimed,
-        "settled": true,
-        "message": message,
-        "provider": "officeace",
-    }))
+    let claim = super::checkin::claim_daily_checkin(ctx, account_id).await?;
+    let claimed_points = claim.get("gained").and_then(Value::as_f64).unwrap_or(0.0);
+    let mut current = get_tasks(ctx, account_id, true).await.unwrap_or_else(|_| json!({
+        "provider": "officeace", "settled": true,
+    }));
+    let message = claim.get("msg").and_then(Value::as_str).unwrap_or("奖励领取请求已完成");
+    let rewards = claim.get("rewards").and_then(Value::as_array).cloned().unwrap_or_default();
+    current["claimed"] = json!(rewards.len());
+    current["results"] = json!(rewards);
+    current["claimedPoints"] = json!(claimed_points);
+    current["failed"] = json!(0);
+    current["settled"] = json!(true);
+    current["message"] = json!(message);
+    Ok(current)
 }

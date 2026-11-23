@@ -155,8 +155,6 @@ pub enum CredentialOrigin {
     GatewayConfig,
     /// accounts.json 里的手动账号
     AccountStore,
-    /// `AUTOCLAW_TOKEN` 环境变量（脚本 / CI 入口）
-    Environment,
 }
 
 impl CredentialOrigin {
@@ -750,39 +748,6 @@ pub fn local_credentials(region: Region) -> Result<AutoClawCredentials, GatewayE
     }
 }
 
-/// 环境变量凭证（源实现 `envCredentials`）：`{prefix}TOKEN` 必填，
-/// `{prefix}REFRESH_TOKEN` / `{prefix}DEVICE_ID` 可选；未配置时 None。
-///
-/// 前缀由地区决定（国内 `AUTOCLAW_` / 国际 `AUTOCLAW_INTL_`，见
-/// [`Region::env_prefix`]）—— 两地共用一个变量名会让「只想给国际版配一个
-/// token」变成「两地一起改」。
-///
-/// 优先级在源实现里是「账号列表选中项 > 环境变量」，由适配器负责排序
-/// （本函数只回答「环境变量里有没有可用凭证」）。
-pub fn env_credentials(region: Region) -> Option<AutoClawCredentials> {
-    let token = region.env_override("TOKEN")?;
-    let token = crate::crypto::strip_bearer(&token);
-    if token.is_empty() {
-        return None;
-    }
-    let refresh_token = region
-        .env_override("REFRESH_TOKEN")
-        .map(|value| crate::crypto::strip_bearer(&value))
-        .unwrap_or_default();
-    let device_id = region.env_override("DEVICE_ID").unwrap_or_default();
-    let claims = crate::crypto::decode_jwt_claims(&token);
-    Some(credentials_from_claims(
-        "env".to_string(),
-        region,
-        token,
-        refresh_token,
-        device_id,
-        claims.as_ref(),
-        CredentialOrigin::Environment,
-        None,
-    ))
-}
-
 /// 从 accounts.json 的一条账号记录构造凭证（手动添加 / 旧数据导入的账号）。
 ///
 /// 记录里的 token 允许两种形态（源实现 `account-store.mjs` 的 `upload`）：
@@ -919,8 +884,7 @@ pub fn snapshot_for(
     region: Region,
 ) -> Result<AutoClawCredentials, GatewayError> {
     let Some(record) = record else {
-        return local_credentials(region)
-            .or_else(|error| env_credentials(region).ok_or(error));
+        return local_credentials(region);
     };
     let is_desktop = record
         .get("desktop")
@@ -970,7 +934,6 @@ pub fn local_summary(region: Region) -> Result<Value, String> {
             CredentialOrigin::DesktopAuthFile => "autoclaw-auth-file",
             CredentialOrigin::GatewayConfig => "autoclaw-gateway-config",
             CredentialOrigin::AccountStore => "account-store",
-            CredentialOrigin::Environment => "environment",
         },
     }))
 }

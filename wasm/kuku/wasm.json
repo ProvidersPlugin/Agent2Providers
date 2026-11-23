@@ -1,0 +1,12 @@
+{
+  "abi": 1,
+  "verified": false,
+  "requires": [
+    "http.v1", "resources.v1", "accounts.cas.v1", "accounts.identity.v1", "clock.v1", "random.v1",
+    "locks.v1", "state.v1", "sessions.v1", "catalog.v1", "catalog.accounts.v1", "chat.stream.v1", "errors.v1", "login.forms.v1", "native.helpers.v1", "desktop.credentials.v1", "resources.cookie-file.v1"
+  ],
+  "helpers": ["desktop.credentials.kuku.v1"],
+  "origins": ["https://kuku.baidu.com", "https://passport.baidu.com"],
+  "memory_mib": 128,
+  "concurrency": 8
+}

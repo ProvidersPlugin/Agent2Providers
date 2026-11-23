@@ -25,7 +25,7 @@ impl ControlClient {
             return Err("ModelScope 账号缺少令牌，无法查询".to_string());
         }
         if let Some(proxy) = proxy {
-            reqwest::Proxy::all(proxy.to_url())
+            reqwest::Proxy::all(agent2api_provider_sdk::egress::proxy_url(proxy))
                 .map_err(|_| "ModelScope 账号代理地址无效".to_string())?;
         }
         Ok(Self { region, token, http: http::control_client(proxy, gateway_proxy) })

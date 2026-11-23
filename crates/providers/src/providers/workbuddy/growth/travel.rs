@@ -345,7 +345,17 @@ pub async fn run_for_accounts(
             tokio::time::sleep(std::time::Duration::from_millis(ACCOUNT_GAP_MS)).await;
         }
         first = false;
-        let report = run_once(&growth_account).await;
+        let route = match agent2api_provider_sdk::egress::for_account(ctx, super::super::Region::Cn.provider_id(), id).await {
+            Ok(route) => route,
+            Err(error) => {
+                reports.push(AccountTravelReport {
+                    account_id: id.to_string(), name, outcome: "failed",
+                    message: format!("账号出口准备失败：{error}"), credit: 0,
+                });
+                continue;
+            }
+        };
+        let report = agent2api_provider_sdk::egress::scope(Some(route), run_once(&growth_account)).await;
         reports.push(AccountTravelReport {
             account_id: id.to_string(),
             name,

@@ -40,8 +40,6 @@
 //!   - **网页登录需桌面窗口**：用户完成官方验证码后由窗口宿主读取 HttpOnly
 //!     session，插件校验并保存；浏览器面板仍使用「粘贴 session」；
 //!   - **不做签到与余额**：没有实测可用的余额接口 → `usage: false`、`checkin: false`；
-//!   - **任务流不挂账号代理**：tokio-tungstenite 没有代理支持，参考实现同样
-//!     只给 REST 调用挂代理（见 `stream::connect` 的说明）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本目录零 unwrap/expect/panic。
@@ -55,6 +53,7 @@ mod inflight;
 mod login;
 mod models;
 mod region;
+mod socket;
 mod startup;
 mod stream;
 mod task;

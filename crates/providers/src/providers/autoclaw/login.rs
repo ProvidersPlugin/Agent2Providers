@@ -302,6 +302,11 @@ pub(super) fn account_from_credentials(
         return Err(GatewayError::with_status(400, "AutoClaw token 为空"));
     }
     if let Some(object) = secret.as_object_mut() {
+        object.insert("token".to_string(), Value::String(parsed.token.clone()));
+        object.insert(
+            "refreshToken".to_string(),
+            Value::String(parsed.refresh_token.clone()),
+        );
         if !parsed.user_id.is_empty() {
             object.insert("userId".to_string(), Value::String(parsed.user_id.clone()));
         }

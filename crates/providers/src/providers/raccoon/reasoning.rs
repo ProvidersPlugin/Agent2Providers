@@ -1,7 +1,7 @@
 //! 档位字段来自 1.1.5 Box-Agent 的 `_apply_thinking_params`；不覆盖客户端选择。
 
 use agent2api_provider_protocol as proto;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 fn model_name(model: &str) -> String {
     model
@@ -14,7 +14,11 @@ fn model_name(model: &str) -> String {
 
 fn family(model: &str) -> &'static str {
     let model = model_name(model);
-    if model.starts_with("sn-deepseek-") || model.starts_with("deepseek-") {
+    if model.starts_with("sn-deepseek-")
+        || model.starts_with("deepseek-")
+        || model.starts_with("sn-doubao-")
+        || model.starts_with("doubao-")
+    {
         "thinking"
     } else if model.starts_with("sn-glm-5-3") || model.starts_with("sn-kimi-k3") {
         "low_high"
@@ -39,6 +43,11 @@ fn explicit(body: &Value) -> bool {
     ]
     .iter()
     .any(|key| body.get(*key).is_some_and(|value| !value.is_null()))
+        || body.get("extra_body").is_some_and(|extra| {
+            ["thinking", "reasoning_effort", "enable_thinking"]
+                .iter()
+                .any(|key| extra.get(*key).is_some_and(|value| !value.is_null()))
+        })
 }
 
 pub(super) fn patch(level: &str, model: &str, body: &Value) -> proto::ReasoningPatch {
@@ -52,7 +61,15 @@ pub(super) fn patch(level: &str, model: &str, body: &Value) -> proto::ReasoningP
         return skip("关闭思考或未知档位不注入绑定");
     };
     let (field, value) = match family(model) {
-        "thinking" => ("thinking", json!({ "type": "enabled" })),
+        "thinking" => {
+            let mut extra = body
+                .get("extra_body")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            extra.insert("thinking".to_string(), json!({ "type": "enabled" }));
+            ("extra_body", Value::Object(extra))
+        }
         "low_high" => (
             "reasoning_effort",
             json!(if rank <= 1 { "low" } else { "high" }),
@@ -73,10 +90,13 @@ pub(super) fn patch(level: &str, model: &str, body: &Value) -> proto::ReasoningP
     }
 }
 
-pub(super) fn normalize(body: &Value, model: &str) -> Value {
+pub(super) fn normalize(body: &Value, model: &str) -> Result<Value, String> {
     let mut body = body.clone();
     let Some(fields) = body.as_object_mut() else {
-        return body;
+        return Err(
+            crate::errors::GatewayError::with_status(400, "小浣熊请求体必须是 JSON 对象")
+                .into_message(),
+        );
     };
     if !fields.contains_key("reasoning_effort") {
         if let Some(effort) = fields.remove("reasoningEffort") {
@@ -84,22 +104,7 @@ pub(super) fn normalize(body: &Value, model: &str) -> Value {
         }
     }
     match family(model) {
-        // 正向档位**原样留在 `reasoning_effort`**：官方客户端只发开关，但上游的
-        // `/chat/completions` 接受命名档位（3.0.8 起就是原样透传，实测 max 能到
-        // 上游并 200）。删掉它等于把客户端的档位选择抹平成「开思考」—— 用户看到
-        // 的 upstream=high 只是 `outbound` 对裸开关的展示口径，并非上游真收到了
-        // high。只有「关闭思考」两档才改写成 `thinking.disabled`：`none` / `off`
-        // 不是所有上游都认，而开关能明确表达关闭。
-        "thinking" if !fields.get("thinking").is_some_and(|value| !value.is_null()) => {
-            let off = fields
-                .get("reasoning_effort")
-                .and_then(Value::as_str)
-                .is_some_and(crate::reasoning::is_thinking_off);
-            if off {
-                fields.remove("reasoning_effort");
-                fields.insert("thinking".to_string(), json!({ "type": "disabled" }));
-            }
-        }
+        "thinking" => normalize_thinking(fields)?,
         "low_high" => {
             let disabled = fields
                 .get("thinking")
@@ -126,18 +131,64 @@ pub(super) fn normalize(body: &Value, model: &str) -> Value {
         }
         _ => {}
     }
-    body
+    Ok(body)
+}
+
+fn normalize_thinking(fields: &mut Map<String, Value>) -> Result<(), String> {
+    if fields
+        .get("extra_body")
+        .is_some_and(|value| !value.is_null() && !value.is_object())
+    {
+        return Err(crate::errors::GatewayError::with_status(
+            400,
+            "小浣熊 extra_body 必须是 JSON 对象",
+        )
+        .into_message());
+    }
+    let nested = fields
+        .get("extra_body")
+        .and_then(|extra| extra.get("thinking"))
+        .filter(|value| !value.is_null())
+        .cloned();
+    let direct = fields
+        .get("thinking")
+        .filter(|value| !value.is_null())
+        .cloned();
+    let off = fields
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .is_some_and(crate::reasoning::is_thinking_off);
+    let thinking = nested
+        .or(direct)
+        .or_else(|| off.then(|| json!({ "type": "disabled" })));
+    if let Some(thinking) = thinking {
+        if !fields.get("extra_body").is_some_and(Value::is_object) {
+            fields.insert("extra_body".to_string(), json!({}));
+        }
+        if let Some(extra) = fields.get_mut("extra_body").and_then(Value::as_object_mut) {
+            extra.insert("thinking".to_string(), thinking);
+        }
+        fields.remove("thinking");
+        if off {
+            fields.remove("reasoning_effort");
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn outbound(body: &Value) -> Option<String> {
     body.get("reasoning_effort")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(
-            || match body.pointer("/thinking/type").and_then(Value::as_str) {
+        .or_else(|| {
+            match body
+                .pointer("/extra_body/thinking/type")
+                .or_else(|| body.pointer("/thinking/type"))
+                .and_then(Value::as_str)
+            {
                 Some("enabled") => Some("high".to_string()),
                 Some("disabled") => Some("off".to_string()),
                 _ => None,
-            },
-        )
+            }
+        })
 }

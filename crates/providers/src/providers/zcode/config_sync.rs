@@ -92,10 +92,14 @@ pub async fn maybe_sync(ctx: &PluginCtx) {
     if !due() {
         return;
     }
-    let mut jobs: Vec<SyncJob> = Vec::new();
+    let mut jobs: Vec<(agent2api_provider_sdk::egress::AccountRoute, SyncJob)> = Vec::new();
     if let Some((region, account_id)) = start_plan_account(ctx).await {
-        let proxy = account_proxy(ctx, region, &account_id).await;
-        jobs.push(SyncJob::Captcha { region, proxy });
+        if let Ok(route) = agent2api_provider_sdk::egress::for_account(ctx, region.provider_id(), &account_id).await {
+            let proxy = account_proxy(ctx, region, &account_id).await;
+            jobs.push((route, SyncJob::Captcha { region, proxy }));
+        } else {
+            logging::verbose("[ZCode]", "账号代理不可用，跳过风控配置同步");
+        }
     }
     for region in Region::ALL {
         if endpoint_mapping::disabled(region) {
@@ -103,20 +107,20 @@ pub async fn maybe_sync(ctx: &PluginCtx) {
             continue;
         }
         if let Some((account_id, credential)) = mapping_account(ctx, region).await {
-            let proxy = account_proxy(ctx, region, &account_id).await;
-            jobs.push(SyncJob::Mapping {
-                region,
-                credential,
-                proxy,
-            });
+            if let Ok(route) = agent2api_provider_sdk::egress::for_account(ctx, region.provider_id(), &account_id).await {
+                let proxy = account_proxy(ctx, region, &account_id).await;
+                jobs.push((route, SyncJob::Mapping { region, credential, proxy }));
+            } else {
+                logging::verbose("[ZCode]", "账号代理不可用，跳过端点映射同步");
+            }
         }
     }
     if jobs.is_empty() {
         return;
     }
     tokio::spawn(async move {
-        for job in jobs {
-            run_job(job).await;
+        for (route, job) in jobs {
+            agent2api_provider_sdk::egress::scope(Some(route), run_job(job)).await;
         }
     });
 }

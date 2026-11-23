@@ -66,6 +66,7 @@ pub mod plan;
 pub mod reasoning;
 pub mod region;
 mod request_context;
+mod settings;
 mod system_prompt;
 
 use std::collections::BTreeMap;
@@ -161,6 +162,12 @@ impl ZcodeProvider {
 }
 
 impl Provider for ZcodeProvider {
+    fn settings_schema(&self) -> Option<agent2api_provider_sdk::settings::Schema> { Some(settings::schema()) }
+
+    fn settings_group(&self) -> Option<agent2api_provider_sdk::settings::Group> { Some(settings::group()) }
+
+    fn settings_overrides(&self) -> Value { settings::overrides() }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta::new(self.region.provider_id(), format!("ZCode {}", self.region.label()))
             .with_capabilities(proto::Capabilities {

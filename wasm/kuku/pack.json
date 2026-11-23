@@ -1,0 +1,14 @@
+{
+  "id": "agent2api-wasm-kuku",
+  "name": "KukuAI 库库",
+  "description": "提供多轮对话与在线模型目录，支持网页登录、凭据及本机导入与自动换证，可查积分、30 天签到及领奖。",
+  "version": "0.1.0-beta.3",
+  "protocol": 1,
+  "license": "AGPL-3.0-only",
+  "providers": [
+    { "id": "kuku", "label": "KukuAI 库库", "order": 19, "default_enabled": true }
+  ],
+  "entry": { "wasm32-unknown-unknown": "kuku.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use super::api;
 use crate::errors::GatewayError;
+use crate::http::AccountRequest;
 
 const MAX_IMAGE: usize = 20 * 1024 * 1024;
 
@@ -200,6 +201,7 @@ pub async fn image(
         .header("Content-Type", "application/octet-stream")
         .body(bytes)
         .timeout(Duration::from_secs(60))
+        .with_account_user_agent()
         .send()
         .await
         .map_err(|error| GatewayError::with_status(502, crate::http::describe(&error)))?;

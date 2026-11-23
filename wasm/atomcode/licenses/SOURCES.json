@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "package": "agent2api-wasm-atomcode",
+  "license": "AGPL-3.0-only",
+  "modifiedAt": "2026-11-12",
+  "attributions": [
+    {
+      "project": "magpie-atomcode",
+      "repository": "https://github.com/aqiu817/magpie-atomcode",
+      "commit": "9db706404f4164c2a299c1d8591e2699212054db",
+      "license": "MIT",
+      "paths": ["sign.mjs"],
+      "licenseText": "magpie-atomcode-MIT.txt",
+      "scope": "atomcode-signing-v1 请求签名的 Rust 改写；签名覆盖实际发送字节，不沿用自动领取、后台登录或凭据存储逻辑。"
+    }
+  ],
+  "clientVersionReference": {
+    "url": "https://raw.atomgit.com/atomgit_atomcode/atomcode/raw/main/Cargo.toml",
+    "workspacePackageVersion": "5.2.7",
+    "observedAt": "2026-11-12",
+    "copiedImplementation": false
+  },
+  "proprietaryClientIncluded": false,
+  "externalExecutableIncluded": false
+}

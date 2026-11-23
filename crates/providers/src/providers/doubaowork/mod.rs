@@ -16,6 +16,7 @@ mod login;
 mod prompt;
 mod quota;
 mod rewards;
+mod restriction;
 mod stream;
 mod upload;
 

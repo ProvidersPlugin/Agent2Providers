@@ -196,19 +196,5 @@ pub fn ws_headers(region: Region, session: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// 接口类型 → 上游 CLI / Agent 名（`proxy/src/task-runner.ts` 的映射，逐字核实）。
-///
-/// 三种 `interface_type` 决定容器里装哪个 coding agent（`docs/03-llm/02-interface-types.md`）：
-///   - `openai_chat`      → `opencode`（通用 OpenAI 兼容）
-///   - `openai_responses` → `codex`
-///   - `anthropic`        → `claude`
-///
-/// 未知 / 缺失的接口类型回落 `opencode`（与参考 `task-runner.ts` 的兜底一致）
-/// —— 那是「最通用」的一档，不是随意的默认值。
-pub fn cli_name_for(interface_type: &str) -> &'static str {
-    match interface_type.trim().to_ascii_lowercase().as_str() {
-        "openai_responses" => "codex",
-        "anthropic" => "claude",
-        _ => "opencode",
-    }
-}
+/// 云任务使用 OpenCode；模型的 interface_type 只决定它调用模型的协议。
+pub const TASK_CLI_NAME: &str = "opencode";

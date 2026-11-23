@@ -1,16 +1,16 @@
-//! 每日签到只提交一次；领取回执不是到账证明，最终以官方 checked_in_today 为准。
-//! 待确认记忆先于写请求落盘，手动重试、补签和重启后的执行都只回查同一任务。
+//! 每日签到使用 landing/checkin；任务领奖接口不能推进每日签到状态。
+//! 同一签到只提交一次，待确认先落盘，最终以官方 checked_in_today 为准。
 
 use std::time::Duration;
 
 use agent2api_provider_protocol as proto;
 use agent2api_provider_sdk::{CheckinResult, PluginCtx};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{api, checkin_state as state, rewards};
 use crate::errors::GatewayError;
 
-const CLAIM_PATH: &str = "/alice/ug/campaign/item/reward/claim/";
+const CLAIM_PATH: &str = "/alice/ug/campaign/landing/checkin";
 const CONFIRM_BUDGET: Duration = Duration::from_secs(18);
 
 pub(super) async fn run(ctx: &PluginCtx, account: &str) -> Result<CheckinResult, GatewayError> {
@@ -46,9 +46,21 @@ async fn execute(
     ledger: &mut state::Ledger,
 ) -> Result<CheckinResult, GatewayError> {
     if let Some(attempt) = ledger.pending.as_mut() {
-        attempt.rounds = attempt.rounds.saturating_add(1);
-        ledger.save(ctx, account).await?;
-        return reconcile(ctx, account, credentials, client, ledger, false).await;
+        if attempt.endpoint == state::ClaimEndpoint::LandingCheckin {
+            attempt.rounds = attempt.rounds.saturating_add(1);
+            ledger.save(ctx, account).await?;
+            return reconcile(ctx, account, credentials, client, ledger, false).await;
+        }
+        let value = rewards::campaign_detail(client, credentials, &attempt.group).await?;
+        ensure_day(&ledger.day)?;
+        let task = find_pending_task(&value, attempt)?;
+        if task.checked == Some(true) {
+            let result = completed(&task, false, None);
+            clear(ctx, account, ledger).await;
+            return Ok(result);
+        }
+        // 旧记录只提交过任务领奖；原签到明确未完成时才允许改用签到入口。
+        ledger.clear(ctx, account).await?;
     }
     let Some((group, value)) = rewards::detail(client, credentials).await? else {
         return Ok(state::result(
@@ -84,38 +96,41 @@ async fn execute(
     };
     ensure_day(&ledger.day)?;
     // 每日任务已有明确的布尔标记，不能用 task_status=3 覆盖 checked_in_today=false。
-    if task.checked {
+    if task.checked == Some(true) {
         return Ok(completed(&task, false, None));
     }
-    let Some(body) = task.body.as_ref() else {
-        return Ok(state::result(
-            proto::CheckinOutcome::Inactive,
-            "inactive",
-            "今日签到任务尚未满足领取条件",
-            1,
-            true,
-            false,
-            None,
-        ));
-    };
+    if task.checked != Some(false) {
+        return Err(GatewayError::with_status(502, "豆包工作每日签到状态未知，未提交领取"));
+    }
+    let body = json!({"scene": task.group});
     ensure_day(&ledger.day)?;
-    let request = api::request(client, credentials, CLAIM_PATH)?.json(body);
+    let request = api::request(client, credentials, CLAIM_PATH)?.json(&body);
     ledger.pending = Some(state::Attempt {
         group: task.group.clone(),
         item: task.key.clone(),
+        endpoint: state::ClaimEndpoint::LandingCheckin,
+        upstream_failure: None,
         submitted_at: crate::http::now_ms(),
         rounds: 1,
         points: task.points,
+        replayed: false,
     });
     // 保存失败就不发写请求，防止重启或并发点击丢掉重复提交保护。
     ledger.save(ctx, account).await?;
     ensure_day(&ledger.day)?;
     let response = api::json_response(request, true).await;
     let accepted = match &response {
-        Ok(value) => rewards::receipt(value).map(|_| ()),
+        Ok(value) => receipt(value),
         Err(error) => Err(error.clone()),
     };
     if let Err(error) = accepted {
+        if error.upstream_code == Some(710010702) {
+            if let Some(attempt) = ledger.pending.as_mut() {
+                attempt.upstream_failure = error.upstream_code;
+            }
+            ledger.save(ctx, account).await?;
+            return reconcile(ctx, account, credentials, client, ledger, false).await;
+        }
         if !confirming(&error) {
             // 明确拒绝可重新尝试；断网、超时、损坏回执均不能证明写请求未生效。
             if rejected(&error) {
@@ -125,13 +140,57 @@ async fn execute(
         }
     }
     if let Ok(value) = response {
-        if let Some(points) = crate::quota::number(value.pointer("/data/reward_amount")) {
-            if let Some(attempt) = ledger.pending.as_mut() {
+        if let Some(attempt) = ledger.pending.as_mut() {
+            attempt.replayed = value["data"]["idempotent"] == true;
+            if let Some(points) = crate::quota::number(value.pointer("/data/reward_amount"))
+                .filter(|points| *points >= 0.0)
+            {
                 attempt.points = Some(points);
             }
         }
+        ledger.save(ctx, account).await?;
     }
     reconcile(ctx, account, credentials, client, ledger, true).await
+}
+
+fn receipt(value: &Value) -> Result<(), GatewayError> {
+    let data = value["data"]
+        .as_object()
+        .ok_or_else(|| GatewayError::with_status(502, "豆包工作未返回签到回执"))?;
+    if let Some(error) = data.get("biz_error").filter(|error| !error.is_null()) {
+        if api::number(&error["code"]) != Some(0) {
+            return Err(api::error(200, error));
+        }
+    }
+    if data.get("idempotent") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
+    match data.get("checked_in").and_then(Value::as_bool) {
+        Some(true) => Ok(()),
+        Some(false) => Err(GatewayError::with_status(
+            502,
+            "豆包工作未完成签到，稍后查询官方状态",
+        )),
+        None => Err(GatewayError::with_status(
+            502,
+            "豆包工作签到回执缺少完成标记，稍后查询官方状态",
+        )),
+    }
+}
+
+fn find_pending_task(
+    value: &Value,
+    attempt: &state::Attempt,
+) -> Result<rewards::Task, GatewayError> {
+    rewards::tasks(value, &attempt.group)
+        .into_iter()
+        .find(|task| task.daily && task.checked.is_some() && task.key == attempt.item && task.group == attempt.group)
+        .ok_or_else(|| {
+            GatewayError::with_status(
+                502,
+                "豆包工作回查未返回原签到任务，尚未确认到账；再次点击只查询结果",
+            )
+        })
 }
 
 fn confirming(error: &GatewayError) -> bool {
@@ -187,18 +246,10 @@ async fn reconcile(
             }
         };
         ensure_day(&ledger.day)?;
-        let after = rewards::tasks(&value, &attempt.group)
-            .into_iter()
-            .find(|task| task.daily && task.key == attempt.item && task.group == attempt.group)
-            .ok_or_else(|| {
-                GatewayError::with_status(
-                    502,
-                    "豆包工作回查未返回原签到任务，尚未确认到账；再次点击只查询结果",
-                )
-            })?;
+        let after = find_pending_task(&value, &attempt)?;
         queried = true;
-        if after.checked {
-            let result = completed(&after, submitted_now, attempt.points);
+        if after.checked == Some(true) {
+            let result = completed(&after, submitted_now && !attempt.replayed, attempt.points);
             clear(ctx, account, ledger).await;
             return Ok(result);
         }
@@ -206,6 +257,14 @@ async fn reconcile(
         if attempt.retry_at(crate::http::now_ms()).is_none() {
             break;
         }
+    }
+    if attempt.upstream_failure == Some(710010702) {
+        ledger.clear(ctx, account).await?;
+        return Err(GatewayError::with_status(
+            502,
+            "豆包官方签到服务返回系统错误（710010702），回查确认今日仍未签到；请稍后重试或在官方客户端查看",
+        )
+        .upstream_code(710010702));
     }
     Ok(state::waiting(&attempt, queried))
 }

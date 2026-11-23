@@ -1,0 +1,11 @@
+{
+  "id": "agent2api-wasm-workbuddy",
+  "name": "WorkBuddy 国内版",
+  "description": "提供国内版对话、传图生图与搜索，支持网页登录、凭据及本机导入与自动续期，可查积分并签到领成长奖励。",
+  "version": "0.1.0-beta.5",
+  "protocol": 1,
+  "providers": [{ "id": "workbuddy", "label": "WorkBuddy 国内版", "order": 15, "default_enabled": true }],
+  "entry": { "wasm32-unknown-unknown": "workbuddy.wasm" },
+  "icons": "assets",
+  "homepage": "https://github.com/ProvidersPlugin/Agent2Providers"
+}

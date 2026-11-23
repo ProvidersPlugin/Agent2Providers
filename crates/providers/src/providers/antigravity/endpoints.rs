@@ -35,11 +35,10 @@
 //! （规格 §3.4 + 9router `appConstants` 的原话：「the daily host rejects these
 //! auth/onboarding calls」），见 [`PROJECT_BASE_URL`]。
 //!
-//! ── User-Agent 的两条硬约束（规格 §3.2 / §7.1）──────────────────
-//!   1. 出站 UA **必须含 `antigravity`**（不区分大小写），否则上游直接 403；
-//!   2. 版本号必须 `>= 4.3.0`（[`KNOWN_STABLE_VERSION`]）：低版本会被上游按
-//!      老客户端处理，分段模型返回 404，所以 [`sanitize_user_agent`] 把它抬到
-//!      下限。**绝不透传客户端入站的 UA** —— 本模块的 UA 全部由常量拼出。
+//! ── 客户端身份 ──────────────────────────────────────────────
+//! OAuth / project 发现保留登录客户端身份；目录与推理使用 CLI 身份，额度摘要
+//! 使用 Hub 身份。上游按客户端类型和版本下发模型与额度，不能混用 IDE 的 UA。
+//! CLI、Hub、旧 IDE 的版本线各自独立，不能把 4.x 的 IDE 下限套到 CLI / Hub。
 //!
 //! ── 明确不要发的头 ──────────────────────────────────────────
 //! `x-goog-api-client`：Manager 的注释写明它属于 IDE 的 JS 层、官方客户端出口
@@ -131,16 +130,12 @@ pub const METHOD_COUNT_TOKENS: &str = "countTokens";
 /// 流式推理的查询串（逐字）
 pub const STREAM_QUERY: &str = "?alt=sse";
 
-/// 已知稳定版本下限（Manager `KNOWN_STABLE_VERSION`）：UA 里的版本号低于它会被
-/// 抬上来，否则分段模型 404（规格 §3.2 约束 2）。
+/// OAuth 登录沿用旧客户端版本线；不用于 CLI / Hub 请求。
 pub const KNOWN_STABLE_VERSION: &str = "4.3.0";
+const CLI_VERSION: &str = "1.5.1";
+const HUB_VERSION: &str = "2.28.0";
 
-/// 默认 Chrome 版本段（Manager 的默认 UA 逐字）
-pub const DEFAULT_CHROME: &str = "132.0.6834.160";
-/// 默认 Electron 版本段（同上）
-pub const DEFAULT_ELECTRON: &str = "39.2.3";
-
-/// 环境变量：覆盖 UA 版本号（与 Manager 的 `env` 入口同款，出问题时不必重编译）
+/// 环境变量：覆盖旧登录客户端的版本，不混用 CLI / Hub 的版本线。
 pub const ENV_VERSION: &str = "ANTIGRAVITY_VERSION";
 /// 环境变量：整体覆盖出站 UA（仍会过 [`sanitize_user_agent`] 的两条硬约束）
 pub const ENV_USER_AGENT: &str = "ANTIGRAVITY_USER_AGENT";
@@ -179,46 +174,54 @@ pub fn version() -> String {
     }
 }
 
-/// 按当前操作系统给 UA 的平台串（Manager `constants.rs` 逐字）。
-pub fn platform_info() -> &'static str {
+fn platform_info() -> &'static str {
     match std::env::consts::OS {
-        "macos" => "Macintosh; Intel Mac OS X 10_15_7",
-        "windows" => "Windows NT 10.0; Win64; x64",
-        _ => "X11; Linux x86_64",
+        "macos" => "darwin",
+        "windows" => "windows",
+        _ => "linux",
     }
 }
 
-/// 默认出站 UA（Manager `USER_AGENT` 逐字）：
-/// `Antigravity/{ver} ({platform}) Chrome/{chrome} Electron/{electron}`。
+fn architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        arch => arch,
+    }
+}
+
 pub fn default_user_agent() -> String {
+    format!("antigravity/cli/{CLI_VERSION} {}/{}", platform_info(), architecture())
+}
+
+/// 专属额度组由 Hub 客户端接口披露，不沿用模型发现的 CLI 身份。
+pub fn quota_user_agent() -> String {
     format!(
-        "Antigravity/{} ({}) Chrome/{} Electron/{}",
-        version(),
+        "antigravity/hub/{HUB_VERSION} (aidev_client; os_type={}; arch={})",
         platform_info(),
-        DEFAULT_CHROME,
-        DEFAULT_ELECTRON
+        architecture(),
     )
 }
 
-/// 原生 OAuth 请求用的 UA（Manager `NATIVE_OAUTH_USER_AGENT` 逐字）：
-/// `vscode/1.X.X (Antigravity/{ver})` —— 取 token / 刷新 / userinfo 用它，
-/// 模型目录与 project 发现也用它（规格 §5.1 / §3.4 的逐字取值）。
+/// OAuth 换码、刷新与 userinfo 保留原有登录身份。
 pub fn oauth_user_agent() -> String {
     format!("vscode/1.X.X (Antigravity/{})", version())
 }
 
-/// 清洗一个**外部给的** UA（环境变量覆盖）：满足两条硬约束才放行。
-///
-/// 规则（照 Manager `sanitize_egress_user_agent` 的语义）：
-///   - 空 / 不含 `antigravity`（不区分大小写）→ `None`，调用方回落到默认 UA；
-///   - 版本段解析不出来 → `None`（宁可发默认的，也不发一个上游不认的形态）；
-///   - 版本低于 [`KNOWN_STABLE_VERSION`] → 只把版本段换成下限值，其余原样保留。
+/// CLI / Hub 覆盖值保留独立版本线；旧形态仍执行原有版本下限。
 pub fn sanitize_user_agent(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.contains(['\r', '\n']) {
         return None;
     }
     let lowered = trimmed.to_ascii_lowercase();
+    for prefix in ["antigravity/cli/", "antigravity/hub/"] {
+        if let Some(tail) = lowered.strip_prefix(prefix) {
+            let version = tail.split_whitespace().next()?;
+            parse_semver(version)?;
+            return Some(trimmed.to_string());
+        }
+    }
     let key = "antigravity/";
     let start = lowered.find(key)?;
     let version_start = start + key.len();
@@ -289,28 +292,53 @@ pub fn bearer_header(access_token: &str) -> (String, String) {
     ("Authorization".to_string(), format!("Bearer {}", access_token.trim()))
 }
 
-/// 推理 / 模型目录这类 **content** 请求的头集合。
-///
-/// ── 为什么这里没有 `x-goog-user-project` ─────────────────────
-/// 规格 §3.2 / 坑 #4：content 类请求（`generateContent` / `streamGenerateContent`）
-/// 必须**不带** `x-goog-user-project`，带了会被上游拒；Manager 也是显式
-/// `headers.remove("x-goog-user-project")`。本模块的做法是「从零拼头、不带它」，
-/// 比「先加再删」少一处能忘。（project 仍然放在**请求体**的 `project` 字段里。）
-///
-/// 未带的两个指纹头（`x-machine-id` / `x-vscode-sessionid`）：规格 §8.2 明确
-/// 它们**不是硬性必需**（9router 只带 Content-Type / Authorization / UA 也能通），
-/// 本仓不实现设备指纹采集，故如实缺席（转发已接通，仍未引入 —— 见
-/// `adapter.rs` 的模块头）。
-pub fn content_headers(access_token: &str) -> Vec<(String, String)> {
+/// 客户端元信息必须与同次请求的 UA 版本一致。
+fn client_version(user_agent: &str) -> String {
+    let lowered = user_agent.to_ascii_lowercase();
+    let Some(start) = lowered.find("antigravity/") else {
+        return CLI_VERSION.to_string();
+    };
+    let tail = &user_agent[start + "antigravity/".len()..];
+    let tail = tail
+        .split_once('/')
+        .filter(|(family, _)| family.eq_ignore_ascii_case("cli") || family.eq_ignore_ascii_case("hub"))
+        .map(|(_, version)| version)
+        .unwrap_or(tail);
+    tail.chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect()
+}
+
+fn client_headers(access_token: &str, user_agent: String) -> Vec<(String, String)> {
+    let client_version = client_version(&user_agent);
     vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         bearer_header(access_token),
-        ("User-Agent".to_string(), user_agent()),
-        // 官方指纹增强（两套参考实现都带）。`x-client-name` 是身份，不带它
-        // 上游也能工作，但带上更接近官方出口。
+        ("User-Agent".to_string(), user_agent),
         ("x-client-name".to_string(), "antigravity".to_string()),
-        ("x-client-version".to_string(), version()),
+        ("x-client-version".to_string(), client_version),
     ]
+}
+
+/// 推理的 project 只放请求体，不能带 x-goog-user-project。
+pub fn content_headers(access_token: &str) -> Vec<(String, String)> {
+    client_headers(access_token, user_agent())
+}
+
+pub fn catalog_headers(access_token: &str, project_id: &str) -> Vec<(String, String)> {
+    with_project(client_headers(access_token, user_agent()), project_id)
+}
+
+pub fn quota_headers(access_token: &str, project_id: &str) -> Vec<(String, String)> {
+    with_project(client_headers(access_token, quota_user_agent()), project_id)
+}
+
+fn with_project(mut headers: Vec<(String, String)>, project_id: &str) -> Vec<(String, String)> {
+    let project = project_id.trim();
+    if !project.is_empty() {
+        headers.push(("x-goog-user-project".to_string(), project.to_string()));
+    }
+    headers
 }
 
 /// **Claude 模型**的 content 请求头：在 [`content_headers`] 之上补
@@ -333,26 +361,7 @@ pub fn claude_content_headers(access_token: &str) -> Vec<(String, String)> {
 /// [`claude_content_headers`]）
 const ANTHROPIC_BETA_CLAUDE: &str = "claude-code-20250219";
 
-/// **非 content** 方法（模型目录 / project 发现 / 额度）的头集合。
-///
-/// 与 [`content_headers`] 的两处差别（都是有依据的，别顺手统一）：
-///   1. UA 用 [`oauth_user_agent`]（`vscode/1.X.X (Antigravity/{ver})`）——
-///      模型目录与 project 发现在两套参考实现里都走这个 UA（规格 §5.1 / §3.4）；
-///   2. `project_id` 非空时带上 `x-goog-user-project`（规格 §3.2：这个头只给
-///      非 content 方法；content 请求必须不带，见 [`content_headers`]）。
-///      上游对这类方法忽略**请求体**里的 `project` 字段，这个头才是「哪个项目」
-///      的表述。
+/// project 发现与开通沿用登录身份，不参与目录 / 推理的客户端类型选择。
 pub fn admin_headers(access_token: &str, project_id: &str) -> Vec<(String, String)> {
-    let mut headers = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-        bearer_header(access_token),
-        ("User-Agent".to_string(), oauth_user_agent()),
-        ("x-client-name".to_string(), "antigravity".to_string()),
-        ("x-client-version".to_string(), version()),
-    ];
-    let project = project_id.trim();
-    if !project.is_empty() {
-        headers.push(("x-goog-user-project".to_string(), project.to_string()));
-    }
-    headers
+    with_project(client_headers(access_token, oauth_user_agent()), project_id)
 }

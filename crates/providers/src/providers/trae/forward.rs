@@ -41,7 +41,7 @@
 //! release 是 `panic=abort`：本文件零 unwrap / expect / panic；网络不在锁内。
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -49,6 +49,7 @@ use serde_json::{json, Value};
 
 use crate::errors::GatewayError;
 use crate::http as egress;
+use crate::http::AccountRequest;
 use crate::logging;
 use crate::stall;
 use crate::telemetry::RequestTelemetry;
@@ -63,6 +64,19 @@ use super::headers::solo_headers;
 use super::stream::{Frame, SoloStream};
 use super::{models, payload};
 use super::{AGENT_BASE_URL, CHAT_PATH, PROVIDER_ID};
+
+const MISSING_TERMINAL: &str = "Trae 上游未给出完成事件即结束，本轮回答可能被截断";
+
+fn require_terminal() -> bool {
+    static REQUIRE: OnceLock<bool> = OnceLock::new();
+    *REQUIRE.get_or_init(|| {
+        !std::env::var("AGENT2API_TRAE_NO_REQUIRE_TERMINAL")
+            .ok()
+            .is_some_and(|value| {
+                matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+            })
+    })
+}
 
 /// 流式的读空闲上限（与其它几家同一个配置源，不是本家自己拍的数）。
 fn stream_idle() -> Duration {
@@ -126,7 +140,7 @@ async fn send(
     for (name, value) in &plan.headers {
         request = request.header(name.as_str(), value.clone());
     }
-    let response = request.json(&plan.body).send().await.map_err(|error| {
+    let response = request.json(&plan.body).with_account_user_agent().send().await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("Trae 请求发不出去：{}", egress::describe_chain(&error)),
@@ -332,7 +346,7 @@ pub(crate) async fn prefetch_head(
             frames.push(frame);
         }
     }
-    for frame in stream.finish() {
+    for frame in stream.flush_pending() {
         if let Frame::Error { code, message, .. } = &frame {
             if frames.is_empty() {
                 return Err(frame_error(*code, message));
@@ -653,9 +667,24 @@ async fn drive_stream(
             }
         }
     }
-    // EOF 收尾：上游没给过 `done` 时由 `finish()` 补那一个 `[DONE]`。
-    // 这里**不再自己添一个** —— `[DONE]` 必须恰好一个，而 `SoloStream` 已经
-    // 保证「done / error / EOF 三条路各发一次且只一次」。
+    // 尾事件可能就是完成通知，必须先解析，再决定是否报告截断。
+    for frame in solo.flush_pending() {
+        note(&frame, telemetry, &mut usage_seen);
+        if let Some(text) = render(&frame, requested) {
+            if sink.send(text.as_bytes()).await.is_err() {
+                return;
+            }
+        }
+    }
+    if require_terminal() && solo.missing_terminal() {
+        telemetry.note_error(MISSING_TERMINAL);
+        let failure = crate::sse::sse_bytes(&json!({
+            "error": { "message": MISSING_TERMINAL, "type": "upstream_error" }
+        }));
+        if sink.send(&failure).await.is_err() {
+            return;
+        }
+    }
     for frame in solo.finish() {
         note(&frame, telemetry, &mut usage_seen);
         if let Some(text) = render(&frame, requested) {
@@ -764,6 +793,10 @@ async fn drive_aggregate(
             Frame::Chunk(chunk) => chunks.push(chunk),
             Frame::Done => {}
         }
+    }
+    if require_terminal() && solo.missing_terminal() {
+        telemetry.note_error(MISSING_TERMINAL);
+        return Err(GatewayError::with_status(502, MISSING_TERMINAL));
     }
     Ok(super::stream::aggregate_chunks(&chunks, requested))
 }

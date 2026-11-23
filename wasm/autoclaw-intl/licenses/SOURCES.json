@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "provider": "autoclaw-intl",
+  "assets": [
+    {
+      "file": "assets/logo.png",
+      "source": "Agent2API/desktop-tauri/ui/assets/providers/autoclaw.png",
+      "change": "Existing AutoClaw brand image copied unchanged; no new trademark license asserted."
+    },
+    {
+      "file": "src/prompt.rs",
+      "source": "Agent2Providers/crates/providers/src/providers/autoclaw/prompt.rs",
+      "references": [
+        {
+          "repository": "https://github.com/magpie-community/plugins",
+          "revision": "f053e3279009dbc6bcdd0ccdd398d192be775109",
+          "path": "packages/autoclaw/index.mjs",
+          "license": "magpie-community-MIT.txt"
+        },
+        {
+          "repository": "https://github.com/openclaw/openclaw",
+          "purpose": "OpenClaw identity and Tooling prefix retained from the existing native adapter",
+          "licenseUrl": "https://raw.githubusercontent.com/openclaw/openclaw/main/LICENSE",
+          "license": "OpenClaw-MIT.txt"
+        }
+      ]
+    },
+    {
+      "files": ["src/oauth.rs", "src/oauth_urls.rs", "src/web_login.rs", "src/headers.rs", "src/endpoints.rs"],
+      "source": "Agent2Providers/crates/providers/src/providers/autoclaw/{oauth,web_login,callback_server,region,refresh}.rs",
+      "change": "Ported Region::Intl protocol into controlled SDK calls. Kept vendor-specific endpoints, Aliyun configuration, official localhost ports, and separate host flow / upstream state. Removed direct listeners, threads, environment access, and credential-bearing logs.",
+      "references": [
+        "https://github.com/magpie-community/plugins/issues/367",
+        "https://github.com/magpie-community/plugins/issues/437",
+        "https://github.com/magpie-community/plugins/issues/924",
+        "https://github.com/magpie-community/plugins/issues/1094",
+        "https://github.com/yetone/magpie/issues/3681"
+      ]
+    }
+  ]
+}

@@ -333,6 +333,8 @@ function main() {
     ...icons,
     ...ui,
     ...collectDir('licenses', 'licenses'),
+    ...(existsSync(join(PLUGIN_DIR, 'host.json'))
+      ? [{ name: 'host.json', data: readFileSync(join(PLUGIN_DIR, 'host.json')), executable: false }] : []),
     { name: declared, data: binary, executable: true },
   ])
   writeFileSync(zipPath, zip)

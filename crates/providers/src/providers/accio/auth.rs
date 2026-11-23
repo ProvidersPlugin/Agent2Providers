@@ -16,6 +16,7 @@ use crate::logging;
 
 use super::credentials::{self, Credentials};
 use super::endpoints::{self, Region};
+use super::protocol::{self, UpstreamKind};
 
 /// 业务接口(非转发)的请求超时：与另外几家的 15 秒同量级
 pub const REQUEST_TIMEOUT_MS: u64 = 15_000;
@@ -60,7 +61,9 @@ pub async fn get_with_token(
             pairs.append_pair("accessToken", token);
         }
     }
-    request("GET", url.as_str(), None, &endpoints::api_headers(region), proxy).await
+    let mut response = request("GET", url.as_str(), None, &endpoints::api_headers(region), proxy).await?;
+    redact_error_fields(&mut response, &[token]);
+    Ok(response)
 }
 
 /// POST + JSON body（业务接口的约定之二）
@@ -71,21 +74,61 @@ pub async fn post_json(
     proxy: Option<&ResolvedProxy>,
 ) -> Result<ApiResponse, GatewayError> {
     let url = format!("{}{}", endpoints::gateway_base(), path);
-    request("POST", &url, Some(body), &endpoints::api_headers(region), proxy).await
+    let mut response = request("POST", &url, Some(body), &endpoints::api_headers(region), proxy).await?;
+    let secrets: Vec<&str> = ["accessToken", "refreshToken", "token", "code", "codeVerifier"]
+        .iter().filter_map(|key| body.get(*key).and_then(Value::as_str)).collect();
+    redact_error_fields(&mut response, &secrets);
+    Ok(response)
 }
 
-/// 把响应翻成「有效 JSON 对象」，失败时给出人话。
+fn redact_error_fields(response: &mut ApiResponse, secrets: &[&str]) {
+    let Some(body) = response.payload.as_mut().and_then(Value::as_object_mut) else { return };
+    for field in ["code", "message", "msg"] {
+        let Some(Value::String(text)) = body.get_mut(field) else { continue };
+        for secret in secrets.iter().copied().filter(|secret| !secret.is_empty()) {
+            *text = text.replace(secret, "[已隐藏]");
+        }
+        *text = text.chars().filter(|ch| !ch.is_control()).take(300).collect();
+    }
+}
+
+/// HTTP 成功不代表业务成功；先检查外层结果，再读取 data。
 pub fn payload(response: ApiResponse, action: &str) -> Result<Value, GatewayError> {
-    if !response.ok {
-        let hint = match response.status {
-            401 | 403 => "，请确认凭证有效或重新登录",
-            429 => "，请稍后重试",
-            _ => "",
+    let body = response.payload.as_ref();
+    let code = body.map(|value| credentials::text(value, &["code"])).unwrap_or_default();
+    let message = body.map(|value| credentials::text(value, &["message", "msg"])).unwrap_or_default();
+    let upstream_code = code.parse::<i64>().ok();
+    let business_failed = body.and_then(|value| value.get("success")).and_then(Value::as_bool) == Some(false)
+        || (!code.is_empty() && code != "0" && code != "200")
+        || message.eq_ignore_ascii_case("NOT_LOGIN");
+    if !response.ok || business_failed {
+        let classification_status = if response.ok {
+            upstream_code.and_then(|code| u16::try_from(code).ok()).unwrap_or(response.status)
+        } else {
+            response.status
         };
-        return Err(GatewayError::with_status(
-            i32::from(response.status),
-            format!("Accio {action}失败（HTTP {}）{hint}", response.status),
-        ));
+        let kind = protocol::classify_upstream_error(classification_status, &format!("{code} {message}"));
+        let status = match kind {
+            UpstreamKind::Auth => 401,
+            UpstreamKind::Quota => 429,
+            UpstreamKind::Other if !response.ok => i32::from(response.status),
+            UpstreamKind::Other => 502,
+        };
+        let mut detail = format!("HTTP {}", response.status);
+        if !code.is_empty() {
+            detail.push_str(&format!("，业务码 {code}"));
+        }
+        if !message.is_empty() && message != "0" {
+            detail.push_str(&format!("，{message}"));
+        }
+        let hint = match kind {
+            UpstreamKind::Auth => "，登录授权不可用，请尝试刷新凭证或重新登录",
+            UpstreamKind::Quota => "，请检查剩余额度或稍后重试",
+            UpstreamKind::Other => "",
+        };
+        return Err(GatewayError::with_status(status, format!("Accio {action}失败（{detail}）{hint}"))
+            .with_code("accio_upstream")
+            .with_optional_code(upstream_code));
     }
     response
         .payload

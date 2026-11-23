@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-cline-free",
   "name": "Cline 免费池",
   "description": "提供对话与免费模型目录，支持网页授权、凭据及本机登录态导入与自动续期，可查询剩余额度。",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0",
   "protocol": 1,
   "providers": [
     { "id": "cline-free", "label": "Cline 免费池", "order": 17, "default_enabled": true }

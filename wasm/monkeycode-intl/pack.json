@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-monkeycode-intl",
   "name": "MonkeyCode 国际版",
   "description": "提供国际站对话与工具调用，支持桌面网页登录与凭据导入，可查独立模型目录、钱包订阅流水及每日签到。",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-astudio",
   "name": "AStudio",
   "description": "提供多轮对话与模型目录查询，支持短信密码登录、凭据及本机账号导入，可查积分与每日签到，不支持自动续期。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "protocol": 1,
   "providers": [
     { "id": "astudio", "label": "AStudio", "order": 32, "default_enabled": true }

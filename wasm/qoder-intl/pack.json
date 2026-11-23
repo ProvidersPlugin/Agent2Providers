@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-qoder-intl",
   "name": "Qoder 国际版",
   "description": "提供国际版对话与模型目录查询，支持设备授权与令牌导入及自动续期，可查分桶额度与福利（每日活动暂受风控限制）。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "protocol": 1,
   "providers": [
     { "id": "qoder-intl", "label": "Qoder 国际版", "order": 23, "default_enabled": true }

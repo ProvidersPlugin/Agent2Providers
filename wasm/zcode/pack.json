@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-zcode",
   "name": "ZCode 国内版",
   "description": "提供国内版编码套餐对话与模型目录，支持网页登录和凭据导入与用量查询。",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0",
   "protocol": 1,
   "providers": [
     { "id": "zcode", "label": "ZCode 国内版", "order": 13, "default_enabled": true }

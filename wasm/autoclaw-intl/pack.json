@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-autoclaw-intl",
   "name": "AutoClaw 国际版",
   "description": "提供流式对话与实时模型目录，支持 Google 与 Z.AI 登录、凭据导入与自动续期，可查积分订阅与每日签到。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "protocol": 1,
   "providers": [
     { "id": "autoclaw-intl", "label": "AutoClaw 国际版", "order": 11, "default_enabled": true }

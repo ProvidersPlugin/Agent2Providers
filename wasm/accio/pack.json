@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-accio",
   "name": "Accio 国际版",
   "description": "提供多轮对话、工具调用与图片理解，支持网页登录、凭证导入与自动续期，可查询模型列表及额度用量。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

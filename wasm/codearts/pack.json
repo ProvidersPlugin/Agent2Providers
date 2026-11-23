@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-codearts",
   "name": "CodeArts",
   "description": "提供对话与按账号隔离的模型目录，支持官方网页登录与自动续期，可查询额度、每日签到及领取福利礼包。",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

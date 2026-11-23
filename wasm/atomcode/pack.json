@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-atomcode",
   "name": "AtomCode",
   "description": "提供对话与模型目录查询，支持网页登录与凭证自动续期，可查询剩余额度、每日签到并按需领取套餐。",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "protocol": 1,
   "providers": [
     { "id": "atomcode", "label": "AtomCode", "order": 14, "default_enabled": true }

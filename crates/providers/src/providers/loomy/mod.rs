@@ -145,7 +145,8 @@ impl Provider for LoomyProvider {
                 }
                 protocol = models::protocol(&model);
             }
-            let mut headers = request_headers::chat(&credentials.session, &req.headers);
+            // 带图必须走 kb.vision：chat.message 会跳过视觉分析（官方 0.9.39 实测）。
+            let mut headers = request_headers::chat(&credentials.session, &req.headers, &body);
             if protocol.as_deref() == Some("anthropic") {
                 let body = crate::anthropic::anthropic_outbound::anthropic_request_from_chat(&body, &model)?;
                 headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
@@ -222,6 +223,17 @@ impl Provider for LoomyProvider {
             return proto::ErrorClass::QuotaLimited {
                 reset_at: None,
                 message,
+                upstream_code: code,
+                status,
+            };
+        }
+        // 406「当前账号暂不支持图片生成」：账号能力未开通，不是网关拼包错误。
+        if status == 406 && raw.contains("图片生成") {
+            return proto::ErrorClass::QuotaLimited {
+                reset_at: None,
+                message: format!(
+                    "{message}（Loomy 账号未开通生图权益；识图仍可用。请在官方 App 确认该账号能否生图，或换已开通账号）"
+                ),
                 upstream_code: code,
                 status,
             };

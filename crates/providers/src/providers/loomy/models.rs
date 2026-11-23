@@ -15,8 +15,11 @@
 //! ── 能力位 ──────────────────────────────────────────────────
 //! 思考 / 工具 / 图片 / 视频位都读上游条目的 `capabilities`（`reasoning` /
 //! `function_calling` / `vision` / `input_modalities`，实测 2026-10 每个条目都
-//! 带这四个键）。旧实现只按模型 id 判思考位（spark-x）、硬编码工具位 ——
-//! 那会丢掉 GLM-5.3-Flash 等模型的 vision 声明，目录里全部显示成不支持图片。
+//! 带这四个键）。生图条目另认 `type=image`、`output_modalities`、
+//! `modalities.output` 与官方客户端同名的 id 提示（seedream / gpt-image / …），
+//! 与 Loomy 0.9.39 的 `listImageGenerationModels` 对齐。旧实现只按模型 id 判
+//! 思考位（spark-x）、硬编码工具位 —— 那会丢掉 GLM-5.3-Flash 等模型的 vision
+//! 声明，目录里全部显示成不支持图片。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -55,6 +58,53 @@ fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
 /// 该模型 id 是不是思考模型（客户端只对 spark-x 挂 reasoning 能力位）
 fn is_reasoning_model(id: &str) -> bool {
     id.eq_ignore_ascii_case("spark-x") || id.to_ascii_lowercase().contains("spark-x")
+}
+
+/// 官方客户端 `IMAGE_MODEL_ID_HINT_RE`：id 本身就能标明是生图模型。
+fn is_image_model_id(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    [
+        "seedream",
+        "gpt-image",
+        "dall-e",
+        "dalle",
+        "flux",
+        "stable-diffusion",
+        "stable_diffusion",
+        "sdxl",
+        "imagen",
+        "image-gen",
+        "image_gen",
+        "image-generation",
+        "image_generation",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
+/// 模态数组里有没有 `image`（大小写不敏感）。
+fn modalities_include_image(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_array).is_some_and(|items| {
+        items.iter().any(|item| {
+            item.as_str()
+                .is_some_and(|text| text.eq_ignore_ascii_case("image"))
+        })
+    })
+}
+
+/// 是否应标成生图条目。
+///
+/// 官方客户端读的是 `modalities.output` / `capabilities.output_modalities`
+/// （见 `src/lib/model-metadata.js` 的 `normalizeModalities` 与
+/// `src/lib/image-generation.js` 的 `listImageGenerationModels`）。旧实现只认
+/// 顶层 `type=image` 与 `output_modalities`，会把只带 `modalities.output=["image"]`
+/// 的型号漏掉 → 网关 `operation_providers` 找不到生图账号 → 显示「不可用」。
+fn is_image_generation_model(row: &Value, id: &str) -> bool {
+    row.get("type").and_then(Value::as_str) == Some("image")
+        || modalities_include_image(row.get("output_modalities"))
+        || modalities_include_image(row.pointer("/capabilities/output_modalities"))
+        || modalities_include_image(row.pointer("/modalities/output"))
+        || is_image_model_id(id)
 }
 
 /// 从上游展示名里拆出**积分倍率**后缀（`(x3.0)` / `(x0.8)` / `（x12）`）。
@@ -135,10 +185,7 @@ fn map_entry(row: &Value) -> Option<Value> {
         .unwrap_or(id);
     let (name, rate) = split_rate_suffix(raw_name);
     let caps = row.get("capabilities").and_then(Value::as_object);
-    let image_generation = row.get("type").and_then(Value::as_str) == Some("image")
-        || row.get("output_modalities").or_else(|| row.pointer("/capabilities/output_modalities"))
-            .and_then(Value::as_array)
-            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")));
+    let image_generation = is_image_generation_model(row, id);
     let tool_call = !image_generation && (caps_bool(caps, "function_calling") || caps.is_none());
     let reasoning = !image_generation && (caps_bool(caps, "reasoning") || is_reasoning_model(id));
     let mut item = json!({
@@ -151,15 +198,31 @@ fn map_entry(row: &Value) -> Option<Value> {
     if image_generation {
         item["kind"] = json!("image");
         item["output_modalities"] = json!(["image"]);
+        // 官方客户端图生图仍走 /images/generations + images[]，与文生图同一模型。
         item["supports_image_editing"] = json!(true);
+        item["supports_image_generation"] = json!(true);
         item["isDefault"] = json!(false);
     }
-    if caps_bool(caps, "vision") || caps_modal(caps, "image") {
+    // 识图 / 多模态输入：客户端认 modalities.input 与 capabilities.input_modalities。
+    if caps_bool(caps, "vision")
+        || caps_modal(caps, "image")
+        || modalities_include_image(row.pointer("/modalities/input"))
+    {
         if let Some(object) = item.as_object_mut() {
             object.insert("supportsImages".to_string(), Value::Bool(true));
         }
     }
-    if caps_modal(caps, "video") {
+    if caps_modal(caps, "video")
+        || row
+            .pointer("/modalities/input")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.as_str()
+                        .is_some_and(|text| text.eq_ignore_ascii_case("video"))
+                })
+            })
+    {
         if let Some(object) = item.as_object_mut() {
             object.insert("supportsVideo".to_string(), Value::Bool(true));
         }
@@ -297,4 +360,72 @@ pub async fn refresh(
         });
     });
     proto::RefreshOutcome::refreshed(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_models;
+    use serde_json::json;
+
+    #[test]
+    fn modalities_output_image_marks_kind_image() {
+        let models = parse_models(&json!({
+            "data": [{
+                "id": "doubao-seedream-5-lite",
+                "name": "Seedream 5 Lite (x3.0)",
+                "protocol": "openai_chat",
+                "modalities": { "input": ["text", "image"], "output": ["image"] },
+                "capabilities": {
+                    "vision": true,
+                    "function_calling": false,
+                    "reasoning": false,
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["image"]
+                }
+            }]
+        }));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["kind"], "image");
+        assert_eq!(models[0]["supports_image_editing"], true);
+        assert_eq!(models[0]["supports_image_generation"], true);
+        assert_eq!(models[0]["supportsImages"], true);
+        assert_eq!(models[0]["credits"], "x3.0");
+        assert_eq!(models[0]["name"], "Seedream 5 Lite");
+    }
+
+    #[test]
+    fn nested_modalities_alone_still_detects_image() {
+        let models = parse_models(&json!({
+            "data": [{
+                "id": "custom-image-pro",
+                "name": "Image Pro",
+                "modalities": { "output": ["image"] }
+            }]
+        }));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["kind"], "image");
+    }
+
+    #[test]
+    fn chat_model_with_vision_keeps_chat_kind() {
+        let models = parse_models(&json!({
+            "data": [{
+                "id": "glm-5.3-flash",
+                "name": "GLM 5.3 Flash(x0.8)",
+                "protocol": "openai_chat",
+                "capabilities": {
+                    "vision": true,
+                    "function_calling": true,
+                    "reasoning": false,
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"]
+                },
+                "modalities": { "input": ["text", "image"], "output": ["text"] }
+            }]
+        }));
+        assert_eq!(models.len(), 1);
+        assert!(models[0].get("kind").is_none());
+        assert_eq!(models[0]["supportsImages"], true);
+        assert_eq!(models[0]["supportsToolCall"], true);
+    }
 }

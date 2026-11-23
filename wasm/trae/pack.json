@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-trae",
   "name": "Trae",
   "description": "接入国内版，提供流式对话与模型目录查询，支持桌面授权或手动导入并自动续期，可查积分套餐并每日签到。",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "protocol": 1,
   "providers": [
     { "id": "trae", "label": "Trae", "order": 26, "default_enabled": true }

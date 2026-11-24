@@ -2,7 +2,7 @@
 //! 账单最多5页，每页20条；通知不等于到账，查询失败不能谎报成功。
 //! 首次电脑/手机奖励在onboarding独立入口，不能塞进每日调度。
 
-use super::{config, credentials::Credential, ledger, network, session, util};
+use super::{credentials::Credential, ledger, network, session, util};
 use agent2api_wasm_sdk::{self as sdk, json, AccountLock, Error, Result, Value};
 
 fn bill_day(item: &Value) -> Option<String> {
@@ -116,6 +116,37 @@ pub fn claim() -> Result<Value> {
         Err(error) => Err(error),
     }
 }
+/// setting_info 通道顺序与余额查询一致：团队号先组织路径，再 v2 → v3。
+/// v3 自 2026-11 起对整个网关回 403，只写死它会让签到每天在第一步失败。
+fn setting_trigger(credential: &Credential) -> Result<Value> {
+    let mut routes = Vec::new();
+    if !credential.org.is_empty() {
+        routes.push(("/api/web/org/user/office/v1/setting_info", true));
+    }
+    routes.push(("/api/web/office/v2/setting_info", false));
+    routes.push(("/api/web/office/v3/setting_info", false));
+    let mut last = None;
+    for (path, organization) in routes {
+        // 页面身份与余额查询一致（setting_info 是网页版在调的接口）。
+        let headers = json!({ "Accept": "application/json", "X-Client-Platform": "web",
+            "X-Client-Version": "v1.1.3", "User-Agent": "raccoon-ai/1.1.3",
+            "X-Raccoon-Language": "zh" });
+        match network::request(
+            "GET",
+            path,
+            &credential.token,
+            if organization { &credential.org } else { "" },
+            headers,
+            None,
+        ) {
+            Ok(value) => return Ok(value),
+            Err(error) if error.status == Some(401) => return Err(error),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| Error::http(502, "小浣熊设置接口不可用")))
+}
+
 fn inner(credential: &Credential, today: &str) -> Result<Value> {
     let previous = match bills(credential, today) {
         Ok(values) => Some(values),
@@ -123,21 +154,7 @@ fn inner(credential: &Credential, today: &str) -> Result<Value> {
         Err(_) => None,
     };
     let already = previous.as_ref().is_some_and(|rows| !rows.is_empty());
-    let mut headers = config::page(false)?;
-    headers["X-Raccoon-Language"] = json!("zh");
-    let path = if credential.org.is_empty() {
-        "/api/web/office/v3/setting_info"
-    } else {
-        "/api/web/org/user/office/v1/setting_info"
-    };
-    let settings = network::request(
-        "GET",
-        path,
-        &credential.token,
-        &credential.org,
-        headers,
-        None,
-    )?;
+    let settings = setting_trigger(credential)?;
     let (grants, error) = if already {
         (previous.unwrap_or_default(), None)
     } else {

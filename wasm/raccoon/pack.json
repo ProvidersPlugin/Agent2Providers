@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-raccoon",
   "name": "小浣熊 Raccoon",
   "description": "提供对话与图片生成编辑，支持网页登录、凭据及本机账号导入和旧令牌续期，可查模型积分与领取登录奖励。",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "protocol": 1,
   "providers": [
     {

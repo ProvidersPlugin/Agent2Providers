@@ -36,6 +36,24 @@ pub(super) fn append_org(
     Ok(())
 }
 
+/// 管理面（余额 / 签到）的页面身份。
+///
+/// 与官方网页版同源：`X-Client-Platform: web` + 页面版本 + 网页 UA。
+/// 余额主通道 `office/v2/setting_info` 就是网页版在调的那条接口，
+/// 用桌面客户端身份（`desktop-windows` + `raccoon-work`）去读会让上游
+/// 按另一套口径处理；而对话用的 `@raccoon/office-desktop` 身份更不合适。
+///
+/// 实测这组头不影响存活判定（带与不带都是 v2 401 / v3 403），保留它是为了
+/// 与网页端同源；`send_raw` 在没配账号级 UA 时用 `required` 语义下发这里
+/// 的 `User-Agent`，不会被宿主默认值覆盖。
+pub(super) fn page_client_headers() -> Vec<(String, String)> {
+    vec![
+        ("X-Client-Platform".to_string(), "web".to_string()),
+        ("X-Client-Version".to_string(), "v1.1.3".to_string()),
+        ("User-Agent".to_string(), "raccoon-ai/1.1.3".to_string()),
+    ]
+}
+
 pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
     let platform = if cfg!(target_os = "windows") {
         "desktop-windows"

@@ -2,11 +2,16 @@
 //! `queryPoints` / `querySubscription`）。
 //!
 //! ── 上游长什么样（逐条对照源实现）─────────────────────────────
-//!   - 余额：`GET {mainOrigin}/api/web/points/v1/balance`
+//!   - 余额：`GET {mainOrigin}/api/web/office/v2/setting_info`
 //!     头 `Authorization: Bearer <token>`，响应 `{code, message?, data}`
 //!     （`code` 非 0 视为失败，与源实现 `requestJson` 的判定一致）；
 //!     `data.available_points` 是可用总量，另有四个钱包字段
 //!     （`daily_points` / `monthly_points` / `reward_points` / `topup_points`）。
+//!     **2026-11 起上游把余额限流在 setting_info 上**：旧 `points/v1/balance`
+//!     与 `office/v3/setting_info` 对整个网关回 403（响应头
+//!     `X-TT-System-Error: 3`），无论凭证是否有效；`office/v2/setting_info`
+//!     仍正常返回（无凭证时 401 `authorization_empty_error`）。因此余额通道
+//!     顺序是 v2 → v3 → 旧 balance，全部失败才报错（不能返回 0 覆盖旧余额）。
 //!   - 订阅：`GET {mainOrigin}/api/web/auth/v1/entitlement_info`
 //!     `data.office` / `data.code` 两套权益，各带 `pro_enable` / `active_plan`
 //!     / `pro_expired_time`。
@@ -59,6 +64,18 @@ const WALLET_LABELS: &[(&str, &str)] = &[
     ("enterprise_topup_points", "企业加油包积分"),
 ];
 
+/// 积分读数的通道顺序（2026-11 实测）：
+///
+///   v2 setting_info ← 当前唯一存活：无凭证时回 401 `authorization_empty_error`
+///   v3 setting_info ← 2026-11 起网关整体拦截，任何凭证都 403（`X-TT-System-Error: 3`）
+///   旧 points/v1/balance ← 已下线，同样 403；只作最后兜底
+///
+/// v3 保留在第一回退位：上游恢复后会自动重新优先，不必再改一次代码。
+const SETTING_V2: &str = "/api/web/office/v2/setting_info";
+const SETTING_V3: &str = "/api/web/office/v3/setting_info";
+const SETTING_ORG: &str = "/api/web/org/user/office/v1/setting_info";
+const LEGACY_BALANCE: &str = "/api/web/points/v1/balance";
+
 /// 主站 origin（`RACCOON_MAIN_SITE_URL` 可覆盖；去空白与末尾斜杠）。
 pub(super) fn main_site_url() -> String {
     std::env::var("RACCOON_MAIN_SITE_URL")
@@ -66,6 +83,138 @@ pub(super) fn main_site_url() -> String {
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_MAIN_SITE_URL.to_string())
+}
+
+/// 按通道顺序读积分，返回 `setting_info` / 旧余额端点解析出的对象。
+///
+/// 团队号先走组织路径，失败再退个人路径；退个人路径时**不发 `X-Org-Code`**，
+/// 否则读到的仍是组织口径的积分。凭证失效（401 / 200003 等 Auth 码）时立刻
+/// 返回，不换通道试错——换一条也是同样的 401，只会让日志更难读。
+///
+/// 所有通道都失败必须报错而不是返回 0：写库会把面板上的真实余额覆盖成「没钱」。
+async fn query_points(
+    origin: &str,
+    credentials: &credentials::RaccoonCredentials,
+) -> Result<Value, GatewayError> {
+    let mut last_error: Option<GatewayError> = None;
+    for (path, organization) in setting_routes(credentials) {
+        match setting_points(origin, path, credentials, organization).await {
+            Ok(points) => return Ok(points),
+            Err(error) if error.status_code == 401 => return Err(error),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match legacy_points(origin, credentials).await {
+        Ok(points) => return Ok(points),
+        Err(error) if error.status_code == 401 => return Err(error),
+        Err(_) => {}
+    }
+    Err(last_error.unwrap_or_else(|| GatewayError::with_status(502, "小浣熊积分查询失败")))
+}
+
+/// `setting_info` 里是否给出了可用积分（`total_chargeable_points` 优先，
+/// 旧字段 `available_points` 兜底）。
+fn has_points(value: &Value) -> bool {
+    to_int(value.get("total_chargeable_points")).is_some()
+        || to_int(value.get("available_points")).is_some()
+}
+
+/// `setting_info` 的通道顺序（team 先组织路径，之后都是个人口径）。
+fn setting_routes(credentials: &credentials::RaccoonCredentials) -> Vec<(&'static str, bool)> {
+    let team = !credentials.org_code.trim().is_empty() && credentials.org_code != "personal";
+    let mut routes = Vec::new();
+    if team {
+        routes.push((SETTING_ORG, true));
+    }
+    routes.push((SETTING_V2, false));
+    routes.push((SETTING_V3, false));
+    routes
+}
+
+/// 发一次 `setting_info`。`organization` 为 false 时不发 `X-Org-Code`
+/// （否则读到的是组织口径）。
+async fn setting_call(
+    origin: &str,
+    path: &str,
+    credentials: &credentials::RaccoonCredentials,
+    organization: bool,
+) -> Result<Value, GatewayError> {
+    // 网页版页面身份：v2 setting_info 就是网页版在调的接口。
+    let mut headers = super::headers::page_client_headers();
+    headers.push(("X-Raccoon-Language".to_string(), "zh".to_string()));
+    if organization {
+        super::headers::append_org(&mut headers, &credentials.org_code)
+            .map_err(|message| GatewayError::with_status(400, message))?;
+    }
+    request_json_ex(
+        origin,
+        "GET",
+        path,
+        &credentials.token,
+        &headers,
+        REQUEST_TIMEOUT_MS,
+    )
+    .await
+}
+
+/// 读一条 `setting_info` 通道并要求带上可用积分。
+async fn setting_points(
+    origin: &str,
+    path: &str,
+    credentials: &credentials::RaccoonCredentials,
+    organization: bool,
+) -> Result<Value, GatewayError> {
+    let points = setting_call(origin, path, credentials, organization).await?;
+    if !has_points(&points) {
+        // 字段缺失按「查不到」处理而不是 0：写库会把旧余额覆盖成 0
+        return Err(GatewayError::with_status(
+            502,
+            "小浣熊设置接口未返回可用积分",
+        ));
+    }
+    Ok(points)
+}
+
+/// 按通道顺序读一次 `setting_info`（每日积分的发放触发器，按天幂等）。
+///
+/// 这里**不要求**响应带积分字段：触发器的目的是激活当日发放，发放结果以
+/// 账单核对为准；反过来要求积分会让「上游没给读数」被误当成「没有发放」。
+async fn setting_trigger(
+    origin: &str,
+    credentials: &credentials::RaccoonCredentials,
+) -> Result<Value, GatewayError> {
+    let mut last_error: Option<GatewayError> = None;
+    for (path, organization) in setting_routes(credentials) {
+        match setting_call(origin, path, credentials, organization).await {
+            Ok(value) => return Ok(value),
+            Err(error) if error.status_code == 401 => return Err(error),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| GatewayError::with_status(502, "小浣熊设置接口不可用")))
+}
+
+/// 旧 `points/v1/balance` 的最后兜底（上游已下线，个别老部署可能还活着）。
+async fn legacy_points(
+    origin: &str,
+    credentials: &credentials::RaccoonCredentials,
+) -> Result<Value, GatewayError> {
+    let mut headers = Vec::new();
+    super::headers::append_org(&mut headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
+    let points = request_json_ex(
+        origin,
+        "GET",
+        LEGACY_BALANCE,
+        &credentials.token,
+        &headers,
+        REQUEST_TIMEOUT_MS,
+    )
+    .await?;
+    if !has_points(&points) {
+        return Err(GatewayError::with_status(502, "小浣熊旧余额端点未返回积分"));
+    }
+    Ok(points)
 }
 
 /// 查询某账号的余额 / 积分（归一化形状见 `ProviderAdapter::query_usage` 的文档）。
@@ -85,16 +234,7 @@ pub(super) async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Val
         ));
     }
     let origin = main_site_url();
-    let mut org_headers = Vec::new();
-    super::headers::append_org(&mut org_headers, &credentials.org_code)
-        .map_err(|message| GatewayError::with_status(400, message))?;
-    let points = request_json(
-        &origin,
-        "/api/web/points/v1/balance",
-        &credentials.token,
-        &org_headers,
-    )
-    .await?;
+    let points = query_points(&origin, &credentials).await?;
     if !points.is_object() {
         return Err(GatewayError::with_status(
             502,
@@ -136,6 +276,9 @@ pub(super) async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Val
         .collect();
 
     // 订阅失败只记原因，不阻断余额展示（见上）
+    let mut org_headers = Vec::new();
+    super::headers::append_org(&mut org_headers, &credentials.org_code)
+        .map_err(|message| GatewayError::with_status(400, message))?;
     let (subscription, subscription_error) = match request_json(
         &origin,
         "/api/web/auth/v1/entitlement_info",
@@ -406,8 +549,10 @@ fn to_int(value: Option<&Value>) -> Option<i64> {
 // 登录积分**链路：官方桌面客户端每次启动会打两个接口，服务端据此按天发放
 // 每日积分（1.x 源实现 account-balance.mjs / account-routes.mjs 的
 // desktop-grant 已验证）。这里复刻同一条链路作为「签到」：
-//   ① GET  /api/web/office/v3/setting_info —— **每日积分的发放触发器**
-//      （按天幂等），发放通知在响应的 point_grant_popups / point_grant_toast；
+//   ① GET  setting_info —— **每日积分的发放触发器**（按天幂等），发放通知在
+//      响应的 point_grant_popups / point_grant_toast。通道顺序与余额一致：
+//      团队号先组织路径，再 v2 → v3（2026-11 起 v3 对整个网关回 403，
+//      只写死 v3 会让签到每天都在第一步失败）；
 //   ② GET  /api/web/points/v1/bills —— 核对今日实际入账，作为权威结果
 //      （账单接口慢，limit=20 实测约 9 秒，用独立超时兜底；失败降级，
 //      不影响 ① 的领取本身）。
@@ -421,7 +566,8 @@ const GRANT_CHECK_LIMIT: usize = 20;
 const GRANT_CHECK_TIMEOUT_MS: u64 = 25_000;
 
 /// 客户端身份头：官方桌面端启动时带的两个头（源实现 grantDesktopLoginPoints）。
-/// 每日签到（setting_info）与新手任务的首次登录奖励（`onboarding.rs`）共用。
+/// 首次登录奖励（`onboarding.rs`）用它；余额 / 签到的 `setting_info` 改用
+/// 网页版页面身份（`headers::page_client_headers`），与网页端同源。
 pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
     super::headers::desktop_client_headers()
 }
@@ -478,34 +624,12 @@ pub async fn claim_daily_grant(ctx: &PluginCtx, account_id: &str) -> Result<Valu
 
     // ① 每日积分发放触发器（按天幂等）。失败必须体现在结果里 ——
     //    这步不成功当日就没有发放，账单核对会给出「今日未见入账」
-    let mut settings_headers = desktop_client_headers();
-    super::headers::append_org(&mut settings_headers, &credentials.org_code)
-        .map_err(|message| GatewayError::with_status(400, message))?;
-    settings_headers.push(("X-Raccoon-Language".to_string(), "zh".to_string()));
-    let settings_path = if credentials.org_code.is_empty() {
-        "/api/web/office/v3/setting_info"
-    } else {
-        "/api/web/org/user/office/v1/setting_info"
-    };
-    let settings = match request_json_ex(
-        &origin,
-        "GET",
-        settings_path,
-        &credentials.token,
-        &settings_headers,
-        REQUEST_TIMEOUT_MS,
-    )
-    .await
-    {
-        Ok(data) => {
-            // 发放通知原样透出（结构与上游一致，界面不深入解析）
-            json!({
-                "popups": data.get("point_grant_popups").cloned().unwrap_or(Value::Null),
-                "toast": data.get("point_grant_toast").cloned().unwrap_or(Value::Null),
-            })
-        }
-        Err(error) => return Err(error),
-    };
+    let data = setting_trigger(&origin, &credentials).await?;
+    // 发放通知原样透出（结构与上游一致，界面不深入解析）
+    let settings = json!({
+        "popups": data.get("point_grant_popups").cloned().unwrap_or(Value::Null),
+        "toast": data.get("point_grant_toast").cloned().unwrap_or(Value::Null),
+    });
 
     // ② 账单核对今日入账（慢接口独立超时；失败降级为 grantsError）。
     // 「今天」按**北京时间**（上游自然日即 UTC+8 零点，见 `core::beijing`），
@@ -552,4 +676,281 @@ pub async fn claim_daily_grant(ctx: &PluginCtx, account_id: &str) -> Result<Valu
         "settings": settings,
         "grantsError": grants_error.map(Value::String).unwrap_or(Value::Null),
     }))
+}
+
+#[cfg(test)]
+mod channel_order {
+    //! 余额通道顺序钉在**实测的上游行为**上（2026-11-25 直连
+    //! `https://xiaohuanxiong.com` 逐条核对）：
+    //!
+    //!   office/v2/setting_info  → 无凭证 401 authorization_empty_error（存活）
+    //!   office/v3/setting_info  → 403，响应头 X-TT-System-Error: 3
+    //!   points/v1/balance       → 403，响应头 X-TT-System-Error: 3
+    //!
+    //! 旧实现把主通道写成 points/v1/balance，于是「查余额」在面板上永远失败；
+    //! 这里用本地桩复现这三条路径的存活状态，钉住「v2 优先、失败再回退、
+    //! 全挂报错而不是返回 0」这三件事。
+
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{json, Value};
+
+    use super::{query_points, GatewayError, LEGACY_BALANCE, SETTING_ORG, SETTING_V2, SETTING_V3};
+    use crate::providers::raccoon::credentials::RaccoonCredentials;
+
+    /// 一条通道的应答：状态码 + 响应体 + 可选响应头。
+    #[derive(Clone)]
+    struct Answer {
+        status: u16,
+        body: Value,
+        headers: Vec<(&'static str, &'static str)>,
+    }
+
+    fn ok(body: Value) -> Answer {
+        Answer {
+            status: 200,
+            body,
+            headers: Vec::new(),
+        }
+    }
+
+    fn status(status: u16) -> Answer {
+        Answer {
+            status,
+            body: json!({}),
+            headers: Vec::new(),
+        }
+    }
+
+    fn edge_403() -> Answer {
+        Answer {
+            status: 403,
+            body: json!({}),
+            headers: vec![("X-TT-System-Error", "3")],
+        }
+    }
+
+    /// 本地上游桩：按路径回固定应答，并记录到达顺序。
+    struct Upstream {
+        base: String,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    async fn upstream(routes: Vec<(&'static str, Answer)>) -> Upstream {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("本地桩要能监听");
+        let base = format!("http://{}", listener.local_addr().expect("本地桩要有地址"));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (routes, seen_task) = (Arc::new(routes), seen.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let (routes, seen) = (routes.clone(), seen_task.clone());
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    // 读到头结束即可：这些端点都不带请求体。
+                    while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buffer);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("")
+                        .to_string();
+                    seen.lock().expect("请求记录锁").push(path.clone());
+                    // 账单接口是 25 秒超时那条，测试里直接给空页让它快速收尾。
+                    let answer = if path.starts_with("/api/web/points/v2/bills") {
+                        ok(json!({ "code": 0, "data": { "items": [], "has_more": false } }))
+                    } else {
+                        routes
+                            .iter()
+                            .find(|(route, _)| *route == path)
+                            .map(|(_, answer)| answer.clone())
+                            .unwrap_or_else(edge_403)
+                    };
+                    let body = answer.body.to_string();
+                    let mut response = format!(
+                        "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        answer.status,
+                        body.len()
+                    );
+                    for (name, value) in &answer.headers {
+                        response.push_str(&format!("{name}: {value}\r\n"));
+                    }
+                    response.push_str("\r\n");
+                    response.push_str(&body);
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Upstream { base, seen }
+    }
+
+    fn credentials(org: &str) -> RaccoonCredentials {
+        RaccoonCredentials {
+            id: "user-1".to_string(),
+            token: "stub-token".to_string(),
+            org_code: org.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn order(upstream: &Upstream) -> Vec<String> {
+        upstream.seen.lock().expect("请求记录锁").clone()
+    }
+
+    #[tokio::test]
+    async fn setting_v2_is_the_primary_channel() {
+        // v2 存活，v3 / 旧余额端点都是网关 403 —— 与 2026-11 的真实上游一致。
+        let server = upstream(vec![
+            (
+                SETTING_V2,
+                ok(json!({ "code": 0, "data": { "available_points": 4321 } })),
+            ),
+            (SETTING_V3, edge_403()),
+            (LEGACY_BALANCE, edge_403()),
+        ])
+        .await;
+
+        let points = query_points(&server.base, &credentials(""))
+            .await
+            .expect("v2 存活时不该失败");
+        assert_eq!(Some(4321), super::to_int(points.get("available_points")));
+        assert_eq!(
+            vec![SETTING_V2],
+            order(&server),
+            "v2 成功后不该再打别的通道"
+        );
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_v3_when_v2_is_down() {
+        let server = upstream(vec![
+            (SETTING_V2, status(500)),
+            (
+                SETTING_V3,
+                ok(json!({ "code": 0, "data": { "total_chargeable_points": 99 } })),
+            ),
+        ])
+        .await;
+
+        let points = query_points(&server.base, &credentials(""))
+            .await
+            .expect("v2 挂了应退 v3");
+        assert_eq!(
+            Some(99),
+            super::to_int(points.get("total_chargeable_points"))
+        );
+        assert_eq!(vec![SETTING_V2, SETTING_V3], order(&server));
+    }
+
+    #[tokio::test]
+    async fn team_account_tries_org_path_first() {
+        let server = upstream(vec![
+            (SETTING_ORG, status(400)),
+            (
+                SETTING_V2,
+                ok(json!({ "code": 0, "data": { "available_points": 88 } })),
+            ),
+        ])
+        .await;
+
+        let points = query_points(&server.base, &credentials("org-123"))
+            .await
+            .expect("组织路径失败应退个人");
+        assert_eq!(Some(88), super::to_int(points.get("available_points")));
+        assert_eq!(vec![SETTING_ORG, SETTING_V2], order(&server));
+    }
+
+    #[tokio::test]
+    async fn legacy_balance_is_the_last_resort() {
+        let server = upstream(vec![
+            (SETTING_V2, edge_403()),
+            (SETTING_V3, edge_403()),
+            (
+                LEGACY_BALANCE,
+                ok(json!({ "code": 0, "data": { "available_points": 2048 } })),
+            ),
+        ])
+        .await;
+
+        let points = query_points(&server.base, &credentials(""))
+            .await
+            .expect("旧端点还活着时应兜住");
+        assert_eq!(Some(2048), super::to_int(points.get("available_points")));
+        assert_eq!(vec![SETTING_V2, SETTING_V3, LEGACY_BALANCE], order(&server));
+    }
+
+    #[tokio::test]
+    async fn all_channels_down_is_an_error_not_zero() {
+        // 三条通道全 403（就是修复前上游对主通道的真实状态）。返回 0 会写库，
+        // 把面板上的真实余额覆盖成「没钱」，所以必须是错误。
+        let server = upstream(vec![
+            (SETTING_V2, edge_403()),
+            (SETTING_V3, edge_403()),
+            (LEGACY_BALANCE, edge_403()),
+        ])
+        .await;
+
+        let error: GatewayError = query_points(&server.base, &credentials(""))
+            .await
+            .expect_err("全挂必须报错");
+        assert_ne!(0, error.status_code);
+    }
+
+    #[tokio::test]
+    async fn missing_points_field_is_an_error() {
+        // setting_info 200 但没给积分：不能当成 0。
+        let server = upstream(vec![
+            (SETTING_V2, ok(json!({ "code": 0, "data": {} }))),
+            (SETTING_V3, ok(json!({ "code": 0, "data": {} }))),
+            (LEGACY_BALANCE, ok(json!({ "code": 0, "data": {} }))),
+        ])
+        .await;
+
+        query_points(&server.base, &credentials(""))
+            .await
+            .expect_err("字段缺失必须报错，否则会覆盖成 0");
+    }
+
+    #[tokio::test]
+    async fn auth_failure_stops_immediately() {
+        // 401 + authorization_verify_error：凭证本身不认，换通道也没用。
+        let server = upstream(vec![
+            (
+                SETTING_V2,
+                Answer {
+                    status: 401,
+                    body: json!({ "code": 200003, "message": "authorization_verify_error" }),
+                    headers: Vec::new(),
+                },
+            ),
+            (
+                SETTING_V3,
+                ok(json!({ "code": 0, "data": { "available_points": 1 } })),
+            ),
+        ])
+        .await;
+
+        let error = query_points(&server.base, &credentials(""))
+            .await
+            .expect_err("401 应直接失败");
+        assert_eq!(401, error.status_code);
+        assert_eq!(
+            vec![SETTING_V2],
+            order(&server),
+            "凭证失效不该继续换通道试错"
+        );
+    }
 }

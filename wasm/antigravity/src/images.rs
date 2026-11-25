@@ -38,6 +38,8 @@ pub fn generate(params: &Value, editing: bool) -> Result<Value> {
         &util::text(&secret, &["projectId"]),
         credentials::enterprise(&secret),
         None,
+        None,
+        None,
     )?;
     drop(chat);
     envelope["request"]["generationConfig"]["responseModalities"] = json!(["TEXT", "IMAGE"]);

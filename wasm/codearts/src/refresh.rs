@@ -152,33 +152,24 @@ fn reason(credential: &Credential, needs_relogin: bool) -> (&'static str, String
         return field_reason("missing_oauth_context", "oauth_context", true);
     };
     match material {
-        RefreshMaterial::InvalidClient => field_reason(
-            "invalid_client_id",
-            "client_id",
-            context.client_id.as_deref().is_none_or(|value| value.trim().is_empty()),
-        ),
+        RefreshMaterial::InvalidClient => field_reason("invalid_client_id", "client_id", false),
         RefreshMaterial::InvalidVerifier => {
-            let (field, missing) = material_field([
-                ("code_verifier", context.pkce_pair.code_verifier.as_str()),
-                ("code_challenge", context.pkce_pair.code_challenge.as_str()),
-                ("code_challenge_method", context.pkce_pair.code_challenge_method.as_str()),
-            ], "pkce_pair");
+            let (field, missing) = material_field(
+                [("code_verifier", context.pkce_pair.code_verifier.as_str())],
+                "pkce_pair",
+            );
             field_reason("invalid_pkce_verifier", field, missing)
         }
         RefreshMaterial::InvalidProofKey => {
             let private = &context.dpop_key_pair.private_key_jwk;
-            let public = &context.dpop_key_pair.public_key_jwk;
-            let (field, missing) = material_field([
-                ("private_key_jwk.kty", private.kty.as_str()),
-                ("private_key_jwk.crv", private.crv.as_str()),
-                ("private_key_jwk.d", private.d.as_str()),
-                ("private_key_jwk.x", private.x.as_str()),
-                ("private_key_jwk.y", private.y.as_str()),
-                ("public_key_jwk.kty", public.kty.as_str()),
-                ("public_key_jwk.crv", public.crv.as_str()),
-                ("public_key_jwk.x", public.x.as_str()),
-                ("public_key_jwk.y", public.y.as_str()),
-            ], "dpop_key_pair");
+            let (field, missing) = material_field(
+                [
+                    ("private_key_jwk.kty", private.kty.as_str()),
+                    ("private_key_jwk.crv", private.crv.as_str()),
+                    ("private_key_jwk.d", private.d.as_str()),
+                ],
+                "dpop_key_pair",
+            );
             field_reason("invalid_dpop_key", field, missing)
         }
         RefreshMaterial::Complete => ("ready", String::new()),
@@ -219,15 +210,16 @@ fn refresh_locked(account: &Account, force: bool) -> Result<String> {
         .oauth_context
         .as_ref()
         .ok_or_else(|| blocked(&account.credential, false))?;
-    let client_id = context
-        .client_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| blocked(&account.credential, false))?;
+    let client_id = context.effective_client_id();
     let verifier = context.pkce_pair.code_verifier.trim();
     let refresh_token = account.credential.refresh_token.trim();
-    if verifier.is_empty() || refresh_token.is_empty() {
+    if client_id.len() > 128
+        || client_id
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+        || verifier.is_empty()
+        || refresh_token.is_empty()
+    {
         return Err(blocked(&account.credential, false));
     }
 

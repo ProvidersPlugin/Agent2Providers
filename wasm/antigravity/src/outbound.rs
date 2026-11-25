@@ -11,6 +11,8 @@ pub fn build(
     project: &str,
     enterprise: bool,
     entry: Option<&Value>,
+    variant: Option<&Value>,
+    resolved_level: Option<&str>,
 ) -> Result<Value> {
     if project.trim().is_empty() {
         return Err(Error::http(
@@ -40,8 +42,10 @@ pub fn build(
         .and_then(Value::as_str)
         .unwrap_or("");
     let session = session(project, model, system_text, first_user);
-    let mut request = json!({ "generationConfig": reasoning::config(chat, model, entry, image),
-        "sessionId": session });
+    let mut request = json!({
+        "generationConfig": reasoning::config(chat, model, entry, variant, resolved_level, image),
+        "sessionId": session
+    });
     request["contents"] = Value::Array(contents);
     if !image {
         if let Some(system) = system {

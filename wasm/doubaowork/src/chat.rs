@@ -5,6 +5,7 @@ use agent2api_wasm_sdk::{self as sdk, json, Result, Value};
 use crate::{
     account::{self, Snapshot},
     catalog,
+    credentials::Credentials,
     endpoints::{self, ReadEndpoint},
     errors, network, prompt,
     stream::{Decoder, Delta, Parser},
@@ -49,10 +50,13 @@ pub fn forward(params: &Value) -> Result<Value> {
 }
 fn run(params: &Value, output: &mut Output) -> Result<Value> {
     let current = account::current()?;
-    current.credentials.chat_context()?;
     current.verify()?;
     let prepared = prompt::prepare(&params["body"])?;
-    let (bot, model) = catalog::target(params)?;
+    let target = catalog::target(params)?;
+    let credentials = current
+        .credentials
+        .with_runtime_device(target.device_id.as_deref());
+    credentials.chat_context()?;
     let mut attachments = Vec::new();
     for image in prepared.images {
         attachments.push(sdk::host(
@@ -61,10 +65,18 @@ fn run(params: &Value, output: &mut Output) -> Result<Value> {
         )?);
         image.remove()?;
     }
-    let body = prompt::payload(&bot, &model, &prepared.text, attachments, &params["body"])?;
+    let body = prompt::payload(
+        &target.bot,
+        &target.model,
+        &prepared.text,
+        attachments,
+        &params["body"],
+        false,
+    )?;
     let mut decoder = Decoder::default();
     consume(
         &current,
+        &credentials,
         ReadEndpoint::Chat,
         &body,
         &mut decoder,
@@ -98,6 +110,7 @@ fn run(params: &Value, output: &mut Output) -> Result<Value> {
         }
         consume(
             &current,
+            &credentials,
             ReadEndpoint::AsyncChunk,
             &json!({"task_id":id,"seq_start":0,"append_scene":task["append_scene"],"ext":{}}),
             &mut decoder,
@@ -150,18 +163,19 @@ fn run(params: &Value, output: &mut Output) -> Result<Value> {
 
 pub fn consume(
     current: &Snapshot,
+    credentials: &Credentials,
     endpoint: ReadEndpoint,
     body: &Value,
     decoder: &mut Decoder,
     mut output: Option<&mut Output>,
     emit_deltas: bool,
 ) -> Result<()> {
-    current.credentials.chat_context()?;
+    credentials.chat_context()?;
     current.unchanged()?;
     let mut response = sdk::http::open(
         "POST",
-        &network::url(&current.credentials, endpoint),
-        network::headers(&current.credentials, endpoint),
+        &network::url(credentials, endpoint),
+        network::headers(credentials, endpoint),
         Some(body),
     )
     .map_err(errors::transport)?;

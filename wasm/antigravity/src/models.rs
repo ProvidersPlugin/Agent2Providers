@@ -10,6 +10,7 @@ use agent2api_wasm_sdk::{
 
 const KEY: &str = "model-catalog";
 const TTL: i64 = 600_000;
+const FORMAT: u64 = 2;
 
 fn snapshot() -> Result<Snapshot> {
     let state = sdk::state::get(Scope::Account, KEY, 1)?;
@@ -22,18 +23,32 @@ fn cached(state: &Snapshot, secret: &Value, fresh: bool) -> Option<(Vec<Value>, 
     if state.value["binding"] != credentials::binding(secret) {
         return None;
     }
+    let current_format = state.value["format"].as_u64() == Some(FORMAT);
+    if fresh && !current_format {
+        return None;
+    }
     let at = state.value["at"].as_i64()?;
     if fresh && !(0..TTL).contains(&util::now().ok()?.saturating_sub(at)) {
         return None;
     }
     let models = state.value["models"].as_array()?.clone();
+    let models = if current_format {
+        models
+    } else {
+        catalog_shape::collapse_cached_entries(models)
+    };
     Some((models, at))
 }
 
 pub fn list(params: &Value) -> Result<Value> {
     if params["account"].as_str().unwrap_or("").is_empty() {
-        let shared = sdk::catalog::cached()?;
+        let mut shared = sdk::catalog::cached()?;
         if shared["meta"]["remote"] == true && shared["models"].is_array() {
+            if let Some(models) = shared["models"].as_array().cloned() {
+                if catalog_shape::needs_collapse(&models) {
+                    shared["models"] = json!(catalog_shape::collapse_cached_entries(models));
+                }
+            }
             return Ok(shared);
         }
         return Ok(
@@ -88,7 +103,7 @@ fn load_or_fetch(record: &Value, force: bool) -> Result<(Vec<Value>, i64, bool)>
         ));
     }
     let at = util::now()?;
-    let value = json!({ "binding": credentials::binding(&secret), "at": at, "models": models });
+    let value = json!({ "format": FORMAT, "binding": credentials::binding(&secret), "at": at, "models": models });
     if value.to_string().len() > 240 * 1024 {
         return Err(Error::http(
             413,
@@ -113,10 +128,15 @@ pub fn refresh(params: &Value) -> Result<Value> {
     match load_or_fetch(&record, params["force"] == true) {
         Ok((models, at, fetched)) => {
             let host = sdk::catalog::cached()?;
-            Ok(
-                json!({ "refreshed": fetched || host["meta"]["refreshed_at"].as_i64() != Some(at),
-                "count": models.len(), "models": models, "meta": { "remote": true, "refreshed_at": at } }),
-            )
+            let host_stale = host["models"]
+                .as_array()
+                .is_some_and(|rows| catalog_shape::needs_collapse(rows));
+            Ok(json!({
+                "refreshed": fetched || host_stale || host["meta"]["refreshed_at"].as_i64() != Some(at),
+                "count": models.len(),
+                "models": models,
+                "meta": { "remote": true, "refreshed_at": at }
+            }))
         }
         Err(error) if errors::local(&error) => Err(error),
         Err(error) => {

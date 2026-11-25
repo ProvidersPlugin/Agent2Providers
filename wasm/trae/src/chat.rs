@@ -8,6 +8,19 @@ use super::{
 use agent2api_wasm_sdk::{self as sdk, http, Error, Result, Value};
 use sha2::Digest;
 
+struct HashWriter<'a>(&'a mut sha2::Sha256);
+
+impl std::io::Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn session(params: &Value, record: &Value) -> Result<String> {
     let raw = params["session"].as_str().unwrap_or("").trim();
     if raw.len() > 4096 {
@@ -17,13 +30,6 @@ fn session(params: &Value, record: &Value) -> Result<String> {
         .as_array()
         .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
         .and_then(|message| message.get("content"));
-    let seed = if !raw.is_empty() {
-        format!("session:{raw}")
-    } else if let Some(first) = first {
-        format!("message:{first}")
-    } else {
-        util::uuid()?
-    };
     let caller = params["traeCaller"]
         .as_str()
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -34,14 +40,25 @@ fn session(params: &Value, record: &Value) -> Result<String> {
     } else {
         account::identity(&secret)
     };
-    let mut bytes = sha2::Sha256::digest(
-        format!(
-            "trae:{}:{caller}:{identity}:{seed}",
-            record["id"].as_str().unwrap_or("")
-        )
-        .as_bytes(),
-    )
-    .to_vec();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"trae:");
+    hasher.update(record["id"].as_str().unwrap_or("").as_bytes());
+    hasher.update(b":");
+    hasher.update(caller.as_bytes());
+    hasher.update(b":");
+    hasher.update(identity.as_bytes());
+    hasher.update(b":");
+    if !raw.is_empty() {
+        hasher.update(b"session:");
+        hasher.update(raw.as_bytes());
+    } else if let Some(first) = first {
+        hasher.update(b"message:");
+        let _ = serde_json::to_writer(HashWriter(&mut hasher), first);
+    } else {
+        let fallback = util::uuid()?;
+        hasher.update(fallback.as_bytes());
+    }
+    let mut bytes = hasher.finalize().to_vec();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let digest = util::hex(&bytes[..16]);
@@ -113,17 +130,15 @@ pub fn forward(mut params: Value) -> Result<()> {
         Err(error) => return Err(error),
     };
     let session = session(&params, &record)?;
-    let mut raw_body = Some(sdk::take_body(&mut params).unwrap_or(Value::Null));
+    let raw_body = sdk::take_body(&mut params).unwrap_or(Value::Null);
     drop(params);
+    if routes.is_empty() {
+        return Err(Error::http(404, "Trae 没有可用的模型通道"));
+    }
+    let mut prepared = payload::Prepared::new(raw_body, &session)?;
     let mut last = Error::http(404, "Trae 没有可用的模型通道");
-    let mut iter = routes.into_iter().peekable();
-    while let Some(route) = iter.next() {
-        let source = if iter.peek().is_none() {
-            raw_body.take().unwrap_or(Value::Null)
-        } else {
-            raw_body.as_ref().cloned().unwrap_or(Value::Null)
-        };
-        let body = match payload::prepare_body(source, &route, &session) {
+    for route in routes {
+        let body = match prepared.for_route(&route) {
             Ok(body) => body,
             Err(error) if error.code.as_deref() == Some("trae_route_capability") => {
                 last = error;
@@ -138,7 +153,7 @@ pub fn forward(mut params: Value) -> Result<()> {
                 "POST",
                 &format!("{}{}", endpoints::AGENT, endpoints::CHAT),
                 headers::chat(&secret, true)?,
-                Some(&body),
+                Some(body),
             )
             .map_err(errors::transport)?;
             let status = response.status;

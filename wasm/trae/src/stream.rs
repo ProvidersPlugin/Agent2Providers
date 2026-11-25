@@ -1,5 +1,5 @@
 //! Trae output/token_usage/done → 标准Chat SSE。usage仅投影已给字段，不估算零值。
-//! 首有效输出前不发head；开始后错误不重放。error后只收真实usage，done/EOF均不改成功。
+//! 首有效输出（含工具调用）即发head；开始后错误不重放。error后只收真实usage，done/EOF均不改成功。
 
 use super::{errors, events::Event, util};
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
@@ -13,10 +13,66 @@ pub struct Output {
     pub failure: Option<Error>,
     usage: Option<Value>,
     reasoning: String,
+    reasoning_chars: usize,
     last_reasoning: String,
+    last_keepalive: Option<i64>,
     tools_seen: bool,
     tool_calls: Vec<ToolCall>,
     ended: bool,
+}
+
+#[derive(Default)]
+struct JsonBalance {
+    braces: usize,
+    brackets: usize,
+    in_string: bool,
+    escaped: bool,
+    has_non_ws: bool,
+    malformed: bool,
+}
+
+impl JsonBalance {
+    fn feed(&mut self, piece: &str) {
+        for byte in piece.bytes() {
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'"' {
+                    self.in_string = false;
+                }
+            } else {
+                if !byte.is_ascii_whitespace() {
+                    self.has_non_ws = true;
+                }
+                match byte {
+                    b'"' => self.in_string = true,
+                    b'{' => self.braces += 1,
+                    b'}' => {
+                        if self.braces == 0 {
+                            self.malformed = true;
+                        } else {
+                            self.braces -= 1;
+                        }
+                    }
+                    b'[' => self.brackets += 1,
+                    b']' => {
+                        if self.brackets == 0 {
+                            self.malformed = true;
+                        } else {
+                            self.brackets -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn maybe_complete(&self) -> bool {
+        self.has_non_ws && !self.malformed && !self.in_string && self.braces == 0 && self.brackets == 0
+    }
 }
 
 #[derive(Default)]
@@ -25,9 +81,58 @@ struct ToolCall {
     upstream_index: Option<u64>,
     name: String,
     arguments: String,
+    balance: JsonBalance,
+    complete: Option<bool>,
+}
+
+impl ToolCall {
+    fn is_complete(&mut self) -> bool {
+        if !self.balance.maybe_complete() {
+            return false;
+        }
+        *self
+            .complete
+            .get_or_insert_with(|| complete_arguments(&self.arguments))
+    }
+
+    fn merge_arguments(&mut self, incoming: &str) -> Result<()> {
+        if incoming.is_empty() || self.arguments == incoming || self.arguments.starts_with(incoming)
+        {
+            return Ok(());
+        }
+        if incoming.starts_with(self.arguments.as_str()) {
+            let suffix = &incoming[self.arguments.len()..];
+            if self.arguments.len().saturating_add(suffix.len()) > MAX_TOOL_BUFFER {
+                return Err(Error::http(502, "Trae 工具参数超过受控缓冲大小"));
+            }
+            self.arguments.push_str(suffix);
+            self.balance.feed(suffix);
+            self.complete = None;
+        } else if resent_arguments(&self.arguments, incoming) {
+            self.arguments.clear();
+            self.arguments.push_str(incoming);
+            self.balance = JsonBalance::default();
+            self.balance.feed(incoming);
+            self.complete = None;
+        } else {
+            if self.arguments.len().saturating_add(incoming.len()) > MAX_TOOL_BUFFER {
+                return Err(Error::http(502, "Trae 工具参数超过受控缓冲大小"));
+            }
+            self.arguments.push_str(incoming);
+            self.balance.feed(incoming);
+            self.complete = None;
+        }
+        Ok(())
+    }
 }
 
 const MAX_TOOL_BUFFER: usize = 4 * 1024 * 1024;
+const MAX_REASONING_BUFFER: usize = 8 * 1024 * 1024;
+const TOOL_KEEPALIVE_INTERVAL_MS: i64 = 5_000;
+
+fn has_at_least_chars(text: &str, min: usize) -> bool {
+    text.len() >= min && text.chars().nth(min - 1).is_some()
+}
 
 fn usage(value: &Value) -> Option<Value> {
     let value = value
@@ -238,7 +343,7 @@ fn merge_usage(previous: Option<Value>, incoming: Value) -> Value {
 }
 
 fn complete_arguments(value: &str) -> bool {
-    !value.is_empty() && serde_json::from_str::<Value>(value).is_ok()
+    !value.is_empty() && serde_json::from_str::<serde::de::IgnoredAny>(value).is_ok()
 }
 
 fn first_argument_key(value: &str) -> Option<&str> {
@@ -273,21 +378,6 @@ fn resent_arguments(current: &str, incoming: &str) -> bool {
         && !complete_arguments(&(current.to_owned() + incoming))
 }
 
-fn merge_piece(current: &mut String, incoming: &str) -> Result<()> {
-    if incoming.is_empty() || current == incoming || current.starts_with(incoming) {
-        return Ok(());
-    }
-    if incoming.starts_with(current.as_str()) || resent_arguments(current, incoming) {
-        *current = incoming.into();
-    } else {
-        if current.len().saturating_add(incoming.len()) > MAX_TOOL_BUFFER {
-            return Err(Error::http(502, "Trae 工具参数超过受控缓冲大小"));
-        }
-        current.push_str(incoming);
-    }
-    Ok(())
-}
-
 impl Output {
     pub fn new(model: &str) -> Result<Self> {
         Ok(Self {
@@ -299,7 +389,9 @@ impl Output {
             failure: None,
             usage: None,
             reasoning: String::new(),
+            reasoning_chars: 0,
             last_reasoning: String::new(),
+            last_keepalive: None,
             tools_seen: false,
             tool_calls: Vec::new(),
             ended: false,
@@ -326,29 +418,59 @@ impl Output {
             frame["usage"] = usage;
         }
         self.head()?;
+        self.last_keepalive = None;
         sdk::stream_event(&frame)
     }
 
+    fn keepalive_for_tools(&mut self) -> Result<()> {
+        if !self.started {
+            self.head()?;
+            sdk::stream_bytes(b": keepalive\n\n")?;
+            self.last_keepalive = Some(util::now()?);
+            return Ok(());
+        }
+        let now = util::now()?;
+        match self.last_keepalive {
+            None => self.last_keepalive = Some(now),
+            Some(last) if now.saturating_sub(last) >= TOOL_KEEPALIVE_INTERVAL_MS => {
+                sdk::stream_bytes(b": keepalive\n\n")?;
+                self.last_keepalive = Some(now);
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
     fn reasoning(&mut self, incoming: String) -> Result<String> {
-        if self.reasoning.len().saturating_add(incoming.len()) > 8 * 1024 * 1024 {
+        if incoming.is_empty() {
+            self.last_reasoning.clear();
+            return Ok(String::new());
+        }
+        if incoming.len() > MAX_REASONING_BUFFER {
             return Err(Error::http(502, "Trae 思考流超过受控缓冲大小"));
         }
-        let duplicate = incoming == self.last_reasoning && incoming.chars().count() >= 8
-            || self.reasoning.chars().count() >= 16
-                && incoming.chars().count() >= 16
-                && self.reasoning.ends_with(&incoming);
-        self.last_reasoning = incoming.clone();
+        let duplicate = (incoming == self.last_reasoning && has_at_least_chars(&incoming, 8))
+            || (self.reasoning_chars >= 16
+                && has_at_least_chars(&incoming, 16)
+                && self.reasoning.ends_with(&incoming));
+        self.last_reasoning.clone_from(&incoming);
         if duplicate {
             return Ok(String::new());
         }
-        let delta = if self.reasoning.chars().count() >= 16 {
-            incoming
-                .strip_prefix(&self.reasoning)
-                .unwrap_or(&incoming)
-                .to_string()
+        let delta = if self.reasoning_chars >= 16 {
+            match incoming.strip_prefix(&self.reasoning) {
+                Some(rest) => rest.to_string(),
+                None => incoming,
+            }
         } else {
             incoming
         };
+        if self.reasoning.len().saturating_add(delta.len()) > MAX_REASONING_BUFFER {
+            return Err(Error::http(502, "Trae 思考流超过受控缓冲大小"));
+        }
+        if self.reasoning_chars < 16 {
+            self.reasoning_chars += delta.chars().take(16 - self.reasoning_chars).count();
+        }
         self.reasoning.push_str(&delta);
         Ok(delta)
     }
@@ -363,7 +485,7 @@ impl Output {
         Ok(())
     }
 
-    fn observe_tools(&mut self, value: Value) -> Result<()> {
+    fn observe_tools(&mut self, value: Value) -> Result<bool> {
         let calls = match value {
             Value::Array(calls) => calls,
             Value::Object(_) => vec![value],
@@ -371,6 +493,9 @@ impl Output {
         };
         if calls.len() > 512 {
             return Err(Error::http(502, "Trae 工具数量超过限制"));
+        }
+        if calls.is_empty() {
+            return Ok(false);
         }
         for call in calls {
             if !call.is_object() {
@@ -429,8 +554,8 @@ impl Output {
                 if !id.is_empty() || upstream_index.is_some() {
                     return None;
                 }
-                self.tool_calls.iter().rposition(|old| {
-                    (name.is_empty() || old.name == name) && !complete_arguments(&old.arguments)
+                self.tool_calls.iter_mut().rposition(|old| {
+                    (name.is_empty() || old.name == name) && !old.is_complete()
                 })
             });
             let index = match index {
@@ -466,7 +591,7 @@ impl Output {
                     target.name.push_str(&name);
                 }
             }
-            merge_piece(&mut target.arguments, &arguments)?;
+            target.merge_arguments(&arguments)?;
             if self
                 .tool_calls
                 .iter()
@@ -477,7 +602,7 @@ impl Output {
                 return Err(Error::http(502, "Trae 全部工具参数超过受控缓冲大小"));
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn flush_tools(&mut self) -> Result<()> {
@@ -533,11 +658,15 @@ impl Output {
                 if !reasoning.is_empty() {
                     delta["reasoning_content"] = json!(reasoning);
                 }
-                if let Some(tools) = tools {
-                    self.observe_tools(tools)?;
-                }
+                let saw_tools = if let Some(tools) = tools {
+                    self.observe_tools(tools)?
+                } else {
+                    false
+                };
                 if delta.as_object().is_some_and(|v| !v.is_empty()) {
                     self.frame(delta, None, false)?;
+                } else if saw_tools {
+                    self.keepalive_for_tools()?;
                 }
             }
             Event::Output { .. } => {}

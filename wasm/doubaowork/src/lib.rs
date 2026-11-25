@@ -33,7 +33,7 @@ fn metadata() -> Value {
     let meta = json!({ "id": endpoints::PROVIDER, "label": "豆包工作", "order": 30,
         "capabilities": {
             "chat": true, "stateful": true, "refresh": false, "model_refresh": true,
-            "usage": true, "checkin": true, "claims": true, "web_login": true,
+            "usage": true, "checkin": false, "claims": true, "web_login": true,
             "sse_model_rewrite": false, "sse_strip_newline_chunks": false,
             "anonymous_default_session": false, "env_credentials": false,
             "system_proxy_when_unset": false, "refresh_uses_account": true, "supports_default_model": false
@@ -44,8 +44,8 @@ fn metadata() -> Value {
             "identifier": ["userId"], "expiry": [], "long_lived": false, "claim": true,
             "default_limiters": [] },
         "default_models": [], "readiness": gates::status(), "migration_status": gates::status(),
-        "checkin": {"description": "每日签到先保存待确认记录，只提交一次；以官方今日完成标记为准，再次点击只查结果。其他已完成任务在活动福利逐项领取，不代做任务。",
-            "daily": true, "modes": [], "onboarding": false, "plans": false} });
+        "checkin": {"description": "豆包工作每日签到已锁定官方桌面端安全校验，仅支持只读查询今日签到状态，请打开豆包工作桌面端手动签到。其他已完成任务可在活动福利逐项领取。",
+            "daily": false, "modes": [], "onboarding": false, "plans": false} });
     attach(
         meta,
         vec![
@@ -113,9 +113,7 @@ fn handle(method: &str, params: Value) -> Result<Value> {
         "usage.query" => quota::query(),
         "claim.status" => sdk::host("claim.doubao.tasks", json!({})),
         "claim" => sdk::host("claim.doubao.tasks", json!({})),
-        "checkin.claim" => Ok(
-            json!({"outcome": "failed", "message": "签到结果由本次主程序受控调用保存并核对；插件不自行提交或重放", "credit": null, "streak": null}),
-        ),
+        "checkin.claim" => activities::checkin_readonly(),
         "chat" | "conversation" => chat::forward(&params),
         "login.start" => login_methods::start(&params),
         "login.callback" => {

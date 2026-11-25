@@ -57,13 +57,24 @@ pub fn generate(params: &Value) -> Result<Value> {
         format!("请直接用图片生成能力画出来，不要只给文字描述。画面内容：{prompt}")
     };
     let current = account::current()?;
-    current.credentials.chat_context()?;
     current.verify()?;
-    let (bot, model) = catalog::agent_target()?;
-    let payload = prompt::payload(&bot, &model, &text, Vec::new(), &json!({}))?;
+    let target = catalog::agent_target()?;
+    let credentials = current
+        .credentials
+        .with_runtime_device(target.device_id.as_deref());
+    credentials.chat_context()?;
+    let payload = prompt::payload(
+        &target.bot,
+        &target.model,
+        &text,
+        Vec::new(),
+        &json!({}),
+        true,
+    )?;
     let mut decoder = Decoder::default();
     chat::consume(
         &current,
+        &credentials,
         ReadEndpoint::Chat,
         &payload,
         &mut decoder,
@@ -96,6 +107,7 @@ pub fn generate(params: &Value) -> Result<Value> {
         }
         chat::consume(
             &current,
+            &credentials,
             ReadEndpoint::AsyncChunk,
             &json!({"task_id":id,"seq_start":0,"append_scene":task["append_scene"],"ext":{}}),
             &mut decoder,

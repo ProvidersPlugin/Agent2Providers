@@ -2,13 +2,17 @@
 //! 上游没有绝对余量时不编造 available=0，不造签到或领取。
 
 use super::{
-    account, argon, catalog_shape, control, credentials, model_quotas, models, project, refresh,
-    usage_windows, util,
+    account, argon, catalog_shape, control, credentials, errors, model_quotas, models, project,
+    refresh, usage_windows, util,
 };
 use agent2api_wasm_sdk::{json, Error, Result, Value};
 
 fn is_terminal_auth_error(error: &Error) -> bool {
     error.status == Some(401) || error.code.as_deref() == Some("antigravity_account_action")
+}
+
+fn should_abort_usage(error: &Error) -> bool {
+    is_terminal_auth_error(error) || errors::local(error) || errors::transport_failed(error)
 }
 
 fn load_project_meta(body: &Value) -> (String, String, Option<Value>) {
@@ -43,10 +47,16 @@ pub fn query() -> Result<Value> {
     let record = refresh::ensure(false, None)?;
     let secret = credentials::parse(&record["secret"])?;
     let token = credentials::token(&secret)?;
+    let mut prior_transport_failures = 0;
     let load_body = match project::load(&token) {
         Ok(body) => Some(body),
-        Err(error) if is_terminal_auth_error(&error) => return Err(error),
-        Err(_) => None,
+        Err(error) if is_terminal_auth_error(&error) || errors::local(&error) => return Err(error),
+        Err(error) => {
+            if errors::transport_failed(&error) {
+                prior_transport_failures = 1;
+            }
+            None
+        }
     };
     let (discovered_project, raw_tier, ai_credits) = load_body
         .as_ref()
@@ -59,11 +69,15 @@ pub fn query() -> Result<Value> {
         stored_project
     };
 
-    let models_res = control::fetch_for_project(&secret, &effective_project, false, || {
-        account::unchanged(&record["secret"])
-    });
+    let models_res = control::fetch_for_project_with_transport_failures(
+        &secret,
+        &effective_project,
+        false,
+        prior_transport_failures,
+        || account::unchanged(&record["secret"]),
+    );
     if let Err(ref error) = models_res {
-        if is_terminal_auth_error(error) {
+        if should_abort_usage(error) {
             return Err(error.clone());
         }
     }
@@ -72,7 +86,7 @@ pub fn query() -> Result<Value> {
         account::unchanged(&record["secret"])
     });
     if let Err(ref error) = summary_res {
-        if is_terminal_auth_error(error) {
+        if is_terminal_auth_error(error) || errors::local(error) {
             return Err(error.clone());
         }
     }

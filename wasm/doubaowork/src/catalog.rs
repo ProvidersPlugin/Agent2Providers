@@ -19,7 +19,7 @@ use crate::{
 };
 
 const KEY: &str = "doubaowork.catalog";
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const TTL: i64 = 5 * 60 * 1000;
 const MAX_CACHE: usize = 240 * 1024;
 
@@ -28,7 +28,15 @@ struct Catalog {
     binding: Value,
     fetched_at: i64,
     bot: String,
+    #[serde(default)]
+    device_id: Option<String>,
     models: BTreeMap<String, Model>,
+}
+
+pub struct Target {
+    pub bot: String,
+    pub model: Model,
+    pub device_id: Option<String>,
 }
 
 fn selected(params: &Value) -> bool {
@@ -44,7 +52,7 @@ fn cached(snapshot: &state::Snapshot, account: &Snapshot) -> Result<Option<Catal
             "豆包工作账号目录缓存缺少归属绑定，未当成空目录",
         ));
     }
-    if !snapshot.compatible && snapshot.schema != 1 {
+    if !snapshot.compatible && !matches!(snapshot.schema, 1 | 2) {
         return Err(errors::protocol(
             "豆包工作账号目录格式版本不兼容，未覆盖旧缓存",
         ));
@@ -130,6 +138,8 @@ fn fetch(account: &Snapshot) -> Result<Catalog> {
         .or_else(|| util::identifier(&launch["assistant_bot_id"]))
         .filter(|bot| !util::protected(bot, &account.credentials.protected))
         .ok_or_else(|| errors::protocol("豆包工作未返回有效助手编号，未请求猜测目录"))?;
+    let device_id = util::identifier(&launch["data"]["config"]["web_id"])
+        .filter(|id| util::is_numeric_id(id));
     let value = account.read(
         ReadEndpoint::Catalog,
         &json!({ "language_code": "zh", "bot_id": bot }),
@@ -139,6 +149,7 @@ fn fetch(account: &Snapshot) -> Result<Catalog> {
         binding: account.binding(),
         fetched_at: util::now()?,
         bot,
+        device_id,
         models,
     })
 }
@@ -149,11 +160,19 @@ fn outcome(mut list: Value, refreshed: bool) -> Value {
     list
 }
 
+fn needs_device_bootstrap(account: &Snapshot, catalog: &Catalog) -> bool {
+    !account.credentials.has_numeric_device_id() && catalog.device_id.is_none()
+}
+
 fn for_use(account: &Snapshot) -> Result<Catalog> {
     let saved = state::get(Scope::Account, KEY, SCHEMA)?;
     let previous = cached(&saved, account)?;
     let now = util::now()?;
-    if !saved.compatible || previous.as_ref().is_none_or(|catalog| !fresh(catalog, now)) {
+    if !saved.compatible
+        || previous
+            .as_ref()
+            .is_none_or(|catalog| !fresh(catalog, now) || needs_device_bootstrap(account, catalog))
+    {
         refresh(&json!({"account": account.id, "force": false}))?;
     }
     let saved = state::get(Scope::Account, KEY, SCHEMA)?;
@@ -163,7 +182,7 @@ fn for_use(account: &Snapshot) -> Result<Catalog> {
     Ok(catalog)
 }
 
-pub fn target(params: &Value) -> Result<(String, Model)> {
+pub fn target(params: &Value) -> Result<Target> {
     let account = account::current()?;
     let catalog = for_use(&account)?;
     let requested = params["wire_model"]
@@ -184,10 +203,14 @@ pub fn target(params: &Value) -> Result<(String, Model)> {
         })
         .ok_or_else(|| errors::invalid("当前账号没有此模式和模型，请先刷新目录"))?;
     account.unchanged()?;
-    Ok((catalog.bot, model))
+    Ok(Target {
+        bot: catalog.bot,
+        model,
+        device_id: catalog.device_id,
+    })
 }
 
-pub fn agent_target() -> Result<(String, Model)> {
+pub fn agent_target() -> Result<Target> {
     let account = account::current()?;
     let catalog = for_use(&account)?;
     let model = catalog
@@ -198,7 +221,11 @@ pub fn agent_target() -> Result<(String, Model)> {
         .cloned()
         .ok_or_else(|| errors::invalid("当前账号目录没有可用于生图的工作任务模式"))?;
     account.unchanged()?;
-    Ok((catalog.bot, model))
+    Ok(Target {
+        bot: catalog.bot,
+        model,
+        device_id: catalog.device_id,
+    })
 }
 
 pub fn refresh(params: &Value) -> Result<Value> {
@@ -214,7 +241,10 @@ pub fn refresh(params: &Value) -> Result<Value> {
     let previous = cached(&saved, &account)?;
     let now = util::now()?;
     if params["force"] != true && saved.compatible {
-        if let Some(previous) = previous.as_ref().filter(|catalog| fresh(catalog, now)) {
+        if let Some(previous) = previous
+            .as_ref()
+            .filter(|catalog| fresh(catalog, now) && !needs_device_bootstrap(&account, catalog))
+        {
             // 私有快照已有，但宿主展示快照可能还未发布（例如上次在写入后取消）。
             let published = sdk::catalog::cached().map_err(errors::host)?;
             let display = models::display(&previous.models, previous.fetched_at);

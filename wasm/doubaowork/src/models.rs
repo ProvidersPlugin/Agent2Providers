@@ -146,14 +146,17 @@ fn mode_permits(row: &Value, mode: &Value) -> bool {
         return false;
     };
     let id = util::identifier(&row["model_item_key"]).or_else(|| util::identifier(&row["item_id"]));
+    let default_conv_mode = util::identifier(&mode["default_conversation_mode"]);
     row["conversation_mode_list"]
         .as_array()
-        .map_or(true, |modes| {
-            modes
-                .iter()
-                .any(|value| util::identifier(value).as_ref() == Some(&mode_id))
+        .is_none_or(|modes| {
+            modes.iter().any(|value| {
+                let candidate = util::identifier(value);
+                candidate.as_ref() == Some(&mode_id)
+                    || (default_conv_mode.is_some() && candidate == default_conv_mode)
+            })
         })
-        && mode["support_models"].as_array().map_or(true, |models| {
+        && mode["support_models"].as_array().is_none_or(|models| {
             models.iter().any(|value| {
                 util::identifier(&value["model_item_key"])
                     .or_else(|| util::identifier(&value["item_id"]))

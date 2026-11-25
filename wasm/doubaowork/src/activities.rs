@@ -212,8 +212,14 @@ pub fn read(account: &Snapshot) -> Result<Activity> {
     let info = launch.get("ug_campaign_info").ok_or_else(|| {
         errors::protocol("豆包工作未下发可识别活动字段，当前状态未知，未记为空活动")
     })?;
-    // 明确的空活动字段才表示本次未下发；缺字段或坏结构不能变成成功空结果。
-    if info.is_null() {
+    // 明确的空活动字段（含空字符串 campaign_group_code，如飞书/企业账号）表示本次未下发活动入口。
+    let group_value = info.get("campaign_group_code");
+    if info.is_null()
+        || (info.is_object()
+            && group_value.is_none_or(|value| {
+                value.is_null() || value.as_str().is_some_and(|text| text.trim().is_empty())
+            }))
+    {
         return Ok(Activity {
             value: json!({ "state": "inactive", "tasks": [], "readOnly": true,
             "campaignGroup": null, "completed": null, "rewardAmount": null, "queriedAt": util::now()? }),
@@ -261,15 +267,23 @@ pub fn read(account: &Snapshot) -> Result<Activity> {
     let tasks: Vec<_> = tasks.into_values().collect();
     let daily: Vec<_> = tasks.iter().filter(|task| task.daily).collect();
     let daily_text = if daily.len() == 1 {
-        match daily[0].checked_in_today {
-            Some(true) => "官方显示今日已签到",
-            Some(false) => "官方显示今日尚未签到",
-            None => "今日签到状态未知",
+        let task = daily[0];
+        let streak_suffix = task
+            .streak
+            .filter(|days| *days > 0)
+            .map(|days| format!("（已连续 {days} 天）"))
+            .unwrap_or_default();
+        match task.checked_in_today {
+            Some(true) => format!("官方显示今日已签到{streak_suffix}"),
+            Some(false) => {
+                format!("官方显示今日尚未签到{streak_suffix}，请打开豆包工作桌面端手动签到")
+            }
+            None => "今日签到状态未知".to_string(),
         }
     } else if daily.is_empty() {
-        "当前活动没有每日签到项"
+        "当前活动没有每日签到项".to_string()
     } else {
-        "返回多个每日任务，未合并签到结论"
+        "返回多个每日任务，未合并签到结论".to_string()
     };
     let unknown = tasks.iter().filter(|task| task.completed.is_none()).count();
     let mut summary = format!(
@@ -293,4 +307,64 @@ pub fn query() -> Result<Value> {
     let result = read(&account)?;
     account.unchanged()?;
     Ok(result.value)
+}
+
+/// 只读查询今日签到状态，绝不提交 `/alice/ug/campaign/landing/checkin`。
+pub fn checkin_readonly() -> Result<Value> {
+    let account = account::current()?;
+    account.verify()?;
+    let result = read(&account)?;
+    account.unchanged()?;
+    if result.value["state"].as_str() == Some("inactive") {
+        return Ok(json!({
+            "outcome": "inactive",
+            "message": "当前账号未开放豆包工作每日签到活动（仅只读查询）",
+            "credit": null,
+            "streak": null,
+        }));
+    }
+    let tasks = result.value["tasks"].as_array();
+    let daily: Vec<&Value> = tasks
+        .into_iter()
+        .flatten()
+        .filter(|task| task["daily"].as_bool() == Some(true))
+        .collect();
+    if daily.is_empty() {
+        return Ok(json!({
+            "outcome": "inactive",
+            "message": "当前活动没有每日签到项（仅只读查询）",
+            "credit": null,
+            "streak": null,
+        }));
+    }
+    if daily.len() > 1 {
+        return Ok(json!({
+            "outcome": "failed",
+            "message": "官方返回多个每日签到项，未合并签到结论（仅只读查询）",
+            "credit": null,
+            "streak": null,
+        }));
+    }
+    let task = daily[0];
+    let streak = task["streak"].as_u64();
+    match task["checkedInToday"].as_bool() {
+        Some(true) => Ok(json!({
+            "outcome": "done",
+            "message": "官方显示今日已完成签到（仅只读查询）",
+            "credit": null,
+            "streak": streak,
+        })),
+        Some(false) => Ok(json!({
+            "outcome": "ineligible",
+            "message": "官方显示今日尚未签到；豆包工作每日签到已锁定官方桌面端安全校验，请打开豆包工作桌面端手动签到（本页仅查询状态）",
+            "credit": null,
+            "streak": streak,
+        })),
+        None => Ok(json!({
+            "outcome": "failed",
+            "message": "官方未返回今日签到完成标记（仅只读查询）",
+            "credit": null,
+            "streak": streak,
+        })),
+    }
 }

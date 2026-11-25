@@ -11,18 +11,25 @@ use crate::{
     errors, util,
 };
 
+fn same_coord(declared: &str, expected: &str) -> bool {
+    let normalized = URL_SAFE_NO_PAD
+        .decode(declared.trim().trim_end_matches('='))
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes));
+    matches!(normalized, Ok(value) if value == expected)
+}
+
 fn key(pair: &DpopPair) -> Result<(SigningKey, Jwk)> {
     let private = &pair.private_key_jwk;
-    if private.kty != "EC" || private.crv != "P-256" {
+    if private.kty.trim() != "EC" || private.crv.trim() != "P-256" {
         return Err(errors::invalid("CodeArts DPoP 材料必须是 EC / P-256"));
     }
     let bytes = URL_SAFE_NO_PAD
-        .decode(private.d.trim())
+        .decode(private.d.trim().trim_end_matches('='))
         .map_err(|_| errors::invalid("CodeArts DPoP 私钥编码无效"))?;
     if bytes.len() != 32 {
         return Err(errors::invalid("CodeArts DPoP 私钥长度无效"));
     }
-    if !pair.public_key_jwk.d.is_empty() {
+    if !pair.public_key_jwk.d.trim().is_empty() {
         return Err(errors::invalid("CodeArts DPoP 公钥对象不能包含私钥材料"));
     }
     let key = SigningKey::from_slice(&bytes)
@@ -38,14 +45,27 @@ fn key(pair: &DpopPair) -> Result<(SigningKey, Jwk)> {
         y: URL_SAFE_NO_PAD.encode(y),
         d: String::new(),
     };
-    for declared in [&pair.private_key_jwk, &pair.public_key_jwk] {
-        if declared.x != public.x
-            || declared.y != public.y
-            || declared.kty != "EC"
-            || declared.crv != "P-256"
-        {
-            return Err(errors::invalid("CodeArts DPoP 公私钥资料不一致"));
-        }
+    if (!private.x.trim().is_empty() && !same_coord(&private.x, &public.x))
+        || (!private.y.trim().is_empty() && !same_coord(&private.y, &public.y))
+    {
+        return Err(errors::invalid("CodeArts DPoP 公私钥资料不一致"));
+    }
+    let declared = &pair.public_key_jwk;
+    let has_public = [
+        declared.kty.as_str(),
+        declared.crv.as_str(),
+        declared.x.as_str(),
+        declared.y.as_str(),
+    ]
+    .into_iter()
+    .any(|value| !value.trim().is_empty());
+    if has_public
+        && (declared.kty.trim() != "EC"
+            || declared.crv.trim() != "P-256"
+            || !same_coord(&declared.x, &public.x)
+            || !same_coord(&declared.y, &public.y))
+    {
+        return Err(errors::invalid("CodeArts DPoP 公私钥资料不一致"));
     }
     Ok((key, public))
 }

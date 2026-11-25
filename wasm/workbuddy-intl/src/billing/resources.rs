@@ -32,8 +32,29 @@ pub struct Resources {
     pub accounts: Vec<Value>,
     pub summary: Option<(f64, f64)>,
 }
+fn should_abort_summary(error: &Error) -> bool {
+    error.status.is_none()
+        || matches!(error.status, Some(401 | 408 | 504))
+        || matches!(
+            error.code.as_deref(),
+            Some(
+                "timeout"
+                    | "usage_timeout"
+                    | "aborted"
+                    | "forbidden"
+                    | "plugin_busy"
+                    | "plugin_resource_limit"
+                    | "plugin_unavailable"
+            )
+        )
+}
+
 pub fn fetch(current: &Session, budget: &super::QueryBudget) -> Result<Resources> {
-    let summary = summary(current, budget).ok().flatten();
+    let summary = match summary(current, budget) {
+        Ok(summary) => summary,
+        Err(error) if should_abort_summary(&error) => return Err(error),
+        Err(_) => None,
+    };
     let day = util::day(sdk::now());
     let paid = pages(
         current,

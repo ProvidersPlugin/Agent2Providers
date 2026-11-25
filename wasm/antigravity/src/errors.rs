@@ -374,6 +374,11 @@ pub fn transport(error: Error) -> Error {
     }
 }
 
+pub fn transport_failed(error: &Error) -> bool {
+    error.code.as_deref() == Some("antigravity_transport")
+        || (error.code.as_deref() == Some("antigravity_transient") && error.status == Some(504))
+}
+
 pub fn local(error: &Error) -> bool {
     matches!(
         error.code.as_deref(),

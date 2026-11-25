@@ -46,8 +46,11 @@ pub fn url(credentials: &Credentials, endpoint: ReadEndpoint) -> String {
         ]
     };
     if !matches!(endpoint, ReadEndpoint::Identity) {
+        let device = credentials.field("deviceId");
+        if util::is_numeric_id(device) {
+            query.push(("device_id", device.into()));
+        }
         for (wire, field) in [
-            ("device_id", "deviceId"),
             ("iid", "iid"),
             ("web_id", "webId"),
             ("channel", "channel"),
@@ -58,12 +61,11 @@ pub fn url(credentials: &Credentials, endpoint: ReadEndpoint) -> String {
                 query.push((wire, value.into()));
             }
         }
-        let device = credentials.field("deviceId");
         let fingerprint = credentials.field("fingerprint");
-        if !device.is_empty() {
-            query.push(("fp", format!("verify_{device}")));
-        } else if !fingerprint.is_empty() {
+        if !fingerprint.is_empty() {
             query.push(("fp", fingerprint.into()));
+        } else if util::is_numeric_id(device) {
+            query.push(("fp", format!("verify_{device}")));
         }
         if endpoint.control() {
             for (wire, field) in [("tea_uuid", "teaUuid"), ("web_tab_id", "webTabId")] {

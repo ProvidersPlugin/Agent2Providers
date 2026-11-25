@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{dpop, errors, util};
 
 const MAX_SECRET: usize = 8192;
+/// 网页登录与缺少客户端标识的旧凭据使用的默认值。
+pub const DEFAULT_CLIENT_ID: &str = "vscode-codebot";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RefreshMaterial {
@@ -68,6 +70,17 @@ pub struct OAuthContext {
     pub pkce_pair: Pkce,
     #[serde(default)]
     pub dpop_key_pair: DpopPair,
+}
+
+impl OAuthContext {
+    /// 网页登录与缺少客户端标识的旧凭据沿用默认客户端标识。
+    pub fn effective_client_id(&self) -> &str {
+        self.client_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_CLIENT_ID)
+    }
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Credential {
@@ -331,15 +344,13 @@ impl Credential {
         let Some(context) = &self.oauth_context else {
             return RefreshMaterial::MissingContext;
         };
-        // 尚未登记的旧上下文不补默认client；固定登记需原材料显式完整。
-        if context.client_id.as_deref().is_none_or(|client| {
-            let client = client.trim();
-            client.is_empty()
-                || client.len() > 128
-                || client
-                    .chars()
-                    .any(|ch| ch.is_control() || ch.is_whitespace())
-        }) {
+        // 旧版凭据可能未保存 client_id，缺省时按与原生一致的默认值回退；显式填写的值仍需合法。
+        let client = context.effective_client_id();
+        if client.len() > 128
+            || client
+                .chars()
+                .any(|ch| ch.is_control() || ch.is_whitespace())
+        {
             return RefreshMaterial::InvalidClient;
         }
         let verifier = context.pkce_pair.code_verifier.trim();
@@ -350,19 +361,23 @@ impl Credential {
         {
             return RefreshMaterial::InvalidVerifier;
         }
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-        use sha2::{Digest, Sha256};
-        if !matches!(
-            context.pkce_pair.code_challenge_method.as_str(),
-            "SHA-256" | "S256"
-        ) || URL_SAFE_NO_PAD
-            .decode(&context.pkce_pair.code_challenge)
-            .ok()
-            .is_none_or(|challenge| {
-                challenge.as_slice() != Sha256::digest(verifier.as_bytes()).as_slice()
-            })
-        {
+        let challenge_method = context.pkce_pair.code_challenge_method.trim();
+        if !challenge_method.is_empty() && !matches!(challenge_method, "SHA-256" | "S256") {
             return RefreshMaterial::InvalidVerifier;
+        }
+        let challenge = context.pkce_pair.code_challenge.trim();
+        if !challenge.is_empty() {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+            use sha2::{Digest, Sha256};
+            if URL_SAFE_NO_PAD
+                .decode(challenge.trim_end_matches('='))
+                .ok()
+                .is_none_or(|decoded| {
+                    decoded.as_slice() != Sha256::digest(verifier.as_bytes()).as_slice()
+                })
+            {
+                return RefreshMaterial::InvalidVerifier;
+            }
         }
         if dpop::validate(&context.dpop_key_pair).is_err() {
             return RefreshMaterial::InvalidProofKey;

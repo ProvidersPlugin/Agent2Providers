@@ -12,7 +12,7 @@ const VARIANTS: [(&str, &str); 3] = [
 ];
 fn tier(id: &str) -> Option<usize> {
     if id.trim().eq_ignore_ascii_case(BASE) {
-        return Some(2);
+        return Some(1);
     }
     VARIANTS
         .iter()
@@ -32,16 +32,6 @@ pub fn resolve_model(id: &str, effort: Option<&str>) -> Option<&'static str> {
         })
         .unwrap_or(default);
     VARIANTS.get(tier).map(|(id, _)| *id)
-}
-pub fn thinking_config(chat: &Value, model: &str) -> Option<Value> {
-    let effort = model_rules::read_client_level(chat);
-    if effort.as_deref().is_some_and(model_rules::reasoning_is_off) {
-        return None;
-    }
-    let model = resolve_model(model, effort.as_deref())?;
-    Some(
-        json!({ "includeThoughts": true, "thinkingLevel": match tier(model)? { 0 => "LOW", 1 => "MEDIUM", _ => "HIGH" } }),
-    )
 }
 pub fn is_quota_bucket(group: &Value, bucket: &Value) -> bool {
     dedicated_token(group, bucket) == Some("argon")
@@ -104,35 +94,33 @@ fn quota(summary: &Value) -> Value {
     value
 }
 pub fn supplement(models: &mut Vec<Value>, summary: Option<&Value>) {
-    if !models
+    if models
         .iter()
         .any(|m| m["id"].as_str().is_some_and(is_model))
     {
-        if let Some(summary) = summary.filter(|s| has_dedicated_quota(s)) {
-            let quota = quota(summary);
-            for (id, name) in VARIANTS {
-                if let Some(item) = catalog_shape::map_entry(
-                    id,
-                    &json!({ "displayName": name,
-                    "supportsImages": true, "supportsThinking": true, "maxTokens": 1_048_576,
-                    "maxOutputTokens": 65_536, "quotaInfo": quota }),
-                ) {
-                    models.push(item);
-                }
-            }
-        }
-    }
-    if models.iter().any(|m| m["id"] == BASE) {
         return;
     }
-    if let Some(mut alias) = models
-        .iter()
-        .find(|m| m["id"] == "gemini-4-argon-high")
-        .cloned()
-    {
-        alias["id"] = json!(BASE);
-        alias["name"] = json!("Gemini 4 Argon");
-        models.push(alias);
+    if let Some(summary) = summary.filter(|s| has_dedicated_quota(s)) {
+        let quota = quota(summary);
+        let pairs: Vec<(&str, Value)> = VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(index, (id, name))| {
+                (
+                    *id,
+                    json!({
+                        "displayName": name,
+                        "supportsImages": true,
+                        "supportsThinking": true,
+                        "thinkingLevel": (index + 1) as i64,
+                        "maxTokens": 1_048_576,
+                        "maxOutputTokens": 65_536,
+                        "quotaInfo": quota,
+                    }),
+                )
+            })
+            .collect();
+        models.extend(catalog_shape::collapse_pairs(&pairs));
     }
 }
 
@@ -189,10 +177,8 @@ pub fn quota_models(
     let separate_argon = dedicated_tokens.contains(&"argon");
     if token == Some("argon") || gemini && !separate_argon {
         // 额度范围说明不是新增模型广告；余额可以先于目录加载。
-        for id in std::iter::once(BASE).chain(VARIANTS.iter().map(|(id, _)| *id)) {
-            if !ids.iter().any(|known| known == id) {
-                ids.push(id.to_string());
-            }
+        if !ids.iter().any(|known| known.eq_ignore_ascii_case(BASE)) {
+            ids.push(BASE.to_string());
         }
     }
     ids

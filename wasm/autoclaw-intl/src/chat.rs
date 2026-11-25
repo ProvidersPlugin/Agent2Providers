@@ -1,5 +1,5 @@
 //! AutoClaw 国际版原生 Chat SSE；端点、模型路由与请求指纹不借用国内通道。
-//! 按 plugins#437 两地区修复规范化历史载体，保留工具、图片、思考文本和轮次。
+//! 按 plugins#437 两地区修复规范化历史载体，直接移除上游不接受的历史思考字段（不拼入正文），保留工具、图片和轮次。
 //! 新国际客户端使用自己的系统首句；不删除原系统提示，也不触发奖励来绕过拒绝。
 use super::{account, config, endpoints, errors, headers, models, prompt, refresh, util};
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
@@ -159,24 +159,9 @@ fn normalize_history(body: &mut Value) -> Result<()> {
         {
             return Err(Error::http(400, "AutoClaw 消息正文必须是文本或多模态数组"));
         }
-        // 国际与国内网关都不能解析此历史字段；改换载体而不丢掉原思考内容。
-        if let Some(reasoning) = fields
-            .remove("reasoning_content")
-            .filter(|value| !value.is_null())
-        {
-            let text = reasoning
-                .as_str()
-                .ok_or_else(|| Error::http(400, "AutoClaw 历史思考必须是文本"))?;
-            if !text.is_empty() {
-                let prefix = format!("[Previous reasoning]\n{text}\n[/Previous reasoning]\n\n");
-                match fields.get_mut("content") {
-                    Some(Value::String(content)) => content.insert_str(0, &prefix),
-                    Some(Value::Array(parts)) => {
-                        parts.insert(0, json!({ "type": "text", "text": prefix }))
-                    }
-                    _ => return Err(Error::http(400, "AutoClaw 历史思考没有有效正文载体")),
-                }
-            }
+        // 国际与国内网关都不能解析历史思考字段（plugins#437），直接移除，不拼进正文以免诱导模型模仿输出。
+        for key in ["reasoning_content", "reasoningContent", "reasoning"] {
+            fields.remove(key);
         }
         if let Some(calls) = fields
             .get_mut("tool_calls")
@@ -340,4 +325,43 @@ pub fn forward(mut params: Value) -> Result<()> {
         return Err(error);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_history;
+    use agent2api_wasm_sdk::json;
+
+    #[test]
+    fn removes_history_reasoning_without_polluting_content() {
+        let mut body = json!({
+            "messages": [
+                { "role": "user", "content": "hi" },
+                {
+                    "role": "assistant",
+                    "content": "final answer",
+                    "reasoning_content": "step one",
+                    "reasoning": "alias thought",
+                    "reasoningContent": "camel thought"
+                },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "calling tool",
+                    "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "exec" } }]
+                }
+            ]
+        });
+        normalize_history(&mut body).expect("normalize_history should succeed");
+        let assistant_text = &body["messages"][1];
+        assert_eq!(assistant_text["content"], "final answer");
+        assert!(assistant_text.get("reasoning_content").is_none());
+        assert!(assistant_text.get("reasoning").is_none());
+        assert!(assistant_text.get("reasoningContent").is_none());
+
+        let assistant_tool = &body["messages"][2];
+        assert_eq!(assistant_tool["content"], "");
+        assert!(assistant_tool.get("reasoning_content").is_none());
+        assert_eq!(assistant_tool["tool_calls"][0]["function"]["arguments"], "{}");
+    }
 }

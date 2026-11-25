@@ -44,6 +44,12 @@ pub fn identifier(value: &Value) -> Option<String> {
                 && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
         })
 }
+pub fn is_numeric_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.bytes().any(|byte| byte != b'0')
+}
 pub fn now() -> Result<i64> {
     sdk::host("clock.now", Value::Null)
         .map_err(errors::host)?

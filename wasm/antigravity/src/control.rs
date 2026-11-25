@@ -13,10 +13,22 @@ pub fn fetch(secret: &Value, quota: bool, check: impl Fn() -> Result<()>) -> Res
     fetch_for_project(secret, &project, quota, check)
 }
 
+const MAX_CONSECUTIVE_TRANSPORT_FAILURES: usize = 2;
+
 pub fn fetch_for_project(
     secret: &Value,
     project: &str,
     quota: bool,
+    check: impl Fn() -> Result<()>,
+) -> Result<Value> {
+    fetch_for_project_with_transport_failures(secret, project, quota, 0, check)
+}
+
+pub fn fetch_for_project_with_transport_failures(
+    secret: &Value,
+    project: &str,
+    quota: bool,
+    prior_transport_failures: usize,
     check: impl Fn() -> Result<()>,
 ) -> Result<Value> {
     let token = credentials::token(secret)?;
@@ -32,6 +44,7 @@ pub fn fetch_for_project(
         "fetchAvailableModels"
     };
     let mut last = Error::http(502, "Antigravity 所有环境均未返回可用结果");
+    let mut consecutive_transport_failures = prior_transport_failures;
     for base in endpoints::CONTROL_BASES {
         check()?;
         let url = endpoints::method(base, method);
@@ -42,9 +55,18 @@ pub fn fetch_for_project(
         );
         check()?;
         let mut reply = match response {
-            Ok(reply) => reply,
+            Ok(reply) => {
+                consecutive_transport_failures = 0;
+                reply
+            }
             Err(error) if errors::local(&error) => return Err(error),
             Err(error) => {
+                if errors::transport_failed(&error) {
+                    consecutive_transport_failures = consecutive_transport_failures.saturating_add(1);
+                    if consecutive_transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES {
+                        return Err(error);
+                    }
+                }
                 last = error;
                 continue;
             }
@@ -58,9 +80,18 @@ pub fn fetch_for_project(
             let retried = client::post(&url, endpoints::headers(&token, "", plane, false)?, &body);
             check()?;
             reply = match retried {
-                Ok(reply) => reply,
+                Ok(reply) => {
+                    consecutive_transport_failures = 0;
+                    reply
+                }
                 Err(error) if errors::local(&error) => return Err(error),
                 Err(error) => {
+                    if errors::transport_failed(&error) {
+                        consecutive_transport_failures = consecutive_transport_failures.saturating_add(1);
+                        if consecutive_transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES {
+                            return Err(error);
+                        }
+                    }
                     last = error;
                     continue;
                 }

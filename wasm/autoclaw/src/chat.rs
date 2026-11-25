@@ -1,7 +1,7 @@
 //! AutoClaw 的原生协议就是 Chat SSE，不需要复制通用 Anthropic 转换器。
 //! 保留双模型标识、max_tokens 小值门槛、system 前缀、metadata 移除与可选换行清理。
 //! 上游已确认拒收历史中的 null content、reasoning_content 与非字符串工具参数（plugins#437）。
-//! 思考历史移入同一消息正文而不丢弃；工具声明、调用 id、结果、图片和轮次顺序保持。
+//! 历史消息中的思考字段直接移除，不拼入正文（避免诱发模型模仿输出标记污染会话）；工具声明、调用 id、结果、图片和轮次顺序保持。
 use super::{account, config, endpoints, errors, headers, models, prompt, refresh, util};
 use agent2api_wasm_sdk::{self as sdk, http, json, sse::SseDecoder, Error, Result, Value};
 use std::collections::BTreeMap;
@@ -154,24 +154,9 @@ fn normalize_history(body: &mut Value) -> Result<()> {
         if !content.is_string() && !content.is_array() {
             return Err(Error::http(400, "AutoClaw 消息正文必须是文本或多模态数组"));
         }
-        // 只转换上游明确不能读取的载体；思考文本仍留在原角色/原轮次。
-        if let Some(reasoning) = fields
-            .remove("reasoning_content")
-            .filter(|value| !value.is_null())
-        {
-            let text = reasoning
-                .as_str()
-                .ok_or_else(|| Error::http(400, "AutoClaw 历史思考必须是文本"))?;
-            if !text.is_empty() {
-                let prefix = format!("[Previous reasoning]\n{text}\n[/Previous reasoning]\n\n");
-                match fields.get_mut("content") {
-                    Some(Value::String(content)) => content.insert_str(0, &prefix),
-                    Some(Value::Array(parts)) => {
-                        parts.insert(0, json!({ "type": "text", "text": prefix }))
-                    }
-                    _ => return Err(Error::http(400, "AutoClaw 历史思考没有有效正文载体")),
-                }
-            }
+        // 上游网关不接受历史思考字段（plugins#437），直接移除，不改写进正文以免诱导模型模仿输出。
+        for key in ["reasoning_content", "reasoningContent", "reasoning"] {
+            fields.remove(key);
         }
         if let Some(calls) = fields
             .get_mut("tool_calls")
@@ -295,4 +280,43 @@ pub fn forward(mut params: Value) -> Result<()> {
         return Err(error);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_history;
+    use agent2api_wasm_sdk::json;
+
+    #[test]
+    fn removes_history_reasoning_without_polluting_content() {
+        let mut body = json!({
+            "messages": [
+                { "role": "user", "content": "hi" },
+                {
+                    "role": "assistant",
+                    "content": "最终回复",
+                    "reasoning_content": "先想一步",
+                    "reasoning": "别名思考",
+                    "reasoningContent": "驼峰思考"
+                },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "准备调用工具",
+                    "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "exec" } }]
+                }
+            ]
+        });
+        normalize_history(&mut body).expect("normalize_history should succeed");
+        let assistant_text = &body["messages"][1];
+        assert_eq!(assistant_text["content"], "最终回复");
+        assert!(assistant_text.get("reasoning_content").is_none());
+        assert!(assistant_text.get("reasoning").is_none());
+        assert!(assistant_text.get("reasoningContent").is_none());
+
+        let assistant_tool = &body["messages"][2];
+        assert_eq!(assistant_tool["content"], "");
+        assert!(assistant_tool.get("reasoning_content").is_none());
+        assert_eq!(assistant_tool["tool_calls"][0]["function"]["arguments"], "{}");
+    }
 }

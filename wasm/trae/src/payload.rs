@@ -5,6 +5,8 @@
 //! tools 的 parameters 必须序列化为字符串，历史 tool_calls 使用 function_call。
 //! 历史 `-solo` / `-solo-max` 只作为兼容名解析，不能据此选择聊天通道或推断 Max 权益。
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use super::catalog::Route;
@@ -19,110 +21,181 @@ const SAMPLING_KEYS: [&str; 6] = [
     "n",
 ];
 
-pub fn prepare_body(mut obj: Value, route: &Route, session: &str) -> Result<Value, Error> {
-    if !obj.is_object() {
-        return Err(Error::http(400, "Trae 请求体必须是 JSON 对象"));
-    }
-    if obj
-        .get("messages")
-        .and_then(Value::as_array)
-        .is_none_or(|rows| rows.iter().any(|row| !row.is_object()))
-    {
-        return Err(Error::http(400, "Trae messages 必须是对象数组"));
-    }
-    normalize_legacy_functions(&mut obj)?;
-    normalize_tool_choice(&mut obj);
-    normalize_tools(&mut obj)?;
-    normalize_messages(&mut obj)?;
-    drop_orphan_tool_results(&mut obj)?;
-    normalize_tool_results(&mut obj);
-    normalize_images(&mut obj, route.supports_images)?;
-    if obj
-        .get("messages")
-        .and_then(Value::as_array)
-        .is_none_or(Vec::is_empty)
-    {
-        return Err(Error::http(400, "Trae 请求必须包含非空 messages 数组"));
-    }
+/// 路由无关的规范化结果：30 万 token 长对话只就地整理一次，切换候选通道时复用本体。
+pub struct Prepared {
+    body: Value,
+    asked_max_tokens: Option<i64>,
+    asked_effort: Option<String>,
+    has_images: bool,
+    images_normalized: bool,
+}
 
-    let mut out = serde_json::Map::new();
-    out.insert("function".to_string(), json!(route.function));
-    out.insert("stream".to_string(), json!(true));
-    out.insert("config_name".to_string(), json!(route.config_name));
-    out.insert("model".to_string(), json!(route.config_name));
-    if let Some(model_name) = &route.model_name {
-        out.insert("model_name".to_string(), json!(model_name));
-    }
-    out.insert("session_id".to_string(), json!(session));
-    out.insert("request_id".to_string(), json!(super::util::uuid()?));
-    for key in SAMPLING_KEYS {
-        if let Some(number) = obj.get(key).filter(|value| value.is_number()) {
-            out.insert(key.to_string(), number.clone());
+impl Prepared {
+    pub fn new(mut obj: Value, session: &str) -> Result<Self, Error> {
+        if !obj.is_object() {
+            return Err(Error::http(400, "Trae 请求体必须是 JSON 对象"));
         }
-    }
-    let asked = ["max_completion_tokens", "max_tokens"]
-        .into_iter()
-        .filter_map(|key| obj.get(key).and_then(Value::as_i64))
-        .find(|tokens| *tokens > 0);
-    let output = match (asked, route.max_tokens) {
-        (Some(asked), Some(native)) => Some(asked.min(native)),
-        (Some(asked), None) => Some(asked),
-        (None, native) if route.max_window.is_some() => native,
-        _ => None,
-    };
-    if let Some(output) = output {
-        out.insert("max_tokens".to_string(), json!(output));
-    }
-    if let Some(window) = route.max_window {
-        out.insert(
-            "user_message_context".to_string(),
-            json!({
-                "model_info": { "prompt_max_tokens": window.saturating_sub(output.unwrap_or(0)) }
-            }),
-        );
-    }
-    let effort = obj
-        .get("reasoning_effort")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            obj.get("reasoning")
-                .and_then(|value| value.get("effort"))
-                .and_then(Value::as_str)
-        });
-    if let Some(asked) = effort.filter(|value| !value.is_empty()) {
-        let effort = route.reasoning_effort(asked).ok_or_else(|| {
-            Error::http(400, "Trae 当前账号目录未声明所选思考档位")
-                .with_code("trae_route_capability")
-        })?;
-        out.insert("reasoning_effort".to_string(), json!(effort));
-    }
-    if let Some(fields) = obj.as_object_mut() {
-        if let Some(messages) = fields.remove("messages") {
-            out.insert("messages".to_string(), messages);
-        }
-        if let Some(tools) = fields
-            .get("tools")
+        if obj
+            .get("messages")
             .and_then(Value::as_array)
-            .is_some_and(|tools| !tools.is_empty())
-            .then(|| fields.remove("tools"))
-            .flatten()
+            .is_none_or(|rows| rows.iter().any(|row| !row.is_object()))
         {
-            out.insert("tools".to_string(), tools);
-            if let Some(choice) = fields.remove("tool_choice") {
-                out.insert("tool_choice".to_string(), choice);
+            return Err(Error::http(400, "Trae messages 必须是对象数组"));
+        }
+        normalize_legacy_functions(&mut obj)?;
+        normalize_tool_choice(&mut obj);
+        normalize_tools(&mut obj)?;
+        normalize_messages(&mut obj)?;
+        drop_orphan_tool_results(&mut obj)?;
+        normalize_tool_results(&mut obj);
+        let has_images = scan_and_normalize_text_parts(&mut obj);
+        if obj
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+        {
+            return Err(Error::http(400, "Trae 请求必须包含非空 messages 数组"));
+        }
+
+        let asked_max_tokens = ["max_completion_tokens", "max_tokens"]
+            .into_iter()
+            .filter_map(|key| obj.get(key).and_then(Value::as_i64))
+            .find(|tokens| *tokens > 0);
+        let asked_effort = obj
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                obj.get("reasoning")
+                    .and_then(|value| value.get("effort"))
+                    .and_then(Value::as_str)
+            })
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        let mut out = serde_json::Map::new();
+        out.insert("stream".to_string(), json!(true));
+        out.insert("session_id".to_string(), json!(session));
+        if let Some(fields) = obj.as_object_mut() {
+            for key in SAMPLING_KEYS {
+                if fields.get(key).is_some_and(Value::is_number) {
+                    if let Some(number) = fields.remove(key) {
+                        out.insert(key.to_string(), number);
+                    }
+                }
+            }
+            if let Some(messages) = fields.remove("messages") {
+                out.insert("messages".to_string(), messages);
+            }
+            if let Some(tools) = fields
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| !tools.is_empty())
+                .then(|| fields.remove("tools"))
+                .flatten()
+            {
+                out.insert("tools".to_string(), tools);
+                if let Some(choice) = fields.remove("tool_choice") {
+                    out.insert("tool_choice".to_string(), choice);
+                }
+            }
+            if fields
+                .get("parallel_tool_calls")
+                .is_some_and(Value::is_boolean)
+            {
+                if let Some(parallel) = fields.remove("parallel_tool_calls") {
+                    out.insert("parallel_tool_calls".to_string(), parallel);
+                }
+            }
+            if let Some(stop @ (Value::String(_) | Value::Array(_))) = fields.remove("stop") {
+                out.insert("stop".to_string(), stop);
             }
         }
-        if let Some(parallel) = fields
-            .get("parallel_tool_calls")
-            .filter(|value| value.is_boolean())
-        {
-            out.insert("parallel_tool_calls".to_string(), parallel.clone());
-        }
-        if let Some(stop @ (Value::String(_) | Value::Array(_))) = fields.remove("stop") {
-            out.insert("stop".to_string(), stop);
-        }
+        Ok(Self {
+            body: Value::Object(out),
+            asked_max_tokens,
+            asked_effort,
+            has_images,
+            images_normalized: false,
+        })
     }
-    Ok(Value::Object(out))
+
+    /// 仅就地覆写当前候选通道的顶层标量字段，不克隆 messages / tools。
+    pub fn for_route(&mut self, route: &Route) -> Result<&Value, Error> {
+        if self.has_images && route.supports_images == Some(false) {
+            return Err(Error::http(
+                400,
+                "Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型",
+            )
+            .with_code("trae_route_capability"));
+        }
+        let effort = match self.asked_effort.as_deref() {
+            Some(asked) => Some(
+                route
+                    .reasoning_effort(asked)
+                    .ok_or_else(|| {
+                        Error::http(400, "Trae 当前账号目录未声明所选思考档位")
+                            .with_code("trae_route_capability")
+                    })?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        if self.has_images && !self.images_normalized {
+            normalize_images(&mut self.body)?;
+            self.images_normalized = true;
+        }
+        let request_id = super::util::uuid()?;
+        if let Some(out) = self.body.as_object_mut() {
+            out.insert("function".to_string(), json!(route.function));
+            out.insert("config_name".to_string(), json!(route.config_name));
+            out.insert("model".to_string(), json!(route.config_name));
+            match &route.model_name {
+                Some(model_name) => {
+                    out.insert("model_name".to_string(), json!(model_name));
+                }
+                None => {
+                    out.remove("model_name");
+                }
+            }
+            out.insert("request_id".to_string(), json!(request_id));
+            let output = match (self.asked_max_tokens, route.max_tokens) {
+                (Some(asked), Some(native)) => Some(asked.min(native)),
+                (Some(asked), None) => Some(asked),
+                (None, native) if route.max_window.is_some() => native,
+                _ => None,
+            };
+            match output {
+                Some(output) => {
+                    out.insert("max_tokens".to_string(), json!(output));
+                }
+                None => {
+                    out.remove("max_tokens");
+                }
+            }
+            match route.max_window {
+                Some(window) => {
+                    out.insert(
+                        "user_message_context".to_string(),
+                        json!({
+                            "model_info": { "prompt_max_tokens": window.saturating_sub(output.unwrap_or(0)) }
+                        }),
+                    );
+                }
+                None => {
+                    out.remove("user_message_context");
+                }
+            }
+            match effort {
+                Some(effort) => {
+                    out.insert("reasoning_effort".to_string(), json!(effort));
+                }
+                None => {
+                    out.remove("reasoning_effort");
+                }
+            }
+        }
+        Ok(&self.body)
+    }
 }
 
 fn normalize_legacy_functions(obj: &mut Value) -> Result<(), Error> {
@@ -194,21 +267,26 @@ fn normalize_legacy_functions(obj: &mut Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn normalize_images(obj: &mut Value, supported: Option<bool>) -> Result<(), Error> {
+fn scan_and_normalize_text_parts(obj: &mut Value) -> bool {
+    let mut has_images = false;
     for message in obj["messages"].as_array_mut().into_iter().flatten() {
         for part in message["content"].as_array_mut().into_iter().flatten() {
             if part["type"] == "input_text" {
                 part["type"] = json!("text");
             }
+            if matches!(part["type"].as_str(), Some("image_url" | "input_image")) {
+                has_images = true;
+            }
+        }
+    }
+    has_images
+}
+
+fn normalize_images(obj: &mut Value) -> Result<(), Error> {
+    for message in obj["messages"].as_array_mut().into_iter().flatten() {
+        for part in message["content"].as_array_mut().into_iter().flatten() {
             if !matches!(part["type"].as_str(), Some("image_url" | "input_image")) {
                 continue;
-            }
-            if supported == Some(false) {
-                return Err(Error::http(
-                    400,
-                    "Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型",
-                )
-                .with_code("trae_route_capability"));
             }
             let url = part
                 .get("image_url")
@@ -246,41 +324,37 @@ fn normalize_messages(obj: &mut Value) -> Result<(), Error> {
                 continue;
             };
             let content_present = entry.contains_key("content");
-            let content_value = entry.get("content").cloned();
-            let mut role = entry
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if role == "developer" {
+            let is_developer = entry.get("role").and_then(Value::as_str) == Some("developer");
+            if is_developer {
                 entry.insert("role".to_string(), json!("system"));
-                role = "system".to_string();
             }
+            let is_assistant = entry.get("role").and_then(Value::as_str) == Some("assistant");
 
-            if role == "assistant" {
-                let calls = entry.get("tool_calls").and_then(Value::as_array).cloned();
-                if let Some(calls) = calls {
+            if is_assistant && entry.get("tool_calls").is_some_and(Value::is_array) {
+                if let Some(Value::Array(calls)) = entry.remove("tool_calls") {
                     let mut kept: Vec<Value> = Vec::with_capacity(calls.len());
                     for call in calls {
                         let Value::Object(mut call) = call else {
                             return Err(Error::http(400, "Trae 历史工具调用不是有效对象"));
                         };
                         if let Some(mut function) = call
-                            .get("function")
-                            .or_else(|| call.get("function_call"))
-                            .cloned()
+                            .remove("function")
+                            .or_else(|| call.remove("function_call"))
                         {
-                            if function.is_object() {
-                                if let Some(arguments) = function
+                            if let Some(fields) = function.as_object_mut() {
+                                if fields
                                     .get("arguments")
-                                    .filter(|value| !value.is_string() && !value.is_null())
-                                    .cloned()
+                                    .is_some_and(|value| !value.is_string() && !value.is_null())
                                 {
-                                    function["arguments"] = json!(arguments.to_string());
+                                    if let Some(arguments) = fields.remove("arguments") {
+                                        fields.insert(
+                                            "arguments".to_string(),
+                                            json!(arguments.to_string()),
+                                        );
+                                    }
                                 }
                             }
                             call.insert("function_call".to_string(), function);
-                            call.remove("function");
                         }
                         // 上游要求 function_call.name 必填：没名字的调用整条剔除。
                         let named = call
@@ -301,10 +375,9 @@ fn normalize_messages(obj: &mut Value) -> Result<(), Error> {
                         kept.push(Value::Object(call));
                     }
                     if kept.is_empty() {
-                        entry.remove("tool_calls");
                         // 全被剔且本来就没正文的 assistant 占位消息整条丢掉：
                         // 上游对这种消息可能回空流。
-                        let blank_content = content_value.as_ref().is_none_or(Value::is_null);
+                        let blank_content = entry.get("content").is_none_or(Value::is_null);
                         if !content_present || blank_content {
                             mark_null = true;
                         }
@@ -320,11 +393,13 @@ fn normalize_messages(obj: &mut Value) -> Result<(), Error> {
             // 已是数组（多模态）→ 原样透传：这里只匹配 String，非字符串落到
             // 什么都不做的那一支。参考实现注明"未实测，保守透传"，我们同样不猜：
             // 不改写就不会把客户端的图注弄坏。
-            if let Some(Value::String(text)) = content_value {
-                entry.insert(
-                    "content".to_string(),
-                    json!([{"type": "text", "text": text}]),
-                );
+            if entry.get("content").is_some_and(Value::is_string) {
+                if let Some(Value::String(text)) = entry.remove("content") {
+                    entry.insert(
+                        "content".to_string(),
+                        json!([{"type": "text", "text": text}]),
+                    );
+                }
             }
         }
         if mark_null {
@@ -336,72 +411,81 @@ fn normalize_messages(obj: &mut Value) -> Result<(), Error> {
 
 /// 验证工具结果对应历史真实调用；不通过删除合法结果掩盖转换遗漏。
 fn drop_orphan_tool_results(obj: &mut Value) -> Result<(), Error> {
-    let Some(messages) = obj.get("messages").and_then(Value::as_array).cloned() else {
+    let Some(messages) = obj.get_mut("messages").and_then(Value::as_array_mut) else {
         return Ok(());
     };
-    let mut known: Vec<String> = Vec::new();
-    for message in &messages {
-        if message.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
-            continue;
-        };
-        for call in calls {
-            if let Some(id) = call.get("id").and_then(Value::as_str) {
-                if !id.is_empty() {
-                    known.push(id.to_string());
+    {
+        let mut known: HashSet<&str> = HashSet::new();
+        for message in messages.iter() {
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+                continue;
+            };
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if !id.is_empty() {
+                        known.insert(id);
+                    }
                 }
             }
         }
-    }
-    for message in messages.iter().filter(|message| message["role"] == "tool") {
-        let id = message["tool_call_id"].as_str().unwrap_or("");
-        if id.is_empty() || !known.iter().any(|known| known == id) {
-            return Err(Error::http(
-                400,
-                "Trae 工具结果没有对应历史调用，未丢弃结果",
-            ));
+        for message in messages
+            .iter()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        {
+            let id = message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if id.is_empty() || !known.contains(id) {
+                return Err(Error::http(
+                    400,
+                    "Trae 工具结果没有对应历史调用，未丢弃结果",
+                ));
+            }
         }
     }
-    obj["messages"] = Value::Array(
-        messages
-            .into_iter()
-            .filter(|message| !message.is_null())
-            .collect(),
-    );
+    messages.retain(|message| !message.is_null());
     Ok(())
 }
 
 /// Trae 不接受空工具结果；图片放在整组工具结果之后的 user 消息。
 fn normalize_tool_results(obj: &mut Value) {
-    let Some(messages) = obj.get("messages").and_then(Value::as_array).cloned() else {
+    let Some(Value::Array(messages)) = obj.as_object_mut().and_then(|map| map.remove("messages"))
+    else {
         return;
     };
-    let mut out: Vec<Value> = Vec::new();
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     let mut pending_images = Vec::new();
     for mut message in messages {
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if role == "tool" {
-            let mut content = match message.get("content") {
-                Some(Value::Array(parts)) => parts.clone(),
+        let is_tool = message.get("role").and_then(Value::as_str) == Some("tool");
+        if is_tool {
+            let mut content = match message
+                .as_object_mut()
+                .and_then(|map| map.remove("content"))
+            {
+                Some(Value::Array(parts)) => parts,
                 Some(Value::String(text)) if !text.is_empty() => {
                     vec![json!({"type":"text", "text": text})]
                 }
                 _ => Vec::new(),
             };
-            content.retain(|part| {
-                if part.get("type").and_then(Value::as_str) == Some("image_url") {
-                    pending_images.push(part.clone());
-                    false
-                } else {
-                    true
+            if content
+                .iter()
+                .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
+            {
+                let mut kept = Vec::with_capacity(content.len());
+                for part in content {
+                    if part.get("type").and_then(Value::as_str) == Some("image_url") {
+                        pending_images.push(part);
+                    } else {
+                        kept.push(part);
+                    }
                 }
-            });
+                content = kept;
+            }
             let has_text = content.iter().any(|part| {
                 part.get("text")
                     .and_then(Value::as_str)
@@ -410,14 +494,15 @@ fn normalize_tool_results(obj: &mut Value) {
             if !has_text {
                 content.push(json!({ "type": "text", "text": if pending_images.is_empty() { "(no output)" } else { "(the result's image follows)" } }));
             }
-            message["content"] = json!(content);
+            message["content"] = Value::Array(content);
             out.push(message);
             continue;
         }
         if !pending_images.is_empty() {
             out.push(json!({ "role": "user", "content": std::mem::take(&mut pending_images) }));
         }
-        if role == "assistant"
+        let is_assistant = message.get("role").and_then(Value::as_str) == Some("assistant");
+        if is_assistant
             && out
                 .last()
                 .is_some_and(|last| last.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -426,25 +511,25 @@ fn normalize_tool_results(obj: &mut Value) {
                 for field in ["reasoning_content", "reasoning"] {
                     if let Some(text) = message.get(field).and_then(Value::as_str) {
                         let previous = last.get(field).and_then(Value::as_str).unwrap_or("");
-                        last[field] = json!(format!("{previous}{text}"));
+                        let mut merged = String::with_capacity(previous.len() + text.len());
+                        merged.push_str(previous);
+                        merged.push_str(text);
+                        last[field] = Value::String(merged);
                     }
                 }
                 for field in ["content", "tool_calls"] {
-                    let mut parts = last
-                        .get(field)
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
-                    parts.extend(
-                        message
-                            .get(field)
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .cloned(),
-                    );
-                    if !parts.is_empty() {
-                        last[field] = json!(parts);
+                    if let Some(Value::Array(mut incoming)) = message
+                        .as_object_mut()
+                        .and_then(|map| map.remove(field))
+                    {
+                        if !incoming.is_empty() {
+                            match last.get_mut(field) {
+                                Some(Value::Array(existing)) => existing.append(&mut incoming),
+                                _ => {
+                                    last[field] = Value::Array(incoming);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -455,12 +540,15 @@ fn normalize_tool_results(obj: &mut Value) {
     if !pending_images.is_empty() {
         out.push(json!({ "role": "user", "content": pending_images }));
     }
-    obj["messages"] = json!(out);
+    obj["messages"] = Value::Array(out);
 }
 
 /// ④ `tool_choice` 折算成上游要的裸字符串；`"none"` 还要连带把 tools 删掉。
 fn normalize_tool_choice(obj: &mut Value) {
-    let Some(tool_choice) = obj.get("tool_choice").cloned() else {
+    let Some(tool_choice) = obj
+        .as_object_mut()
+        .and_then(|map| map.remove("tool_choice"))
+    else {
         return;
     };
     let suppress_tools = |obj: &mut Value| {
@@ -472,10 +560,9 @@ fn normalize_tool_choice(obj: &mut Value) {
     match tool_choice {
         Value::String(name) => {
             if name.trim().eq_ignore_ascii_case("none") {
-                if let Value::Object(map) = obj {
-                    map.remove("tool_choice");
-                }
                 suppress_tools(obj);
+            } else {
+                obj["tool_choice"] = Value::String(name);
             }
         }
         Value::Object(ref wrapper) => {
@@ -487,13 +574,10 @@ fn normalize_tool_choice(obj: &mut Value) {
                 .to_lowercase();
             match kind.as_str() {
                 "none" => {
-                    if let Value::Object(map) = obj {
-                        map.remove("tool_choice");
-                    }
                     suppress_tools(obj);
                 }
                 "auto" | "required" => {
-                    obj["tool_choice"] = json!(kind);
+                    obj["tool_choice"] = Value::String(kind);
                 }
                 "function" => {
                     let name = wrapper
@@ -504,30 +588,22 @@ fn normalize_tool_choice(obj: &mut Value) {
                         .unwrap_or_default()
                         .trim()
                         .to_string();
-                    obj["tool_choice"] = json!(if name.is_empty() {
+                    obj["tool_choice"] = Value::String(if name.is_empty() {
                         "auto".to_string()
                     } else {
                         name
                     });
                 }
-                _ => {
-                    if let Value::Object(map) = obj {
-                        map.remove("tool_choice");
-                    }
-                }
+                _ => {}
             }
         }
-        _ => {
-            if let Value::Object(map) = obj {
-                map.remove("tool_choice");
-            }
-        }
+        _ => {}
     }
 }
 
 /// ① `tools[].function.parameters` 对象 → JSON 字符串；不是这个形状的工具整条剔除。
 fn normalize_tools(obj: &mut Value) -> Result<(), Error> {
-    let Some(raw) = obj.get("tools").cloned() else {
+    let Some(raw) = obj.as_object_mut().and_then(|map| map.remove("tools")) else {
         return Ok(());
     };
     let Value::Array(list) = raw else {
@@ -547,7 +623,7 @@ fn normalize_tools(obj: &mut Value) -> Result<(), Error> {
         if tool.get("type").is_some_and(|value| value != "function") {
             return Err(Error::http(400, "Trae 当前只接受函数工具声明"));
         }
-        let Some(Value::Object(mut function)) = tool.get("function").cloned() else {
+        let Some(Value::Object(mut function)) = tool.remove("function") else {
             return Err(Error::http(400, "Trae 工具缺少函数声明"));
         };
         if !function
@@ -581,12 +657,8 @@ fn normalize_tools(obj: &mut Value) -> Result<(), Error> {
         tool.insert("function".to_string(), Value::Object(function));
         kept.push(Value::Object(tool));
     }
-    if kept.is_empty() {
-        if let Value::Object(map) = obj {
-            map.remove("tools");
-        }
-        return Ok(());
+    if !kept.is_empty() {
+        obj["tools"] = Value::Array(kept);
     }
-    obj["tools"] = Value::Array(kept);
     Ok(())
 }

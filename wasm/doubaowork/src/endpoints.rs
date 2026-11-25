@@ -4,7 +4,7 @@
 pub const PROVIDER: &str = "doubaowork";
 pub const BASE: &str = "https://www.doubao.com";
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
-pub const CLIENT_VERSION: &str = "2.33.5";
+pub const CLIENT_VERSION: &str = "2.36.11";
 pub const CONTROL_VERSION: &str = "2.36.11";
 pub const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
@@ -15,6 +15,7 @@ pub enum ReadEndpoint {
     Catalog,
     QuotaSummary,
     Subscription,
+    MarketingCardList,
     BasicLaunch,
     CampaignV3,
     CampaignList,
@@ -30,6 +31,7 @@ impl ReadEndpoint {
             Self::Catalog => "/alice/slot/action_bar_v3/brief_list",
             Self::QuotaSummary => "/alice/commerce/sale/subscription/quota/summary/",
             Self::Subscription => "/alice/commerce/sale/subscription/overview/",
+            Self::MarketingCardList => "/alice/commerce/marketing/card/list/",
             Self::BasicLaunch => "/alice/basic/launch",
             Self::CampaignV3 => "/alice/ug/campaign/v3/detail/",
             Self::CampaignList => "/alice/ug/campaign/list/",
@@ -61,6 +63,7 @@ impl ReadEndpoint {
             Self::Catalog => "模型目录查询",
             Self::QuotaSummary => "额度汇总查询",
             Self::Subscription => "订阅信息查询",
+            Self::MarketingCardList => "权益卡查询",
             Self::CampaignV3 | Self::CampaignList => "活动状态查询",
             Self::Chat | Self::AsyncChunk => "对话",
         }

@@ -2,7 +2,7 @@
 //! 首个真实有效事件前不发成功head，流后异常不补DONE；转换句柄由SDK按调用清理。
 
 use super::{
-    account, aliases, argon, catalog_shape, client, credentials,
+    account, catalog_shape, client, credentials,
     endpoints::{self, Plane},
     errors, model_rules, models, outbound, project, refresh,
     signatures::Cache,
@@ -121,25 +121,19 @@ pub fn forward(params: &Value) -> Result<()> {
         );
     }
     let effort = model_rules::read_client_level(&params["body"]);
-    let wire = argon::resolve_model(requested, effort.as_deref())
-        .map(str::to_string)
-        .unwrap_or_else(|| aliases::upstream(requested));
     let record = project::ensure(refresh::ensure(false, None)?, true)?;
     let secret = credentials::parse(&record["secret"])?;
-    let list = models::for_request(&record, &wire)?;
-    let wire = if argon::is_model(&wire) {
-        wire
-    } else {
-        aliases::for_catalog(requested, &list)
-    };
-    let entry = catalog_shape::entry(&list, &wire)
-        .or_else(|| catalog_shape::entry(&catalog_shape::fallback(), requested));
+    let list = models::for_request(&record, requested)?;
+    let target = catalog_shape::resolve_target(&list, requested, effort.as_deref());
+    let wire = target.wire_model;
     let mut envelope = outbound::build(
         &params["body"],
         &wire,
         &util::text(&secret, &["projectId"]),
         credentials::enterprise(&secret),
-        entry.as_ref(),
+        target.entry.as_ref(),
+        target.variant.as_ref(),
+        target.level.as_deref(),
     )?;
     let session = envelope["request"]["sessionId"]
         .as_str()

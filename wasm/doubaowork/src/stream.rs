@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use agent2api_wasm_sdk::{Error, Result, Value};
+use agent2api_wasm_sdk::{json, Error, Result, Value};
 
 use crate::{endpoints::ReadEndpoint, errors, restriction, util};
 
@@ -26,6 +26,10 @@ impl Parser {
                     .windows(4)
                     .position(|bytes| bytes == b"\r\n\r\n")
                     .map(|at| (at, 4)),
+                self.pending
+                    .windows(2)
+                    .position(|bytes| bytes == b"\r\r")
+                    .map(|at| (at, 2)),
             ]
             .into_iter()
             .flatten()
@@ -41,7 +45,8 @@ impl Parser {
                 .map_err(|_| errors::protocol("豆包工作事件不是有效文本"))?;
             let mut event = String::new();
             let mut data = Vec::new();
-            for line in text.lines() {
+            for line in text.split(['\n', '\r']) {
+                let line = line.trim_end_matches('\r');
                 if let Some(value) = line.strip_prefix("event:") {
                     event = value.trim().to_string();
                 } else if let Some(value) = line.strip_prefix("data:") {
@@ -82,6 +87,8 @@ pub struct Decoder {
     pub text: String,
     pub reasoning: String,
     blocks: BTreeMap<String, String>,
+    parent_ids: BTreeMap<String, String>,
+    block_types: BTreeMap<String, u64>,
     reasoning_blocks: BTreeSet<String>,
     images: Vec<Image>,
     received: usize,
@@ -187,10 +194,48 @@ impl Decoder {
         }))
     }
 
+    fn has_reasoning_ancestor(&self, id: &str) -> bool {
+        let mut cursor = id;
+        let mut visited = BTreeSet::new();
+        for _ in 0..32 {
+            let Some(parent) = self.parent_ids.get(cursor) else {
+                break;
+            };
+            if parent.is_empty() || !visited.insert(parent.as_str()) {
+                break;
+            }
+            if self.block_types.get(parent).copied() == Some(10040)
+                || self.reasoning_blocks.contains(parent)
+            {
+                return true;
+            }
+            cursor = parent;
+        }
+        false
+    }
+
     fn blocks(&mut self, value: &Value, append: bool, source: &str) -> Result<Vec<Delta>> {
         let mut deltas = Vec::new();
         for block in value.as_array().into_iter().flatten() {
-            let kind = util::unsigned(&block["block_type"]);
+            let id = util::identifier(&block["block_id"]).unwrap_or_else(|| "default".into());
+            let explicit_kind = util::unsigned(&block["block_type"]);
+            if let Some(kind_num) = explicit_kind {
+                self.block_types.insert(id.clone(), kind_num);
+            }
+            if let Some(parent) = util::identifier(&block["parent_id"]) {
+                self.parent_ids.insert(id.clone(), parent);
+            }
+            let kind = explicit_kind
+                .or_else(|| self.block_types.get(&id).copied())
+                .or_else(|| {
+                    if block["content"].get("thinking_block").is_some() {
+                        Some(10040)
+                    } else if block["content"].get("text_block").is_some() {
+                        Some(10000)
+                    } else {
+                        None
+                    }
+                });
             if matches!(kind, Some(10010 | 10084)) {
                 self.note_images(block)?;
                 continue;
@@ -198,8 +243,7 @@ impl Decoder {
             if !matches!(kind, Some(10000 | 10040)) {
                 continue;
             }
-            let id = util::identifier(&block["block_id"]).unwrap_or_else(|| "default".into());
-            let reasoning = if kind == Some(10040) {
+            let reasoning = if kind == Some(10040) || self.has_reasoning_ancestor(&id) {
                 self.reasoning_blocks.insert(id.clone());
                 true
             } else {
@@ -222,14 +266,11 @@ impl Decoder {
             if source != "snapshot" {
                 self.active_block = Some((id.clone(), reasoning));
             }
-            let content = if kind == Some(10040) {
-                &block["content"]["thinking_block"]
-            } else {
-                &block["content"]["text_block"]
-            };
-            let text = content["text"]
+            let text = block["content"]["thinking_block"]["text"]
                 .as_str()
-                .or_else(|| content["content"].as_str());
+                .or_else(|| block["content"]["thinking_block"]["content"].as_str())
+                .or_else(|| block["content"]["text_block"]["text"].as_str())
+                .or_else(|| block["content"]["text_block"]["content"].as_str());
             let Some(text) = text else {
                 continue;
             };
@@ -305,6 +346,8 @@ impl Decoder {
     pub fn begin_stream(&mut self) {
         // 后续异步任务有独立内容块编号空间，正文/图片历史仍保留。
         self.blocks.clear();
+        self.parent_ids.clear();
+        self.block_types.clear();
         self.reasoning_blocks.clear();
         self.chunk_channel.clear();
         self.compact_channel.clear();
@@ -324,6 +367,10 @@ impl Decoder {
             || value
                 .get("error")
                 .is_some_and(|error| !error.is_null() && error != false)
+            || value
+                .pointer("/error_details/has_error")
+                .and_then(Value::as_bool)
+                == Some(true)
             || errors::verification(&value)
         {
             return Err(errors::upstream(200, &value, ReadEndpoint::Chat));
@@ -332,10 +379,12 @@ impl Decoder {
         let done = event == "SSE_REPLY_END" && util::integer(&value["end_type"]) == Some(3);
         let deltas = match event {
             "STREAM_MSG_NOTIFY" => {
-                self.blocks(&value["content"]["content_block"], true, "notify")?
+                let extracted = extract_blocks(&value["content"]);
+                self.blocks(&extracted, true, "notify")?
             }
             "FULL_MSG_NOTIFY" if util::integer(&value["message"]["user_type"]) == Some(2) => {
-                self.blocks(&value["message"]["content_block"], false, "snapshot")?
+                let extracted = extract_blocks(&value["message"]);
+                self.blocks(&extracted, false, "snapshot")?
             }
             "CHUNK_DELTA" => self.compact(&value)?,
             "STREAM_CHUNK" => {
@@ -344,8 +393,9 @@ impl Decoder {
                     if util::integer(&patch["patch_object"]) != Some(1) {
                         continue;
                     }
+                    let extracted = extract_blocks(&patch["patch_value"]);
                     deltas.extend(self.blocks(
-                        &patch["patch_value"]["content_block"],
+                        &extracted,
                         util::integer(&patch["patch_type"]) == Some(1),
                         "chunk",
                     )?);
@@ -353,7 +403,8 @@ impl Decoder {
                 deltas
             }
             "ASYNC_CHUNK_SNAPSHOT" => {
-                self.blocks(&value["message"]["content_block"], false, "snapshot")?
+                let extracted = extract_blocks(&value["message"]);
+                self.blocks(&extracted, false, "snapshot")?
             }
             _ => Vec::new(),
         };
@@ -372,6 +423,37 @@ impl Decoder {
             .map(|url| format!("\n\n![图片]({url})\n\n"))
             .collect()
     }
+}
+
+fn extract_blocks(holder: &Value) -> Value {
+    if let Some(blocks) = holder.get("content_block").filter(|value| value.is_array()) {
+        return blocks.clone();
+    }
+    let Some(raw) = holder.get("content") else {
+        return Value::Array(Vec::new());
+    };
+    if raw.is_array() {
+        return raw.clone();
+    }
+    if let Some(blocks) = raw.get("content_block").filter(|value| value.is_array()) {
+        return blocks.clone();
+    }
+    if let Some(text) = raw.as_str() {
+        let trimmed = text.trim();
+        if trimmed.starts_with('[') {
+            if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(trimmed) {
+                return Value::Array(items);
+            }
+        }
+        if !trimmed.is_empty() {
+            return json!([{
+                "block_type": 10000,
+                "block_id": "content_text",
+                "content": { "text_block": { "text": text } }
+            }]);
+        }
+    }
+    Value::Array(Vec::new())
 }
 
 fn object_key(url: &str) -> String {

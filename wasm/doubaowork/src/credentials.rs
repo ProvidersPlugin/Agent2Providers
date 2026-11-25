@@ -469,25 +469,24 @@ impl Credentials {
         if let Some(device) = metadata["deviceId"]
             .as_str()
             .filter(|value| !value.is_empty())
+            .map(str::to_string)
         {
-            if device.len() > 64
-                || !device
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
-            {
-                return Err(errors::invalid(
-                    "豆包工作设备编号格式无效，请使用原登录客户端的 deviceId",
-                ));
+            if !util::is_numeric_id(&device) {
+                // 非纯数字的设备标识（如浏览器 UUID）会被上游风控拒绝，留空交由启动配置自动补齐。
+                if let Some(fields) = metadata.as_object_mut() {
+                    fields.remove("deviceId");
+                }
             }
         }
         let mut protected: Vec<String> = pairs
             .iter()
             .filter(|(name, (value, _))| {
-                let lower = name.to_ascii_lowercase();
-                matches!(name.as_str(), "sessionid" | "sessionid_ss")
-                    || lower.contains("token")
-                    || lower.contains("secret")
-                    || value.len() >= 8
+                let trivial = matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "true" | "false" | "0" | "1" | "yes" | "no" | "null" | "none"
+                );
+                !trivial
+                    && (matches!(name.as_str(), "sessionid" | "sessionid_ss") || value.len() >= 8)
             })
             .map(|(_, (value, _))| value.clone())
             .filter(|value| !value.is_empty())
@@ -506,8 +505,30 @@ impl Credentials {
         })
     }
 
+    pub fn has_numeric_device_id(&self) -> bool {
+        util::is_numeric_id(self.field("deviceId"))
+    }
+
+    pub fn with_runtime_device(&self, device_id: Option<&str>) -> Self {
+        if self.has_numeric_device_id() {
+            return self.clone();
+        }
+        let Some(device_id) = device_id.filter(|id| util::is_numeric_id(id)) else {
+            return self.clone();
+        };
+        let mut next = self.clone();
+        next.metadata["deviceId"] = json!(device_id);
+        if next.field("webId").is_empty() {
+            next.metadata["webId"] = json!(device_id);
+        }
+        if !next.protected.iter().any(|item| item == device_id) {
+            next.protected.push(device_id.to_string());
+        }
+        next
+    }
+
     pub fn chat_context(&self) -> Result<()> {
-        if self.field("deviceId").is_empty() {
+        if !self.has_numeric_device_id() {
             return Err(errors::device_context());
         }
         Ok(())

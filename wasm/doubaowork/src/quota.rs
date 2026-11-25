@@ -66,8 +66,15 @@ struct Section<'a> {
 fn section<'a>(data: &'a Value, key: &str, warnings: &mut Vec<String>) -> Section<'a> {
     match quota_windows::limits(&data[key]) {
         Ok(rows) => {
-            let complete = data[key]["window_limit_groups"].as_array().is_some_and(|groups|
-                groups.iter().all(|group| group["window_limits"].is_array()));
+            let empty_object = data[key]
+                .as_object()
+                .is_some_and(|fields| fields.is_empty());
+            let complete = empty_object
+                || data[key]["window_limit_groups"]
+                    .as_array()
+                    .is_some_and(|groups| {
+                        groups.iter().all(|group| group["window_limits"].is_array())
+                    });
             if data[key].is_object() && !complete {
                 warnings.push(format!("额度分区 {key} 未下发完整窗口，相关读数保留未知，不影响其他已返回窗口"));
             }
@@ -164,6 +171,17 @@ pub fn read(account: &Snapshot) -> Result<Value> {
             windows.bonus = None;
         }
     }
+    let cards = account.read(
+        ReadEndpoint::MarketingCardList,
+        &json!({ "status_in": [1, 2, 3, 4], "with_limit_status": true }),
+    );
+    match &cards {
+        Ok(value) => windows.push_cards(value, &account.credentials.protected),
+        Err(error) if errors::host_stop(error) || error.status == Some(401) => {
+            return Err(error.clone());
+        }
+        Err(_) => {}
+    }
     if windows.missing_amount {
         warnings.push("部分额度窗口未提供有效剩余读数，显示未知而不是 0".into());
     }
@@ -176,11 +194,21 @@ pub fn read(account: &Snapshot) -> Result<Value> {
     if windows.unknown_window {
         warnings.push("存在尚未识别的额度窗口类型，未把它换算成积分或 Token".into());
     }
+    let gifted = overview
+        .as_ref()
+        .ok()
+        .is_some_and(quota_windows::is_gifted)
+        || quota_windows::is_gifted(&summary);
     let plan = overview
         .as_ref()
         .ok()
-        .and_then(|value| quota_windows::plan(value, &account.credentials.protected))
-        .or_else(|| quota_windows::plan(&summary, &account.credentials.protected));
+        .and_then(|value| quota_windows::plan(value, gifted, &account.credentials.protected))
+        .or_else(|| quota_windows::plan(&summary, gifted, &account.credentials.protected));
+    let subscription_ends_at = overview
+        .as_ref()
+        .ok()
+        .and_then(quota_windows::subscription_end_time)
+        .or_else(|| quota_windows::subscription_end_time(&summary));
     if let Err(error) = &overview {
         warnings.push(format!("订阅附加信息未读到：{}", error.message));
     }
@@ -207,7 +235,8 @@ pub fn read(account: &Snapshot) -> Result<Value> {
         json!({ "provider": "doubaowork", "unit": "额度", "available": null,
         "availableView": if windows.windows.is_empty() { "额度未知" } else { "分窗口额度" },
         "windows": windows.windows, "credits": windows.credits, "quotaSources": windows.sources,
-        "subscription": { "planName": plan, "hasPersonalSubscription": has_personal,
+        "subscription": { "planName": plan, "gifted": gifted, "expiresAt": subscription_ends_at,
+            "hasPersonalSubscription": has_personal,
             "hasEnterpriseSubscription": has_enterprise, "selectedQuotaPool": selection },
         "bonusLeft": windows.bonus, "tokenUsage": null, "tokenUsageKnown": false,
         "readOnly": true, "partial": !warnings.is_empty(), "warnings": warnings }),

@@ -192,11 +192,101 @@ impl Windows {
         self.sources.push(source);
         Ok(())
     }
+
+    pub fn push_cards(&mut self, value: &Value, secrets: &[String]) {
+        let Some(cards) = value
+            .pointer("/data/cards")
+            .or_else(|| value.get("cards"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        for (index, card) in cards.iter().take(64).enumerate() {
+            if !card.is_object() {
+                continue;
+            }
+            let remain = card
+                .pointer("/track_params/card_balance")
+                .and_then(util::number);
+            let Some(remain) = remain else {
+                continue;
+            };
+            let source_text = util::safe_text(
+                util::text(card, &["source_display_text", "name"]),
+                secrets,
+                80,
+            );
+            let card_key = util::safe_text(util::text(card, &["card_key", "card_type"]), secrets, 80);
+            let title = match (source_text.is_empty(), card_key.is_empty()) {
+                (false, false) => format!("{source_text} · {card_key}"),
+                (false, true) => source_text,
+                (true, false) => format!("活动赠送 · {card_key}"),
+                (true, true) => "活动赠送权益卡".to_string(),
+            };
+            let key = format!("card-{index}");
+            let expires_at = card
+                .get("expire_time")
+                .and_then(util::timestamp_ms);
+            let view = if card["usable_on_current_device"] == false {
+                format!("剩余 {remain} 次（当前设备不可用）")
+            } else {
+                format!("剩余 {remain} 次")
+            };
+            self.windows.push(json!({
+                "key": key,
+                "label": title,
+                "group": "权益卡",
+                "window": "card",
+                "remaining": remain,
+                "limit": null,
+                "remainingPercent": null,
+                "unit": "次",
+                "unlimited": false,
+                "expiresAt": expires_at,
+                "view": view
+            }));
+            self.credits.push(json!({
+                "id": key,
+                "name": title,
+                "remain": remain,
+                "total": null,
+                "used": null,
+                "remainingPercent": null,
+                "unit": "次",
+                "unlimited": false,
+                "expireAt": expires_at
+            }));
+            self.sources.push(json!({
+                "id": key,
+                "label": title,
+                "provider": "doubaowork",
+                "remaining": remain,
+                "total": null,
+                "used": null,
+                "unit": "次",
+                "remainingPercent": null,
+                "unlimited": false,
+                "endsAt": expires_at
+            }));
+        }
+    }
 }
 
-pub fn plan(value: &Value, secrets: &[String]) -> Option<String> {
+pub fn is_gifted(value: &Value) -> bool {
     let data = value.get("data").unwrap_or(value);
-    [
+    data["is_membership_gift"] == true || value["is_membership_gift"] == true
+}
+
+pub fn subscription_end_time(value: &Value) -> Option<i64> {
+    let data = value.get("data").unwrap_or(value);
+    data.pointer("/current_subscription/end_time")
+        .or_else(|| data.pointer("/subscription/end_time"))
+        .and_then(util::timestamp_ms)
+}
+
+pub fn plan(value: &Value, gifted: bool, secrets: &[String]) -> Option<String> {
+    let data = value.get("data").unwrap_or(value);
+    let base = [
         data.get("membership_display_name"),
         data.pointer("/current_subscription/display/short_name"),
         data.pointer("/current_subscription/display/product_name"),
@@ -206,7 +296,13 @@ pub fn plan(value: &Value, secrets: &[String]) -> Option<String> {
     .flatten()
     .filter_map(Value::as_str)
     .find(|raw| !raw.trim().is_empty())
-    .map(|raw| util::safe_text(raw, secrets, 120))
+    .map(|raw| util::safe_text(raw, secrets, 120));
+    match base {
+        Some(name) if gifted && !name.contains("赠送") => Some(format!("{name}（赠送）")),
+        Some(name) => Some(name),
+        None if gifted => Some("赠送订阅".into()),
+        None => None,
+    }
 }
 
 pub fn sources(report: &Value) -> Value {
@@ -217,15 +313,16 @@ pub fn sources(report: &Value) -> Value {
         .flatten()
         .take(512)
     {
-        if row["provider"] != "doubaowork" || row["unit"] != "额度" {
+        if row["provider"] != "doubaowork" || !matches!(row["unit"].as_str(), Some("额度" | "次")) {
             continue;
         }
         let id = util::text(row, &["id"]);
         if id.is_empty() || id.len() > 128 {
             continue;
         }
+        let unit = row["unit"].as_str().unwrap_or("额度");
         result.push(json!({ "id": util::safe_text(id, &[], 128), "provider": "doubaowork",
-            "label": util::safe_text(util::text(row, &["label"]), &[], 160), "unit": "额度",
+            "label": util::safe_text(util::text(row, &["label"]), &[], 160), "unit": unit,
             "remaining": util::number(&row["remaining"]), "total": util::number(&row["total"]),
             "used": util::number(&row["used"]), "remainingPercent": util::number(&row["remainingPercent"]),
             "unlimited": row["unlimited"].as_bool(), "resetsAt": util::timestamp_ms(&row["resetsAt"]),

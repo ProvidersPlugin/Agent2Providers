@@ -73,12 +73,13 @@ fn read(secret: &Value) -> Result<Value> {
         Err(error) => (Value::Null, Some(error.message)),
     };
     let packs = packs::packs(&ent);
-    let pool = packs::pool(&packs, ent["is_credits_billing"] == true);
+    let pool = packs::pool(&packs, ent["is_credits_billing"] == true, util::now().ok());
     let fast = packs::fast(&packs);
     let selected = packs::select(&packs);
     let basic = selected.map(packs::basic_balance);
     let official = util::number(&ent["usage_summary"]["total_amount"])
         .zip(util::number(&ent["usage_summary"]["consumed_amount"]));
+    let round2 = |v: f64| (v * 100.0).round() / 100.0;
     let (available, unit) = {
         let (value, unit) = if pool.unlimited {
             (None, "积分")
@@ -95,7 +96,9 @@ fn read(secret: &Value) -> Result<Value> {
         // 就是积分口径。否则界面只能拿钱包里第一个数字（SOLO 并发数）当余额。
         match value {
             Some(_) => (value, unit),
-            None => official.map_or((None, unit), |(total, consumed)| (Some(total - consumed), "积分")),
+            None => official.map_or((None, unit), |(total, consumed)| {
+                (Some(round2((total - consumed).max(0.0))), "积分")
+            }),
         }
     };
     let mut wallets = Vec::new();
@@ -103,9 +106,15 @@ fn read(secret: &Value) -> Result<Value> {
         wallets.push(wallet("credits_pool", "积分池", "积分", &pool));
     }
     if let Some(fast) = &fast {
-        wallets.push(wallet("fast_request", "速通次数", "次", fast));
+        if (pool.remain.is_none() && !pool.unlimited)
+            || fast.unlimited
+            || fast.total.is_some_and(|v| v > 0.0)
+            || fast.used.is_some_and(|v| v > 0.0)
+        {
+            wallets.push(wallet("fast_request", "速通次数", "次", fast));
+        }
     } else if let Some(basic) = &basic {
-        if basic.total.is_some() || basic.unlimited {
+        if basic.unlimited || basic.total.is_some_and(|v| v > 0.0) {
             wallets.push(wallet("plan_quota", "套餐余量", "额度", basic));
         }
     }
@@ -122,8 +131,9 @@ fn read(secret: &Value) -> Result<Value> {
         wallets.push(json!({ "type": "fast_request_per", "displayName": "快请求配额", "balance": number, "balanceView": format!("{number} 次/月") }));
     }
     if let Some((total, consumed)) = official {
-        wallets.push(json!({ "type": "usage_summary", "displayName": "官方汇总", "balance": total-consumed,
-            "balanceView": format!("剩 {:.2} / 共 {:.2}（已用 {:.2}）", total-consumed,total,consumed) }));
+        let left = round2((total - consumed).max(0.0));
+        wallets.push(json!({ "type": "usage_summary", "displayName": "官方汇总", "balance": left,
+            "balanceView": format!("剩 {:.2} / 共 {:.2}（已用 {:.2}）", left, total, consumed) }));
     }
     let plan = selected
         .map(packs::plan)
@@ -143,7 +153,7 @@ fn read(secret: &Value) -> Result<Value> {
     }
     if fast.is_none() {
         if let Some(basic) = &basic {
-            if !basic.unlimited {
+            if !basic.unlimited && basic.total.is_some_and(|v| v > 0.0) {
                 if let Some(value) = basic.remain {
                     subscription["remainQuota"] = json!(value);
                 }

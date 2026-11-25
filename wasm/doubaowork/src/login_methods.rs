@@ -7,18 +7,18 @@ use crate::{credentials, errors, gates};
 pub fn methods(locale: &str) -> Value {
     let mut value = json!({ "readiness": gates::status(), "methods": [
         { "methodIndex": 0, "type": "api", "label": "粘贴完整 Cookie 快照",
-            "instructions": "粘贴包含 Cookie（含 sessionid 或 sessionid_ss）和 deviceId 的登录凭据。",
+            "instructions": "粘贴包含 sessionid 或 sessionid_ss 的豆包工作 Cookie 或 JSON 快照（deviceId 留空时会自动向官方启动接口补齐）。",
             "prompts": [
                 { "key": "cookie", "type": "text", "label": "完整 Cookie 或 Cookie JSON", "secret": true,
                     "placeholder": "sessionid=…; sessionid_ss=…" },
                 { "key": "deviceId", "type": "text", "label": "deviceId", "secret": true, "optional": true,
-                    "placeholder": "完整 JSON 已包含时无需填写" },
+                    "placeholder": "可留空，导入或对话时自动补齐" },
                 { "key": "webId", "type": "text", "label": "webId", "secret": true, "optional": true },
                 { "key": "clientVersion", "type": "text", "label": "客户端版本", "optional": true },
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
             ] },
         { "methodIndex": 1, "type": "api", "label": "导入文本 JSON / Cookie 快照",
-            "instructions": "选择或粘贴豆包工作凭据文件（含 Cookie 与 deviceId）即可导入账号。",
+            "instructions": "选择或粘贴包含 Cookie 的豆包工作凭据文件即可导入账号，无需保持桌面客户端运行。",
             "prompts": [
                 { "key": "credentialText", "type": "text", "label": "快照文本", "secret": true },
                 { "key": "name", "type": "text", "label": "备注名", "optional": true }
@@ -85,24 +85,24 @@ fn translate(value: &mut Value, locale: &str) {
 
 const LOGIN_TEXT: &[(&str, [&str; 5])] = &[
     ("粘贴完整 Cookie 快照", ["貼上完整 Cookie 快照", "Paste a complete cookie snapshot", "Cookieスナップショットを貼り付け", "전체 Cookie 스냅샷 붙여넣기", "Colar snapshot completo de cookies"]),
-    ("粘贴包含 Cookie（含 sessionid 或 sessionid_ss）和 deviceId 的登录凭据。", [
-        "貼上包含 Cookie（含 sessionid 或 sessionid_ss）與 deviceId 的登入憑據。",
-        "Paste sign-in credentials containing cookies (sessionid or sessionid_ss) and deviceId.",
-        "Cookie（sessionid または sessionid_ss）と deviceId を含む認証情報を貼り付けてください。",
-        "Cookie(sessionid 또는 sessionid_ss)와 deviceId가 포함된 로그인 인증 정보를 붙여넣으세요.",
-        "Cole as credenciais de login contendo cookies (sessionid ou sessionid_ss) e deviceId.",
+    ("粘贴包含 sessionid 或 sessionid_ss 的豆包工作 Cookie 或 JSON 快照（deviceId 留空时会自动向官方启动接口补齐）。", [
+        "貼上包含 sessionid 或 sessionid_ss 的豆包工作 Cookie 或 JSON 快照（deviceId 留空時會自動從官方啟動介面補齊）。",
+        "Paste Doubao Work cookies (with sessionid or sessionid_ss) or a JSON snapshot (deviceId is auto-resolved if left blank).",
+        "sessionid または sessionid_ss を含む Doubao Work の Cookie または JSON スナップショットを貼り付けてください（deviceId が空の場合は自動補完されます）。",
+        "sessionid 또는 sessionid_ss가 포함된 Doubao Work Cookie 또는 JSON 스냅샷을 붙여넣으세요(deviceId를 비워두면 자동 보완됩니다).",
+        "Cole os cookies do Doubao Work (com sessionid ou sessionid_ss) ou um snapshot JSON (o deviceId é preenchido automaticamente se ficar vazio).",
     ]),
     ("完整 Cookie 或 Cookie JSON", ["完整 Cookie 或 Cookie JSON", "Complete cookie header or JSON", "完全なCookieまたはCookie JSON", "전체 Cookie 또는 Cookie JSON", "Cookie completo ou JSON de cookies"]),
-    ("完整 JSON 已包含时无需填写", ["完整 JSON 已包含時無需填寫", "Optional if already included in the JSON", "JSONに含まれていれば入力不要", "JSON에 포함되어 있으면 입력하지 않아도 됩니다", "Opcional se já estiver no JSON"]),
+    ("可留空，导入或对话时自动补齐", ["可留空，匯入或對話時自動補齊", "Optional, auto-resolved on import or chat", "空欄可（取り込み・対話時に自動補完）", "비워두면 가져오기 또는 대화 시 자동 보완", "Opcional, preenchido automaticamente"]),
     ("客户端版本", ["用戶端版本", "Client version", "クライアントのバージョン", "클라이언트 버전", "Versão do cliente"]),
     ("备注名", ["備註名稱", "Account label", "表示名", "계정 표시 이름", "Nome da conta"]),
     ("导入文本 JSON / Cookie 快照", ["匯入文字 JSON / Cookie 快照", "Import JSON / cookie snapshot", "JSON / Cookieスナップショットを取り込み", "JSON / Cookie 스냅샷 가져오기", "Importar JSON / snapshot de cookies"]),
-    ("选择或粘贴豆包工作凭据文件（含 Cookie 与 deviceId）即可导入账号。", [
-        "選擇或貼上豆包工作憑據檔案（含 Cookie 與 deviceId）即可匯入帳號。",
-        "Select or paste a Doubao Work credential file (with cookies and deviceId) to import the account.",
-        "Doubao Work の認証ファイル（Cookie と deviceId を含む）を選択または貼り付けてアカウントを取り込めます。",
-        "Doubao Work 인증 파일(Cookie 및 deviceId 포함)을 선택하거나 붙여넣어 계정을 가져올 수 있습니다.",
-        "Selecione ou cole um arquivo de credenciais do Doubao Work (com cookies e deviceId) para importar a conta.",
+    ("选择或粘贴包含 Cookie 的豆包工作凭据文件即可导入账号，无需保持桌面客户端运行。", [
+        "選擇或貼上包含 Cookie 的豆包工作憑據檔案即可匯入帳號，無需保持桌面用戶端執行。",
+        "Select or paste a Doubao Work credential file with cookies to import the account; the desktop app does not need to stay open.",
+        "Cookie を含む Doubao Work の認証ファイルを選択または貼り付けて取り込めます。デスクトップアプリの常駐は不要です。",
+        "Cookie가 포함된 Doubao Work 인증 파일을 선택하거나 붙여넣어 계정을 가져올 수 있으며, 데스크톱 앱을 켜둘 필요가 없습니다.",
+        "Selecione ou cole um arquivo de credenciais do Doubao Work com cookies para importar a conta; não é necessário manter o app aberto.",
     ]),
     ("快照文本", ["快照文字", "Snapshot text", "スナップショットのテキスト", "스냅샷 텍스트", "Texto do snapshot"]),
     ("豆包工作网页登录", ["豆包工作網頁登入", "Doubao Work browser sign-in", "Doubao Workウェブログイン", "Doubao Work 웹 로그인", "Login web do Doubao Work"]),

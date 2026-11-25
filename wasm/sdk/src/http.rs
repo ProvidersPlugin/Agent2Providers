@@ -69,17 +69,22 @@ fn json_params(method: &str, url: &str, headers: Value, body: Option<&Value>, ti
     let Some(value) = body else {
         return raw_params(method, url, headers, None, timeout_ms);
     };
-    let mut counter = SizeCounter { bytes: 0, limit: AUTO_RESOURCE_THRESHOLD, overflowed: false };
-    match serde_json::to_writer(&mut counter, value) {
-        Ok(()) => {
-            let mut bytes = Vec::with_capacity(counter.bytes);
-            serde_json::to_writer(&mut bytes, value).map_err(|_| Error::new("请求正文序列化失败"))?;
+    let mut writer = AdaptiveJsonWriter::new();
+    let written = serde_json::to_writer(&mut writer, value)
+        .map_err(|_| writer.take("请求正文序列化失败"))
+        .and_then(|()| writer.finish());
+    if let Err(error) = written {
+        writer.cleanup();
+        return Err(error);
+    }
+    let total = writer.total;
+    match writer.into_target() {
+        AdaptiveTarget::Inline(bytes) | AdaptiveTarget::InlineFallback(bytes) => {
             raw_params(method, url, headers, Some(&bytes), timeout_ms)
         }
-        Err(_) if counter.overflowed => {
-            json_resource_params(method, url, headers, value, AUTO_RESOURCE_MAX_BYTES, timeout_ms, true)
+        AdaptiveTarget::Resource { resource, .. } => {
+            seal_and_open_resource(method, url, headers, resource, total, timeout_ms)
         }
-        Err(_) => Err(Error::new("请求正文序列化失败")),
     }
 }
 
@@ -334,6 +339,134 @@ impl Write for BodyWriter<'_> {
         let result = self.resource.append(&self.buffer);
         if let Err(error) = result { return Err(self.stopped(error)); }
         self.buffer.clear();
+        Ok(())
+    }
+}
+
+enum AdaptiveTarget {
+    /// 未超过内联阈值时直接攒在内存，整个请求只序列化一次。
+    Inline(Vec<u8>),
+    /// 旧插件未声明 resources.v1 时的内联回退，同样不二次序列化。
+    InlineFallback(Vec<u8>),
+    /// 超过阈值后自动切入宿主资源通道，释放内联缓冲，仅保留 64 KiB 分片缓冲。
+    Resource {
+        resource: crate::images::Resource,
+        buffer: Vec<u8>,
+    },
+}
+
+/// 单遍自适应 JSON 写入器：<= 1 MiB 走内联，> 1 MiB 边写边切到资源通道，消除双遍序列化。
+struct AdaptiveJsonWriter {
+    target: AdaptiveTarget,
+    total: usize,
+    failure: Option<Error>,
+}
+
+impl AdaptiveJsonWriter {
+    fn new() -> Self {
+        Self { target: AdaptiveTarget::Inline(Vec::new()), total: 0, failure: None }
+    }
+
+    fn take(&mut self, fallback: &str) -> Error {
+        self.failure.take().unwrap_or_else(|| Error::new(fallback))
+    }
+
+    fn stopped(&mut self, error: Error) -> io::Error {
+        self.failure.get_or_insert(error);
+        io::Error::other("请求正文已停止写入")
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.flush().map_err(|_| self.take("请求正文写入失败"))
+    }
+
+    fn cleanup(self) {
+        if let AdaptiveTarget::Resource { resource, .. } = self.target {
+            let _ = resource.remove();
+        }
+    }
+
+    fn into_target(self) -> AdaptiveTarget {
+        self.target
+    }
+}
+
+impl Write for AdaptiveJsonWriter {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        if self.failure.is_some() { return Err(io::Error::other("请求正文已停止写入")); }
+        let length = bytes.len();
+        let Some(next_total) = self.total.checked_add(length).filter(|total| *total <= AUTO_RESOURCE_MAX_BYTES) else {
+            return Err(self.stopped(Error::coded(
+                format!("请求正文超过 {} MiB 的受控上限，请缩小上下文或图片后重试",
+                    AUTO_RESOURCE_MAX_BYTES / (1024 * 1024)),
+                "plugin_request_too_large",
+            )));
+        };
+        match &mut self.target {
+            AdaptiveTarget::Inline(buf) if next_total <= AUTO_RESOURCE_THRESHOLD => {
+                buf.extend_from_slice(bytes);
+                self.total = next_total;
+                return Ok(length);
+            }
+            AdaptiveTarget::InlineFallback(buf) => {
+                buf.extend_from_slice(bytes);
+                self.total = next_total;
+                return Ok(length);
+            }
+            AdaptiveTarget::Inline(_) => {
+                let existing = match std::mem::replace(&mut self.target, AdaptiveTarget::InlineFallback(Vec::new())) {
+                    AdaptiveTarget::Inline(buf) => buf,
+                    _ => unreachable!(),
+                };
+                match crate::images::Resource::create(RESOURCE_MIME) {
+                    Ok(resource) => {
+                        if let Err(error) = resource.append(&existing) {
+                            let _ = resource.remove();
+                            return Err(self.stopped(error));
+                        }
+                        drop(existing);
+                        self.target = AdaptiveTarget::Resource { resource, buffer: Vec::with_capacity(CHUNK) };
+                    }
+                    Err(error) if error.code.as_deref() == Some("forbidden") => {
+                        let mut buf = existing;
+                        buf.extend_from_slice(bytes);
+                        self.target = AdaptiveTarget::InlineFallback(buf);
+                        self.total = next_total;
+                        return Ok(length);
+                    }
+                    Err(error) => return Err(self.stopped(error)),
+                }
+            }
+            AdaptiveTarget::Resource { .. } => {}
+        }
+        let AdaptiveTarget::Resource { resource, buffer } = &mut self.target else {
+            unreachable!()
+        };
+        while !bytes.is_empty() {
+            let take = CHUNK.saturating_sub(buffer.len()).min(bytes.len());
+            buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if buffer.len() == CHUNK {
+                if let Err(error) = resource.append(buffer) {
+                    return Err(self.stopped(error));
+                }
+                buffer.clear();
+            }
+        }
+        self.total = next_total;
+        Ok(length)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.failure.is_some() { return Err(io::Error::other("请求正文已停止写入")); }
+        if let AdaptiveTarget::Resource { resource, buffer } = &mut self.target {
+            if !buffer.is_empty() {
+                if let Err(error) = resource.append(buffer) {
+                    return Err(self.stopped(error));
+                }
+                buffer.clear();
+            }
+        }
         Ok(())
     }
 }

@@ -123,7 +123,7 @@ fn admin(params: &Value) -> Result<Value> {
         "benefits.redeem" => campaigns::redeem(payload),
         "promotion.status" => promotion::today(&account::read()?.secret),
         "prompt.info" => Ok(
-            json!({ "gatewayNote": "使用国际版官方系统首句并规范化历史载体；原系统正文、思考文本、用户/工具消息与图片保留。上游不接受的输出预算字段不发送。",
+            json!({ "gatewayNote": "使用国际版官方系统首句并规范化历史载体（直接移除上游不接受的历史思考字段）；原系统正文、用户/工具消息与图片保留。上游不接受的输出预算字段不发送。",
             "licenses": [{ "name": "magpie-community/plugins", "text": include_str!("../licenses/magpie-community-MIT.txt") },
                 { "name": "OpenClaw", "text": include_str!("../licenses/OpenClaw-MIT.txt") }] }),
         ),

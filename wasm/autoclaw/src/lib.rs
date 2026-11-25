@@ -114,7 +114,7 @@ fn admin(params: &Value) -> Result<Value> {
             Ok(result)
         }
         "prompt.info" => Ok(
-            json!({ "gatewayNote": "规范化系统提示与上游不能读取的历史字段；保留工具、图片、轮次与思考文本，不因流中断重发对话。",
+            json!({ "gatewayNote": "规范化系统提示并清理上游不能读取的历史字段（含历史思考字段）；保留工具、图片与轮次，不因流中断重发对话。",
             "licenses": [{ "name": "magpie-community/plugins", "text": include_str!("../licenses/magpie-community-MIT.txt") },
                 { "name": "OpenClaw", "text": include_str!("../licenses/OpenClaw-MIT.txt") }] }),
         ),

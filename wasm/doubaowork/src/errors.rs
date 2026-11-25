@@ -99,18 +99,22 @@ pub fn business(value: &Value) -> Option<i64> {
         .or_else(|| util::integer(&value["error_code"]))
 }
 
-pub fn verification(value: &Value) -> bool {
+fn decision_object(value: &Value) -> Option<Value> {
     let decision = value
         .get("extra")
         .and_then(|extra| extra.get("decision"))
         .or_else(|| value.get("decision"));
     match decision {
-        Some(Value::Object(fields)) => fields.get("type").and_then(Value::as_str) == Some("verify"),
+        Some(Value::Object(_)) => decision.cloned(),
         Some(Value::String(raw)) if raw.len() <= 64 * 1024 => serde_json::from_str::<Value>(raw)
             .ok()
-            .is_some_and(|value| value["type"] == "verify"),
-        _ => false,
+            .filter(Value::is_object),
+        _ => None,
     }
+}
+
+pub fn verification(value: &Value) -> bool {
+    decision_object(value).is_some_and(|decision| decision["type"].as_str() == Some("verify"))
 }
 
 pub fn upstream(status: u16, body: &Value, endpoint: ReadEndpoint) -> Error {
@@ -118,6 +122,7 @@ pub fn upstream(status: u16, body: &Value, endpoint: ReadEndpoint) -> Error {
     let detail = body
         .get("error_detail")
         .filter(|value| value.is_object())
+        .or_else(|| body.get("error_details").filter(|value| value.is_object()))
         .or_else(|| body.get("error").filter(|value| value.is_object()))
         .unwrap_or(body);
     let message = util::text(detail, &["message", "msg", "error_msg", "error_message"])
@@ -128,22 +133,58 @@ pub fn upstream(status: u16, body: &Value, endpoint: ReadEndpoint) -> Error {
     if let Some(error) = reported(body) {
         return error;
     }
-    let mut error = if verification(body) {
-        Error::http(
-            429,
-            "豆包工作要求在官方页面完成人机验证，这不是已确认的额度耗尽；未重放请求",
-        )
-        .with_code("doubaowork_verification_required")
+    let decision = decision_object(body);
+    let decision_subtype = decision
+        .as_ref()
+        .and_then(|item| item["subtype"].as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut error = if decision
+        .as_ref()
+        .is_some_and(|item| item["type"].as_str() == Some("verify"))
+    {
+        if decision_subtype.contains("rate")
+            || decision_subtype.contains("frequen")
+            || decision_subtype.contains("speed")
+        {
+            Error::http(
+                429,
+                "豆包工作触发请求频率限制，请降低并发稍后重试；未判定额度耗尽",
+            )
+            .with_code("doubaowork_request_limited")
+        } else if decision_subtype.contains("device")
+            || decision_subtype.contains("session")
+            || decision_subtype.contains("fingerprint")
+        {
+            Error::http(
+                429,
+                "豆包工作触发设备或会话风控校验，请重新导入登录态或在官方页面完成一次验证后重试；未判定额度耗尽",
+            )
+            .with_code("doubaowork_verification_required")
+        } else {
+            Error::http(
+                429,
+                "豆包工作要求在官方页面完成人机验证，请打开豆包页面完成验证后再试；这不是额度耗尽，未重放请求",
+            )
+            .with_code("doubaowork_verification_required")
+        }
     } else if status == 401
-        || code == Some(710012001)
+        || matches!(code, Some(710012000 | 710012001))
         || message.contains("not logged in")
         || message.contains("login required")
+        || message.contains("session expired")
     {
         Error::http(
             401,
             "豆包工作登录态已失效，请重新登录并显式导入 Cookie；本包不会自动续期",
         )
         .with_code("doubaowork_auth_expired")
+    } else if matches!(code, Some(710010202 | 710020202)) || message.contains("invalid param") {
+        Error::http(
+            400,
+            "豆包工作上游拒绝了本次请求参数（可能是单次上下文过大或当前模型不接受所选参数），请缩减上下文或更换模型后重试",
+        )
+        .with_code("doubaowork_invalid_input")
     } else if message.contains("insufficient credit")
         || message.contains("insufficient quota")
         || message.contains("quota exceeded")
@@ -156,10 +197,10 @@ pub fn upstream(status: u16, body: &Value, endpoint: ReadEndpoint) -> Error {
         || message.contains("content filter")
     {
         Error::http(403, "豆包工作内容策略拒绝了本次请求").with_code("doubaowork_content_blocked")
-    } else if status == 429 || code == Some(710022004) {
+    } else if status == 429 || matches!(code, Some(710012004 | 710022004)) {
         Error::http(
             429,
-            "豆包工作返回请求受限，但该响应不能区分频率限制、设备上下文异常或上游验证；请先核对原登录快照与官方客户端状态，未据此判定额度耗尽或重放请求",
+            "豆包工作返回请求受限（可能是频率限制、设备上下文异常或触发风控验证），请稍后重试或核对官方页面状态；未判定额度耗尽",
         )
         .with_code("doubaowork_request_limited")
     } else {

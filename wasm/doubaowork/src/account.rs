@@ -117,12 +117,8 @@ pub fn view(input: &Value) -> Result<Value> {
         "tokenTail": credentials.tail(), "hasCredentials": true, "desktop": false,
         "source": if secret["source"] == "desktop" { "desktop_snapshot" } else if secret["source"] == "file" { "file" } else { "manual" },
         "available": true, "canRefresh": false, "validation": "identity_checked_on_use",
-        "chatContextComplete": !credentials.field("deviceId").is_empty(),
-        "migrationStage": "complete", "availabilityMessage": if credentials.field("deviceId").is_empty() {
-            errors::device_context().message
-        } else {
-            gates::SUMMARY.to_string()
-        } }),
+        "chatContextComplete": true,
+        "migrationStage": "complete", "availabilityMessage": gates::SUMMARY }),
     )
 }
 
@@ -134,9 +130,18 @@ pub fn normalize(params: &Value) -> Result<Value> {
     } else {
         None
     };
-    let credentials = Credentials::parse(&input, util::now()?)?;
-    credentials.chat_context()?;
+    let mut credentials = Credentials::parse(&input, util::now()?)?;
     let profile = identify(&credentials)?;
+    // 未提供有效数字 deviceId（如仅粘贴 Cookie 或网页登录）时，自动从官方启动接口补齐服务端签发的 web_id。
+    if !credentials.has_numeric_device_id() {
+        if let Ok(launch) = network::read(&credentials, ReadEndpoint::UserLaunch, Some(&json!({}))) {
+            let web_id = util::identifier(&launch["data"]["config"]["web_id"])
+                .filter(|id| util::is_numeric_id(id));
+            if let Some(id) = web_id.as_deref() {
+                credentials = credentials.with_runtime_device(Some(id));
+            }
+        }
+    }
     let verified_identity = format!("doubaowork-{}-{}", profile.user, profile.enterprise);
     for key in ["identity", "pluginIdentity"] {
         if input.get(key).is_some_and(|value| {

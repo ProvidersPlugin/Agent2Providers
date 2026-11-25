@@ -9,34 +9,35 @@ pub struct Prepared {
 }
 
 pub fn prepare(body: &Value) -> Result<Prepared> {
-    for field in [
-        "temperature",
-        "top_p",
-        "presence_penalty",
-        "frequency_penalty",
-        "stop",
-        "seed",
-        "max_tokens",
-        "max_completion_tokens",
-    ] {
-        if body.get(field).is_some_and(|value| !value.is_null()) {
-            return Err(unsupported(&format!(
-                "豆包工作没有 {field} 的对应设置，请移除该参数"
-            )));
-        }
-    }
     if body
         .get("n")
         .is_some_and(|value| !value.is_null() && value.as_u64() != Some(1))
     {
         return Err(unsupported("豆包工作一次只返回一个回答"));
     }
-    if body
-        .get("response_format")
-        .is_some_and(|value| !value.is_null() && value["type"] != "text")
-    {
-        return Err(unsupported("豆包工作不支持强制结构化输出"));
-    }
+    let format_instruction = match body.get("response_format").filter(|value| !value.is_null()) {
+        None => String::new(),
+        Some(format) => match format["type"].as_str() {
+            None | Some("text") => String::new(),
+            Some("json_object") => {
+                "请仅输出一个合法的 JSON 对象，不要包含 Markdown 代码块或额外解释。\n\n".into()
+            }
+            Some("json_schema") => {
+                let schema = format
+                    .pointer("/json_schema/schema")
+                    .or_else(|| format.get("json_schema"))
+                    .unwrap_or(format);
+                let serialized = schema.to_string();
+                if serialized.len() > 32 * 1024 {
+                    return Err(unsupported("豆包工作结构化输出 Schema 过大"));
+                }
+                format!(
+                    "请严格按以下 JSON Schema 输出合法 JSON，不要包含 Markdown 代码块或额外解释：{serialized}\n\n"
+                )
+            }
+            _ => String::new(),
+        },
+    };
     let bridge = sdk::tool_bridge::ToolBridge::new(body)?;
     let mut history = body["messages"]
         .as_array()
@@ -121,7 +122,7 @@ pub fn prepare(body: &Value) -> Result<Prepared> {
             return Err(unsupported("消息内容须为文本或内容块"));
         }
     }
-    let text = format!("{}{}", bridge.instruction(), Value::Array(history));
+    let text = format!("{format_instruction}{}{}", bridge.instruction(), Value::Array(history));
     if text.len() > 8 * 1024 * 1024 {
         return Err(unsupported("豆包工作对话历史超过 8 MiB"));
     }
@@ -146,8 +147,49 @@ pub fn uuid() -> Result<String> {
 }
 fn block(kind: i64, content: Value) -> Result<Value> {
     Ok(
-        json!({"block_type":kind,"content":content,"block_id":uuid()?,"parent_id":"","meta_info":[],"append_fields":[]}),
+        json!({"block_type":kind,"content":content,"block_id":uuid()?,"parent_id":"","meta_info":[],"extra_info":{},"append_fields":[]}),
     )
+}
+
+fn resolve_effort(raw: &Value, model: &Model) -> Option<u64> {
+    let desired = if raw.is_null() {
+        model.reasoning_default
+    } else if let Some(level) = util::unsigned(raw).filter(|level| (1..=65535).contains(level)) {
+        Some(level)
+    } else {
+        match raw.as_str().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("none" | "minimal" | "low") => Some(3),
+            Some("medium") => Some(
+                if model.reasoning_levels.contains(&8) && !model.reasoning_levels.contains(&4) {
+                    8
+                } else {
+                    4
+                },
+            ),
+            Some("high") => Some(5),
+            Some("xhigh") => Some(6),
+            Some("max") => Some(7),
+            Some("auto") => model.reasoning_default.or_else(|| {
+                model
+                    .reasoning_levels
+                    .contains(&8)
+                    .then_some(8)
+                    .or(Some(4))
+            }),
+            _ => model.reasoning_default,
+        }
+    };
+    let level = desired?;
+    if model.reasoning_levels.is_empty() || model.reasoning_levels.contains(&level) {
+        return Some(level);
+    }
+    // 客户端请求的档位不在当前模型清单里时，就近对齐到最接近的支持档位。
+    model
+        .reasoning_levels
+        .iter()
+        .copied()
+        .min_by_key(|candidate| candidate.abs_diff(level))
+        .or(model.reasoning_default)
 }
 
 pub fn payload(
@@ -156,6 +198,7 @@ pub fn payload(
     text: &str,
     attachments: Vec<Value>,
     body: &Value,
+    task_mode: bool,
 ) -> Result<Value> {
     let deep_think =
         if model.agent_mode != 0 && model.id.starts_with("person-") && model.deep_think == 0 {
@@ -180,36 +223,30 @@ pub fn payload(
         .map(|digit| char::from(b'0' + (digit % 10) as u8))
         .take(16)
         .collect::<String>();
-    let mut value = json!({"client_meta":{"local_conversation_id":format!("local_{digits}"),"conversation_id":"","bot_id":bot,"last_section_id":"","last_message_index":null},
-        "messages":[{"local_message_id":id,"content_block":blocks,"message_status":0}],"option":{"create_time_ms":now,"need_create_conversation":true,"conversation_init_option":{"need_ack_conversation":true},"need_deep_think":deep_think,"is_audio":false,"answer_with_suggest":false,"tts_switch":false,"is_regen":false,"is_replace":false,"unique_key":uuid()?,"start_seq":0,"sse_recv_event_options":{"support_chunk_delta":true},"recovery_option":{"is_recovery":false,"req_create_time_sec":now/1000,"append_sse_event_scene":0},"message_storage_type":0},
-        "user_context":[],"ext":{"use_deep_think":deep_think.to_string(),"sub_conv_firstmet_type":"1","commerce_credit_config_enable":"0"}});
+    let mut value = json!({"client_meta":{"local_conversation_id":format!("local_{digits}"),"conversation_id":"","bot_id":bot,"last_section_id":"","last_message_index":0,"local_permissions":[]},
+        "messages":[{"local_message_id":id,"content_block":blocks,"message_status":0}],"option":{"create_time_ms":now,"need_create_conversation":true,"send_message_scene":"","conversation_init_option":{"need_ack_conversation":true},"need_deep_think":deep_think,"is_audio":false,"answer_with_suggest":false,"tts_switch":false,"is_regen":false,"is_replace":false,"unique_key":uuid()?,"start_seq":0,"sse_recv_event_options":{"support_chunk_delta":true},"support_lazy_fetch_stream":task_mode,"recovery_option":{"is_recovery":false,"req_create_time_sec":now/1000,"append_sse_event_scene":0},"message_storage_type":0},
+        "user_context":[],"ext":{"use_deep_think":deep_think.to_string(),"sub_conv_firstmet_type":"1","commerce_credit_config_enable":"0","is_finish":"1"}});
+    if !task_mode {
+        value["option"]["conversation_mode"] = json!(2);
+    }
     if model.agent_mode != 0 || model.mode_id.is_some() {
-        let effort = match body["reasoning_effort"].as_str() {
-            None => model.reasoning_default,
-            Some("low") => Some(3),
-            Some("medium") => Some(
-                if model.reasoning_levels.contains(&8) && !model.reasoning_levels.contains(&4) {
-                    8
-                } else {
-                    4
-                },
-            ),
-            Some("high") => Some(5),
-            Some("xhigh") => Some(6),
-            Some("max") => Some(7),
-            _ => return Err(unsupported("豆包工作不支持此思考档位")),
-        };
-        if effort.is_some_and(|level| {
-            !model.reasoning_levels.is_empty() && !model.reasoning_levels.contains(&level)
-        }) {
-            return Err(unsupported("此豆包模型的官方目录不支持所选思考档位"));
-        }
+        let effort = resolve_effort(&body["reasoning_effort"], model);
+        let mode_id = model.mode_id.as_deref().unwrap_or("3");
         value["option"]["agent_mode"] = json!(model.agent_mode);
         value["option"]["model_config"] =
             json!({"model_item_key":model.id,"model_extra_params":model.extra});
-        value["option"]["aggregate_params"] = json!({"mode_id":model.mode_id.as_deref().unwrap_or("3"),"model_item_key":model.id,"agent_mode":model.agent_mode.to_string()});
-        if let Some(conversation_mode) = &model.conversation_mode {
-            value["option"]["aggregate_params"]["conversation_mode"] = json!(conversation_mode);
+        value["option"]["aggregate_params"] = json!({"mode_id":mode_id,"model_item_key":model.id,"agent_mode":model.agent_mode.to_string()});
+        if task_mode {
+            if let Some(conversation_mode) = &model.conversation_mode {
+                value["option"]["aggregate_params"]["conversation_mode"] = json!(conversation_mode);
+            }
+        } else {
+            value["option"]["aggregate_params"]["conversation_mode"] = json!("2");
+            let mut init_ext = json!({"model_item_key": model.id, "mode_id": mode_id});
+            if let Some(effort) = effort {
+                init_ext["reasoning_effort"] = json!(effort.to_string());
+            }
+            value["option"]["conversation_init_ext"] = init_ext;
         }
         if let Some(provider) = model.extra["provider_id"].as_str() {
             value["option"]["aggregate_params"]["provider_id"] = json!(provider);
@@ -219,7 +256,8 @@ pub fn payload(
             value["option"]["aggregate_params"]["reasoning_effort"] = json!(effort.to_string());
         }
         value["ext"]["agent_mode"] = json!(model.agent_mode.to_string());
-        if matches!(model.agent_mode, 1 | 2) {
+        // 普通对话不附带 general_task_param，避免豆包启动云端沙箱任务并挂起心跳 60 秒导致 504 超时；生图等云端任务继续走 task_mode。
+        if task_mode && matches!(model.agent_mode, 1 | 2) {
             let platform = sdk::host("runtime.platform", json!({}))?;
             let os = match platform.as_str() {
                 Some("win") => "windows",
@@ -230,10 +268,7 @@ pub fn payload(
             let task = json!({"action":0,"thread_local_message_id":[id],"client_option":{"enable_sandbox":false,"os":os,"shared_folder_path":[]},"runtime_type":2,"agent_task_param":{"runtime_type":2},"agent_task_param_change":{"runtime_changed":true,"device_changed":false,"sandbox_auth_type_changed":false},"need_modify_conversation":false,"task_input_json":"{\"project_context\":{}}"});
             value["option"]["general_task_param"] = task.clone();
             value["ext"]["general_task_param"] = json!(task.to_string());
-            value["ext"]["is_finish"] = json!("1");
         }
-    } else if !body["reasoning_effort"].is_null() {
-        return Err(unsupported("此豆包模式没有思考档位选择器"));
     }
     value["ext"]["conversation_init_option"] =
         json!(value["option"]["conversation_init_option"].to_string());

@@ -1,6 +1,6 @@
 //! 逐模型配额明细解析：融合 fetchAvailableModels 单模型 quotaInfo 与 retrieveUserQuotaSummary 分组窗口。
 
-use super::{argon, catalog_shape, usage_windows, util};
+use super::{argon, catalog_shape, tiers, usage_windows, util};
 use agent2api_wasm_sdk::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -292,96 +292,6 @@ fn build_row(
     row
 }
 
-const EFFORT_TOKENS: [&str; 9] = [
-    "extra-low",
-    "extra_low",
-    "extra low",
-    "minimal",
-    "xhigh",
-    "xlow",
-    "medium",
-    "high",
-    "low",
-];
-
-fn strip_effort_id(id: &str, allow_max: bool) -> (&str, bool) {
-    let lower = id.to_ascii_lowercase();
-    let candidates = EFFORT_TOKENS
-        .iter()
-        .copied()
-        .chain(allow_max.then_some("max"));
-    for token in candidates {
-        if token.contains(' ') {
-            continue;
-        }
-        for sep in ['-', '_'] {
-            if lower.len() > token.len() + 1
-                && lower.ends_with(token)
-                && lower.as_bytes()[lower.len() - token.len() - 1] == sep as u8
-            {
-                let base = id[..id.len() - token.len() - 1].trim_end_matches(['-', '_']);
-                if !base.is_empty() {
-                    return (base, true);
-                }
-            }
-        }
-    }
-    (id, false)
-}
-
-fn strip_parenthesized_effort(name: &str) -> (&str, bool) {
-    let trimmed = name.trim();
-    let open = if trimmed.ends_with(')') {
-        trimmed.rfind('(')
-    } else if trimmed.ends_with('）') {
-        trimmed.rfind('（')
-    } else {
-        return (trimmed, false);
-    };
-    let Some(pos) = open else {
-        return (trimmed, false);
-    };
-    let close_len = if trimmed.ends_with('）') { '）'.len_utf8() } else { 1 };
-    let open_len = if trimmed[pos..].starts_with('（') { '（'.len_utf8() } else { 1 };
-    let inner = trimmed[pos + open_len..trimmed.len() - close_len]
-        .trim()
-        .to_ascii_lowercase();
-    let is_effort = inner == "max" || EFFORT_TOKENS.iter().any(|tok| *tok == inner);
-    if !is_effort {
-        return (trimmed, false);
-    }
-    let prefix = trimmed[..pos].trim_end();
-    if prefix.is_empty() {
-        (trimmed, false)
-    } else {
-        (prefix, true)
-    }
-}
-
-fn strip_effort_name(name: &str, allow_max: bool) -> (&str, bool) {
-    let (without_paren, had_paren) = strip_parenthesized_effort(name);
-    if had_paren {
-        return (without_paren, true);
-    }
-    let lower = without_paren.to_ascii_lowercase();
-    let candidates = EFFORT_TOKENS
-        .iter()
-        .copied()
-        .chain(allow_max.then_some("max"));
-    for token in candidates {
-        if lower.len() > token.len() + 1 && lower.ends_with(token) {
-            let boundary = lower.as_bytes()[lower.len() - token.len() - 1];
-            if boundary == b' ' || boundary == b'-' {
-                let prefix = without_paren[..without_paren.len() - token.len()].trim_end_matches([' ', '-']);
-                if !prefix.is_empty() {
-                    return (prefix, true);
-                }
-            }
-        }
-    }
-    (without_paren, false)
-}
-
 fn row_percent(row: &Value) -> Option<f64> {
     row["remainingPercent"].as_f64().filter(|v| v.is_finite())
 }
@@ -530,7 +440,7 @@ pub fn build(models_body: Option<&Value>, groups: &[GroupReading]) -> Vec<Value>
     // 同一模型不同思考等级在配额展示里合并为一条基础模型；`-max` 仅在括号标注或存在同族兄弟时视作档位。
     let mut base_counts: HashMap<String, usize> = HashMap::new();
     for item in &candidates {
-        let (base_id, _) = strip_effort_id(&item.id, true);
+        let (base_id, _) = tiers::strip_effort_id(&item.id, true);
         *base_counts.entry(base_id.to_ascii_lowercase()).or_insert(0) += 1;
     }
 
@@ -545,11 +455,12 @@ pub fn build(models_body: Option<&Value>, groups: &[GroupReading]) -> Vec<Value>
     let mut by_label: HashMap<String, usize> = HashMap::new();
 
     for mut item in candidates {
-        let (max_id_base, _) = strip_effort_id(&item.id, true);
-        let (_, had_paren) = strip_parenthesized_effort(&item.name);
+        let (max_id_base, _) = tiers::strip_effort_id(&item.id, true);
+        let (_, had_paren) = tiers::strip_parenthesized_effort(&item.name);
         let allow_max = had_paren || base_counts.get(&max_id_base.to_ascii_lowercase()).copied().unwrap_or(0) > 1;
-        let (base_id, id_stripped) = strip_effort_id(&item.id, allow_max);
-        let (base_name, _) = strip_effort_name(&item.name, allow_max || id_stripped);
+        let (base_id, level_opt) = tiers::strip_effort_id(&item.id, allow_max);
+        let id_stripped = level_opt.is_some();
+        let (base_name, _) = tiers::strip_effort_name(&item.name, allow_max || id_stripped);
         let final_name = if item.name.eq_ignore_ascii_case(&item.id) {
             base_id.to_string()
         } else {

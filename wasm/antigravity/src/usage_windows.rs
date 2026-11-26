@@ -79,25 +79,179 @@ fn window_rank(code: &str) -> u8 {
     }
 }
 
+const SHORT_WINDOW_MAX_MS: i64 = 6 * 3_600_000;
+
+struct Entry {
+    rank: u8,
+    order: usize,
+    row: Value,
+    wallet: Value,
+    value: f64,
+    name: String,
+}
+
+struct GroupEntries {
+    group_name: String,
+    has_5h: bool,
+    exhausted_weekly_models: Option<Value>,
+    entries: Vec<Entry>,
+}
+
+fn set_entry_percent(entry: &mut Entry, percent: f64) {
+    let reading = format!("剩 {}%", percent_text(percent));
+    entry.value = percent;
+    entry.row["remainingPercent"] = json!(percent);
+    entry.row["view"] = json!(reading);
+    entry.wallet["remainingPercent"] = json!(percent);
+    entry.wallet["balanceView"] = json!(reading);
+}
+
+fn set_entry_reset(entry: &mut Entry, reset_at: Option<i64>) {
+    match reset_at {
+        Some(at) => {
+            entry.row["resetsAt"] = json!(at);
+            entry.wallet["resetsAt"] = json!(at);
+        }
+        None => {
+            if let Some(obj) = entry.row.as_object_mut() {
+                obj.remove("resetsAt");
+            }
+            if let Some(obj) = entry.wallet.as_object_mut() {
+                obj.remove("resetsAt");
+            }
+        }
+    }
+}
+
+fn pick_model_reset(resets: &[i64], now_ms: i64) -> Option<i64> {
+    if now_ms > 0 {
+        if let Some(future) = resets.iter().copied().filter(|at| *at > now_ms).min() {
+            return Some(future);
+        }
+    }
+    resets.iter().copied().min()
+}
+
+/// 当上游分组汇总漏报（例如仍返回 100%），而该组下所有逐模型读数一致更低/归零时，
+/// 用真实模型配额上限校准分组窗口，并按恢复时长区分短窗直改与跨天/周级长冷却。
+fn reconcile_group_with_models(
+    group: &mut GroupEntries,
+    model_quotas: &[Value],
+    now_ms: i64,
+) {
+    if group.group_name.is_empty() || group.entries.is_empty() || model_quotas.is_empty() {
+        return;
+    }
+    let matched: Vec<(f64, Option<i64>)> = model_quotas
+        .iter()
+        .filter_map(|item| {
+            let item_group = item["group"].as_str().map(str::trim).unwrap_or("");
+            if !item_group.eq_ignore_ascii_case(&group.group_name) {
+                return None;
+            }
+            let pct = item["modelPercent"]
+                .as_f64()
+                .filter(|v| v.is_finite())?
+                .clamp(0.0, 100.0);
+            let reset = item["modelResetsAt"]
+                .as_i64()
+                .or_else(|| item["resetsAt"].as_i64());
+            Some((pct, reset))
+        })
+        .collect();
+    if matched.is_empty() {
+        return;
+    }
+
+    let max_model_pct = matched
+        .iter()
+        .map(|(pct, _)| *pct)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_entry_value = group
+        .entries
+        .iter()
+        .map(|e| e.value)
+        .fold(f64::INFINITY, f64::min);
+    if max_model_pct + 1e-6 >= min_entry_value {
+        return;
+    }
+
+    let resets: Vec<i64> = matched
+        .iter()
+        .filter(|(pct, _)| *pct < 100.0)
+        .filter_map(|(_, reset)| *reset)
+        .collect();
+    let model_reset = pick_model_reset(&resets, now_ms);
+    let is_long_reset =
+        model_reset.is_some_and(|at| now_ms > 0 && at - now_ms > SHORT_WINDOW_MAX_MS);
+
+    let idx_5h = group
+        .entries
+        .iter()
+        .position(|e| e.row["window"].as_str() == Some("5h"));
+
+    match idx_5h {
+        Some(idx) if !is_long_reset => {
+            set_entry_percent(&mut group.entries[idx], max_model_pct);
+            if max_model_pct < 100.0 {
+                if let Some(at) = model_reset {
+                    set_entry_reset(&mut group.entries[idx], Some(at));
+                }
+            }
+        }
+        Some(idx) => {
+            {
+                let entry_5h = &mut group.entries[idx];
+                set_entry_percent(entry_5h, max_model_pct);
+                set_entry_reset(entry_5h, None);
+                entry_5h.row["constrainedByModel"] = json!(true);
+                if let Some(at) = model_reset {
+                    entry_5h.row["modelResetsAt"] = json!(at);
+                }
+            }
+            for entry in &mut group.entries {
+                if entry.row["window"].as_str() == Some("weekly")
+                    && entry.value > max_model_pct + 1e-6
+                {
+                    entry.row["constrainedByModel"] = json!(true);
+                    if let Some(at) = model_reset {
+                        entry.row["modelResetsAt"] = json!(at);
+                    }
+                }
+            }
+        }
+        None => {
+            let target_idx = group
+                .entries
+                .iter()
+                .position(|e| e.row["window"].as_str() == Some("weekly"))
+                .unwrap_or(0);
+            set_entry_percent(&mut group.entries[target_idx], max_model_pct);
+            if max_model_pct < 100.0 {
+                if let Some(at) = model_reset {
+                    set_entry_reset(&mut group.entries[target_idx], Some(at));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn wallets(
     payload: &Value,
     models: &[Value],
     paid_tier: bool,
 ) -> (Vec<Value>, Vec<Value>, String) {
-    struct Entry {
-        rank: u8,
-        order: usize,
-        row: Value,
-        wallet: Value,
-        value: f64,
-        name: String,
-    }
-    struct GroupEntries {
-        group_name: String,
-        has_5h: bool,
-        exhausted_weekly_models: Option<Value>,
-        entries: Vec<Entry>,
-    }
+    wallets_with_models(payload, models, &[], paid_tier, 0)
+}
+
+pub fn wallets_with_models(
+    payload: &Value,
+    models: &[Value],
+    model_quotas: &[Value],
+    paid_tier: bool,
+    now_ms: i64,
+) -> (Vec<Value>, Vec<Value>, String) {
 
     let mut parsed_groups: Vec<GroupEntries> = Vec::new();
     for group in payload["groups"].as_array().into_iter().flatten() {
@@ -220,6 +374,7 @@ pub fn wallets(
     let mut windows = Vec::new();
     let mut tightest: Option<(f64, String)> = None;
     for mut group in parsed_groups {
+        reconcile_group_with_models(&mut group, model_quotas, now_ms);
         group
             .entries
             .sort_by_key(|entry| (entry.rank, entry.order));
@@ -329,7 +484,13 @@ pub fn sources(report: &Value) -> Value {
             "label": row["label"], "provider": super::PROVIDER_ID, "unit": "%",
             "remaining": null, "total": null, "used": null, "remainingPercent": row["remainingPercent"],
             "models": row["models"] });
-        if let Some(at) = row["resetsAt"].as_i64() { source["resetsAt"] = json!(at); }
+        if let Some(at) = row["resetsAt"].as_i64().or_else(|| {
+            (row["window"].as_str() == Some("5h"))
+                .then(|| row["modelResetsAt"].as_i64())
+                .flatten()
+        }) {
+            source["resetsAt"] = json!(at);
+        }
         source
     }).collect();
     json!(sources)
@@ -545,5 +706,174 @@ mod tests {
             window_pairs(&free_windows),
             vec![("Gemini", "weekly", 0.0), ("Claude/GPT", "weekly", 0.0)]
         );
+    }
+
+    #[test]
+    fn wallets_reconciles_long_group_wide_model_zero_without_faking_weekly() {
+        let now_ms = 1_795_700_000_000_i64;
+        let reset_at = now_ms + 23 * 3_600_000 + 17 * 60_000;
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        { "bucketId": "gemini-5h", "remainingFraction": 1.0 },
+                        { "bucketId": "gemini-weekly", "remainingFraction": 1.0 }
+                    ]
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        { "bucketId": "3p-weekly", "remainingFraction": 1.0 },
+                        { "bucketId": "3p-5h", "remainingFraction": 1.0 }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "gemini-4-neon", "group": "Gemini", "modelPercent": 100.0 }),
+            json!({ "id": "claude-opus-5-5", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+            json!({ "id": "claude-sonnet-5-5", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+            json!({ "id": "gpt-oss-120b", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+        ];
+
+        let (_, windows, available) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![
+                ("Gemini", "5h", 100.0),
+                ("Gemini", "weekly", 100.0),
+                ("Claude/GPT", "5h", 0.0),
+                ("Claude/GPT", "weekly", 100.0),
+            ]
+        );
+        assert_eq!(available, "Claude/GPT · 5 小时 剩 0%");
+        assert_eq!(windows[2]["constrainedByModel"], json!(true));
+        assert_eq!(windows[2]["modelResetsAt"], json!(reset_at));
+        assert!(windows[2]["resetsAt"].is_null());
+        assert_eq!(windows[3]["constrainedByModel"], json!(true));
+        assert_eq!(windows[3]["modelResetsAt"], json!(reset_at));
+
+        let sources = super::sources(&json!({ "windows": windows }));
+        let source_5h = sources.as_array().unwrap().iter().find(|s| s["id"] == "window:3p-5h").unwrap();
+        let source_weekly = sources.as_array().unwrap().iter().find(|s| s["id"] == "window:3p-weekly").unwrap();
+        assert_eq!(source_5h["remainingPercent"], json!(0.0));
+        assert_eq!(source_5h["resetsAt"], json!(reset_at));
+        assert_eq!(source_weekly["remainingPercent"], json!(100.0));
+        assert!(source_weekly["resetsAt"].is_null());
+    }
+
+    #[test]
+    fn wallets_reconciles_short_group_wide_model_zero_onto_5h_only() {
+        let now_ms = 1_795_700_000_000_i64;
+        let reset_at = now_ms + 3 * 3_600_000;
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        { "bucketId": "3p-weekly", "remainingFraction": 1.0 },
+                        { "bucketId": "3p-5h", "remainingFraction": 1.0 }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "claude-opus-5-5", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+            json!({ "id": "claude-sonnet-5-5", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+        ];
+
+        let (_, windows, _) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![("Claude/GPT", "5h", 0.0), ("Claude/GPT", "weekly", 100.0)]
+        );
+        assert_eq!(windows[0]["resetsAt"], json!(reset_at));
+        assert!(windows[0].get("constrainedByModel").is_none());
+        assert!(windows[1].get("constrainedByModel").is_none());
+    }
+
+    #[test]
+    fn wallets_does_not_reconcile_when_only_one_model_in_group_is_zero() {
+        let now_ms = 1_795_700_000_000_i64;
+        let reset_at = now_ms + 20 * 3_600_000;
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        { "bucketId": "gemini-5h", "remainingFraction": 1.0 },
+                        { "bucketId": "gemini-weekly", "remainingFraction": 1.0 }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "gemini-3.1-flash-image", "group": "Gemini", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+            json!({ "id": "gemini-4-neon", "group": "Gemini", "modelPercent": 100.0 }),
+        ];
+
+        let (_, windows, _) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![("Gemini", "5h", 100.0), ("Gemini", "weekly", 100.0)]
+        );
+    }
+
+    #[test]
+    fn wallets_keeps_tighter_weekly_when_summary_already_reports_bottleneck() {
+        let now_ms = 1_795_700_000_000_i64;
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        { "bucketId": "gemini-weekly", "remainingFraction": 0.8747867, "resetTime": "2026-12-03T07:56:02Z" },
+                        { "bucketId": "gemini-5h", "remainingFraction": 0.887309, "resetTime": "2026-11-26T21:26:48Z" }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "gemini-4-neon", "group": "Gemini", "modelPercent": 88.73 }),
+        ];
+
+        let (_, windows, _) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![("Gemini", "5h", 88.7309), ("Gemini", "weekly", 0.8747867 * 100.0)]
+        );
+        assert!(windows[0].get("constrainedByModel").is_none());
+        assert!(windows[1].get("constrainedByModel").is_none());
+    }
+
+    #[test]
+    fn wallets_preserves_partial_weekly_usage_when_long_model_limit_hits_zero() {
+        let now_ms = 1_795_700_000_000_i64;
+        let reset_at = now_ms + 23 * 3_600_000;
+        let weekly_reset_str = "2026-12-03T07:56:02Z";
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        { "bucketId": "3p-weekly", "remainingFraction": 0.62, "resetTime": weekly_reset_str },
+                        { "bucketId": "3p-5h", "remainingFraction": 1.0 }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "claude-opus-5-5", "group": "Claude/GPT", "modelPercent": 0.0, "modelResetsAt": reset_at }),
+        ];
+
+        let (_, windows, _) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![("Claude/GPT", "5h", 0.0), ("Claude/GPT", "weekly", 62.0)]
+        );
+        assert_eq!(windows[1]["constrainedByModel"], json!(true));
+        assert_eq!(windows[1]["modelResetsAt"], json!(reset_at));
+        assert!(windows[1]["resetsAt"].is_i64());
     }
 }

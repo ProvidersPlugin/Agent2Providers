@@ -118,11 +118,18 @@ pub fn query() -> Result<Value> {
     let group_readings = model_quotas::collect_groups(summary_body.as_ref());
     let per_model = model_quotas::build(models_body.as_ref(), &group_readings);
 
+    let now_ms = util::now().unwrap_or(0);
     let paid_tier = load_body.is_some()
         && !raw_tier.trim().is_empty()
         && usage_windows::normalize_tier(&raw_tier) != "Free";
     let (mut wallets, windows, available) = if let Some(ref summary) = summary_body {
-        let parsed = usage_windows::wallets(summary, &catalog, paid_tier);
+        let parsed = usage_windows::wallets_with_models(
+            summary,
+            &catalog,
+            &per_model,
+            paid_tier,
+            now_ms,
+        );
         if parsed.1.is_empty() && !per_model.is_empty() {
             usage_windows::fallback_from_models(&per_model)
         } else {

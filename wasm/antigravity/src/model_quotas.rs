@@ -269,6 +269,9 @@ fn build_row(
     if let Some(m) = model_frac {
         row["modelPercent"] = json!(round_percent(m));
     }
+    if let Some(at) = model_reset.filter(|_| model_frac.is_some_and(|f| f < 1.0)) {
+        row["modelResetsAt"] = json!(at);
+    }
     if let Some(g) = group_frac {
         row["groupPercent"] = json!(round_percent(g));
     }
@@ -332,7 +335,7 @@ fn merge_quota_row(existing: &mut Value, incoming: Value, adopt_identity: bool) 
         existing["remainingPercent"] = incoming["remainingPercent"].clone();
         existing["view"] = incoming["view"].clone();
         existing["window"] = incoming["window"].clone();
-        for key in ["modelPercent", "groupPercent", "resetsAt"] {
+        for key in ["modelPercent", "groupPercent", "resetsAt", "modelResetsAt"] {
             if incoming.get(key).is_some_and(|v| !v.is_null()) {
                 existing[key] = incoming[key].clone();
             } else if let Some(obj) = existing.as_object_mut() {
@@ -347,6 +350,11 @@ fn merge_quota_row(existing: &mut Value, incoming: Value, adopt_identity: bool) 
         }
         if existing["resetsAt"].as_i64().is_none() && incoming["resetsAt"].as_i64().is_some() {
             existing["resetsAt"] = incoming["resetsAt"].clone();
+        }
+        if existing["modelResetsAt"].as_i64().is_none()
+            && incoming["modelResetsAt"].as_i64().is_some()
+        {
+            existing["modelResetsAt"] = incoming["modelResetsAt"].clone();
         }
     }
     for flag in ["recommended", "supportsThinking", "supportsImages"] {

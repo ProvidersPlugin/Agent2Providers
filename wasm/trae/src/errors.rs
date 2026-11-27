@@ -20,7 +20,7 @@ pub fn code(value: &Value) -> Option<i64> {
     .find_map(util::integer)
 }
 
-pub fn message(value: &Value) -> String {
+fn raw_message(value: &Value) -> &str {
     [
         value.pointer("/error/message"),
         value.get("message"),
@@ -34,7 +34,10 @@ pub fn message(value: &Value) -> String {
     .filter_map(Value::as_str)
     .find(|v| !v.is_empty())
     .unwrap_or("")
-    .to_ascii_lowercase()
+}
+
+pub fn message(value: &Value) -> String {
+    raw_message(value).to_ascii_lowercase()
 }
 
 pub fn failed(value: &Value) -> bool {
@@ -95,6 +98,17 @@ pub fn upstream(status: u16, body: &Value) -> Error {
             "local_precondition",
             "Trae 当前操作缺少必要条件",
         )
+    } else if marker == "trae_route_capability" {
+        let detail = match raw_message(body) {
+            "Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型" => {
+                "Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型"
+            }
+            "Trae 当前账号目录未声明所选思考档位" => {
+                "Trae 当前账号目录未声明所选思考档位"
+            }
+            _ => "Trae 当前账号目录不支持本次请求所需的模型能力",
+        };
+        (400, "trae_route_capability", detail)
     } else if status == 413 || marker == "trae_input_too_large" || input_too_large(&text) {
         (
             413,
@@ -210,4 +224,36 @@ pub fn terminal_code(error: &Error) -> bool {
             .code
             .as_deref()
             .is_some_and(|code| matches!(code, "local_precondition" | "aborted" | "timeout"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_capability_preserves_local_messages_and_code() {
+        let img = classify(
+            400,
+            &json!({
+                "providerCode": "trae_route_capability",
+                "message": "Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型"
+            }),
+        );
+        assert_eq!(img["kind"], json!("fatal"));
+        assert_eq!(img["status"], json!(400));
+        assert_eq!(
+            img["message"],
+            json!("Trae 当前账号目录明确此模型不支持图片，请选择支持图片的模型")
+        );
+
+        let fallback = upstream(
+            400,
+            &json!({ "providerCode": "trae_route_capability", "message": "raw secret text" }),
+        );
+        assert_eq!(fallback.code.as_deref(), Some("trae_route_capability"));
+        assert_eq!(
+            fallback.message,
+            "Trae 当前账号目录不支持本次请求所需的模型能力"
+        );
+    }
 }

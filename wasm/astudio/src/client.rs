@@ -24,9 +24,12 @@ pub fn read(response: http::Response) -> Result<Reply> {
     Ok(Reply { status, body })
 }
 
-pub fn studio_headers(secret: Option<&Value>) -> Result<Value> {
-    let mut headers = json!({ "accept": "application/json", "studioVersion": endpoints::VERSION,
-        "clientVersion": endpoints::VERSION });
+pub fn desktop_headers() -> Result<Value> {
+    let mut headers = json!({
+        "studioVersion": endpoints::VERSION,
+        "clientVersion": endpoints::VERSION,
+        "user-agent": format!("AStudio/{}", endpoints::VERSION),
+    });
     let platform = sdk::host("runtime.platform", json!({}))?;
     match platform.as_str() {
         Some("win") => headers["clientType"] = json!("21"),
@@ -36,6 +39,15 @@ pub fn studio_headers(secret: Option<&Value>) -> Result<Value> {
                 .with_code("local_precondition"))
         }
         _ => return Err(Error::http(502, "主程序未提供有效的平台类型")),
+    }
+    Ok(headers)
+}
+
+pub fn studio_headers(secret: Option<&Value>, json_body: bool) -> Result<Value> {
+    let mut headers = desktop_headers()?;
+    headers["accept"] = json!("application/json");
+    if json_body {
+        headers["content-type"] = json!("application/json");
     }
     if let Some(secret) = secret {
         headers["cookie"] = json!(account::cookie(secret)?);
@@ -48,8 +60,25 @@ pub fn studio(method: &str, path: &str, secret: Option<&Value>) -> Result<Reply>
         http::open(
             method,
             &format!("{}{path}", endpoints::STUDIO),
-            studio_headers(secret)?,
+            studio_headers(secret, false)?,
             None,
+        )
+        .map_err(errors::transport)?,
+    )
+}
+
+pub fn studio_json(
+    method: &str,
+    path: &str,
+    secret: Option<&Value>,
+    body: &Value,
+) -> Result<Reply> {
+    read(
+        http::open(
+            method,
+            &format!("{}{path}", endpoints::STUDIO),
+            studio_headers(secret, true)?,
+            Some(body),
         )
         .map_err(errors::transport)?,
     )
@@ -60,7 +89,7 @@ pub fn form(path: &str, fields: Value) -> Result<Reply> {
         http::multipart(
             "POST",
             &format!("{}{path}", endpoints::STUDIO),
-            studio_headers(None)?,
+            studio_headers(None, false)?,
             fields,
             Vec::new(),
         )
@@ -69,11 +98,14 @@ pub fn form(path: &str, fields: Value) -> Result<Reply> {
 }
 
 pub fn catalog(key: &str) -> Result<Reply> {
+    let mut headers = desktop_headers()?;
+    headers["authorization"] = json!(format!("Bearer {key}"));
+    headers["accept"] = json!("application/json");
     read(
         http::open(
             "GET",
             &format!("{}{}", endpoints::MODEL_ORIGIN, endpoints::MODELS),
-            json!({ "authorization": format!("Bearer {key}"), "accept": "application/json" }),
+            headers,
             None,
         )
         .map_err(errors::transport)?,
@@ -109,6 +141,21 @@ impl Reply {
         // 登录原生同时接受code:0信封和直接JSON对象/数组；非0业务码已在上面拦截。
         // 每个调用方还会逐项校验必要字段，不能因HTTP200就当成登录或目录成功。
         Ok(self.body.get("data").unwrap_or(&self.body).clone())
+    }
+
+    /// 严格校验 flag=true 且 code=0，允许 data 为 null（例如 client-popups/complete）。
+    pub fn confirm(&self, scope: &str) -> Result<Value> {
+        if !(200..300).contains(&self.status) || errors::failed(&self.body) {
+            return Err(errors::upstream(
+                if self.status >= 400 { self.status } else { 502 },
+                &self.body,
+                scope,
+            ));
+        }
+        if self.body["flag"] != true || errors::code(&self.body) != Some(0) {
+            return Err(Error::http(502, "AStudio 接口未明确确认操作成功"));
+        }
+        Ok(self.body.get("data").cloned().unwrap_or(Value::Null))
     }
 
     pub fn form_ok(&self) -> Result<()> {

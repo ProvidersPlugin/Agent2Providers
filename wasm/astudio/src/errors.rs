@@ -124,8 +124,17 @@ pub fn classify(status: u16, body: &Value) -> Value {
             if status >= 400 { status } else { 429 },
             "AStudio 当前积分或额度不足，或请求过于频繁",
         )
+    } else if code(body) == Some(11001001)
+        || text.contains("upgrade to the latest version")
+        || text.contains("客户端平台、版本")
+    {
+        (
+            "fatal",
+            400,
+            "AStudio 上游拒绝了当前客户端版本标识，请更新 AStudio 插件",
+        )
     } else if matches!(status, 401 | 403)
-        || code(body) == Some(80000)
+        || matches!(code(body), Some(80000 | 1002 | 1005))
         || matches!(marker, "astudio_model_expired" | "astudio_session_expired")
         || text.contains("重新登录")
     {

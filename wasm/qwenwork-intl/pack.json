@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-qwenwork-intl",
   "name": "千问办公 国际版",
   "description": "提供国际版多轮对话与独立模型目录，支持网页设备授权、凭据导入与自动续期，可按账号查询额度用量。",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.1",
   "protocol": 1,
   "providers": [
     { "id": "qwenwork-intl", "label": "千问办公 国际版", "order": 25, "default_enabled": true }

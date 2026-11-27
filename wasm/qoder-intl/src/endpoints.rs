@@ -19,7 +19,9 @@ pub const CAMPAIGNS: &str = "/sash/api/v1/me/campaigns";
 pub const MODELS: &str = "/algo/api/v2/model/list?Encode=1";
 pub const CHAT: &str =
     "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1";
-pub const COSY_VERSION: &str = "1.1.38";
+pub const COSY_VERSION: &str = "1.1.79";
+pub const CLI_CLIENT_TYPE: &str = "5";
+pub const APP_CLIENT_TYPE: &str = "10";
 pub const MAX_TOKEN: usize = 64 * 1024;
 pub const REFRESH_MARGIN: i64 = 5 * 60_000;
 // 缺绝对到期时间时沿用原生兜底，不能据此保证令牌真实有效期。

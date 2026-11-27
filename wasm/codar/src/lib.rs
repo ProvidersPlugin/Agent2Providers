@@ -44,6 +44,7 @@ fn metadata() -> Value {
     attach(
         meta,
         vec![
+            class("balance", &[402], &["codar_balance"]),
             class("auth", &[401], &["codar_token_expired", "account_restricted"]),
             class("unsupported", &[403, 501], &["client_not_supported"]),
         ],

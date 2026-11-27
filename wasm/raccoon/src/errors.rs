@@ -44,23 +44,33 @@ pub fn classify(status: u16, body: &Value) -> Value {
 }
 fn classified(status: u16, body: &Value, secrets: &[&str]) -> Value {
     let raw = message(body);
-    let message = clean(&format!("上游返回 {status}：{raw}"), secrets);
+    let message = if raw.starts_with("上游返回 ") {
+        clean(&raw, secrets)
+    } else {
+        clean(&format!("上游返回 {status}：{raw}"), secrets)
+    };
     if status == 401 || authentication(body) {
         return json!({ "kind": "token_expired", "message": message });
     }
     let text = code_text(body);
     let lower = raw.to_ascii_lowercase();
-    let quota = code(body) == Some(1_000_007)
-        || ["insufficient_points", "insufficient_quota", "arrearage"].contains(&text.as_str())
+    let balance = status == 402
+        || body["providerCode"] == "raccoon_balance"
+        || code(body) == Some(1_000_007)
+        || ["insufficient_points", "arrearage"].contains(&text.as_str())
         || [
             "insufficient_points",
-            "insufficient quota",
+            "insufficient balance",
+            "insufficient credit",
             "积分不足",
             "余额不足",
             "欠费",
         ]
         .iter()
         .any(|part| lower.contains(part));
+    let quota = balance
+        || text == "insufficient_quota"
+        || lower.contains("insufficient quota");
     if quota || status == 429 {
         let transient = !quota
             && ([
@@ -79,7 +89,8 @@ fn classified(status: u16, body: &Value, secrets: &[&str]) -> Value {
                 ]
                 .iter()
                 .any(|part| lower.contains(part)));
-        return json!({ "kind": "quota_limited", "status": 429, "message": message, "upstream_code": code(body),
+        let out_status = if balance { 402 } else { 429 };
+        return json!({ "kind": "quota_limited", "status": out_status, "message": message, "upstream_code": code(body),
             "reset_at": body.get("resetAt").or_else(|| body.get("reset_at")).and_then(util::integer)
                 .filter(|at| *at > sdk::now()).or_else(|| transient.then(|| sdk::now().saturating_add(60_000))) });
     }
@@ -128,10 +139,12 @@ pub fn upstream(status: u16, payload: &Value, secrets: &[&str]) -> Error {
             secrets,
         ),
     )
-    .with_code(if kind == "content_blocked" {
-        "raccoon_content_blocked"
-    } else {
-        "raccoon_upstream"
+    .with_code(match kind {
+        "token_expired" => "raccoon_auth",
+        "quota_limited" if status == 402 => "raccoon_balance",
+        "quota_limited" => "raccoon_rate_limited",
+        "content_blocked" => "raccoon_content_blocked",
+        _ => "raccoon_upstream",
     });
     error.upstream_code = code(payload);
     error.reset_at = class["reset_at"].as_i64();

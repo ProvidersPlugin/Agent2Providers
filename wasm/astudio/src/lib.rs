@@ -32,13 +32,13 @@ fn metadata() -> Value {
         "login_methods": [{ "kind": "browser", "button": "账号密码登录" }, { "kind": "sms", "hint": "手机号验证码登录" }],
         "account_features": { "usage": true, "identifier": ["uid", "accountId"], "expiry": [], "long_lived": false },
         "refusal_finishes": ["content_filter", "safety"], "refusal_markers": [],
-        "checkin": { "daily": true, "description": "每日登录积分：执行官方账号初始化，分别核对通用积分与星火积分；未观测到新增奖励不标记已签", "modes": ["checkin"] },
+        "checkin": { "daily": true, "description": "每日登录积分：执行账号初始化并领取待领每日奖励，分别核对通用积分与星火积分到账", "modes": ["checkin"] },
         "default_models": models::defaults() });
     attach(
         meta,
         vec![
             class("quota", &[429], &["astudio_quota"]),
-            class("auth", &[401], &["astudio_model_expired", "astudio_session_expired", "astudio_banned", "80000"]),
+            class("auth", &[401], &["astudio_model_expired", "astudio_session_expired", "astudio_banned", "80000", "1002", "1005"]),
             class("content", &[], &["astudio_content"]),
         ],
         vec![

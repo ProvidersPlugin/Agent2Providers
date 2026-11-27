@@ -36,7 +36,10 @@ fn metadata() -> Value {
     attach(
         meta,
         vec![
+            class("balance", &[402], &["quwork_balance"]),
+            class("rate_limit", &[429], &["quwork_rate"]),
             class("auth", &[401], &["quwork_account_expired"]),
+            class("content", &[], &["quwork_content"]),
         ],
         vec![],
     )

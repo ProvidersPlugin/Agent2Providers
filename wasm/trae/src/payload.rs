@@ -128,18 +128,11 @@ impl Prepared {
             )
             .with_code("trae_route_capability"));
         }
-        let effort = match self.asked_effort.as_deref() {
-            Some(asked) => Some(
-                route
-                    .reasoning_effort(asked)
-                    .ok_or_else(|| {
-                        Error::http(400, "Trae 当前账号目录未声明所选思考档位")
-                            .with_code("trae_route_capability")
-                    })?
-                    .to_string(),
-            ),
-            None => None,
-        };
+        let effort = self
+            .asked_effort
+            .as_deref()
+            .and_then(|asked| route.reasoning_effort(asked))
+            .map(str::to_string);
         if self.has_images && !self.images_normalized {
             normalize_images(&mut self.body)?;
             self.images_normalized = true;

@@ -39,9 +39,9 @@ fn cached(
     }
     Ok(before.value["models"].as_array().cloned())
 }
-fn fetch(snapshot: &account::Snapshot) -> Result<Vec<Value>> {
+fn fetch_client(snapshot: &account::Snapshot, client_type: &str) -> Result<Vec<Value>> {
     account::unchanged(snapshot)?;
-    let headers = cosy::headers(None, endpoints::MODELS, &snapshot.credentials)?;
+    let headers = cosy::headers_for_client(None, endpoints::MODELS, &snapshot.credentials, client_type)?;
     // 目录原生固定 api3，不套用 jt- 的对话分流。
     let reply = client::request(
         "GET",
@@ -53,6 +53,15 @@ fn fetch(snapshot: &account::Snapshot) -> Result<Vec<Value>> {
     )?;
     let payload = client::accepted(reply, "模型目录查询")?;
     catalog::parse(&payload)
+}
+fn fetch(snapshot: &account::Snapshot) -> Result<Vec<Value>> {
+    let cli = fetch_client(snapshot, endpoints::CLI_CLIENT_TYPE)?;
+    // 部分限时/桌面专属模型（如 HungerG）仅在桌面通道下发；附加探测失败不影响 CLI 主目录。
+    match fetch_client(snapshot, endpoints::APP_CLIENT_TYPE) {
+        Ok(app) => Ok(catalog::merge(cli, app)),
+        Err(error) if util::terminal(&error) => Err(error),
+        Err(_) => Ok(cli),
+    }
 }
 fn store(before: &state::Snapshot, snapshot: &account::Snapshot, models: &[Value]) -> Result<()> {
     account::unchanged(snapshot)?;

@@ -49,6 +49,7 @@ fn metadata() -> Value {
         meta,
         vec![
             class("rate_limit", &[429], &["qwenwork_rate_limited", "qwenwork_model_busy", "10605"]),
+            class("balance", &[402], &["qwenwork_balance_insufficient"]),
             class("quota", &[], &["qwenwork_quota_limited"]),
             class("auth", &[401], &["qwenwork_auth_expired", "105"]),
             class("unsupported", &[403, 501], &["qwenwork_forbidden"]),

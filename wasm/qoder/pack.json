@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-qoder",
   "name": "Qoder 中国版",
   "description": "提供中国版对话与模型目录查询，支持设备授权与令牌导入及自动续期，可查额度、每日签到并领取活动福利。",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.1",
   "protocol": 1,
   "providers": [
     { "id": "qoder", "label": "Qoder 中国版", "order": 22, "default_enabled": true }

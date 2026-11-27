@@ -30,7 +30,7 @@ pub const MODEL_BASE: &str = "https://loomyad.xunfei.cn/api/v1";
 pub const CLIENT_VERSION: &str = "0.9.39";
 
 fn metadata() -> Value {
-    use sdk::error_rules::attach;
+    use sdk::error_rules::{attach, class};
     let meta = json!({
         "id": ID, "label": "Loomy", "order": 5,
         "capabilities": {
@@ -46,7 +46,16 @@ fn metadata() -> Value {
             "daily": true, "modes": ["checkin"], "onboarding": true },
         "default_models": []
     });
-    attach(meta, vec![], vec![])
+    attach(
+        meta,
+        vec![
+            class("balance", &[402], &["loomy_balance"]),
+            class("rate_limit", &[429], &["loomy_quota"]),
+            class("auth", &[401], &["loomy_authentication", "020002", "100002", "20002"]),
+            class("content", &[], &["loomy_content_blocked"]),
+        ],
+        vec![],
+    )
 }
 
 fn handle(method: &str, params: Value) -> Result<Value> {

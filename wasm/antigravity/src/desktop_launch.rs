@@ -7,13 +7,14 @@ mod protobuf;
 pub fn summary() -> Value {
     json!({ "version": 1, "clients": [
         { "id": "classic", "label": "Antigravity", "platform": "windows" },
-        { "id": "ide", "label": "Antigravity IDE", "platform": "windows" }
+        { "id": "ide", "label": "Antigravity IDE", "platform": "windows" },
+        { "id": "cli", "label": "Antigravity CLI (agy)", "platform": "windows" }
     ] })
 }
 
 pub fn check() -> Result<Value> {
     let context = launch::context()?;
-    if !matches!(context["client"].as_str(), Some("classic" | "ide")) { return Err(Error::unsupported()); }
+    if !matches!(context["client"].as_str(), Some("classic" | "ide" | "cli")) { return Err(Error::unsupported()); }
     let record = sdk::account()?;
     let secret = credentials::fields(&record["secret"]);
     let available = secret["desktopReadOnly"] != true && record["public"]["desktopReadOnly"] != true
@@ -25,7 +26,7 @@ pub fn check() -> Result<Value> {
 pub fn prepare() -> Result<Value> {
     let context = launch::context()?;
     let client = context["client"].as_str().ok_or_else(Error::unsupported)?;
-    if !matches!(client, "classic" | "ide") || context["preparing"] != true { return Err(Error::unsupported()); }
+    if !matches!(client, "classic" | "ide" | "cli") || context["preparing"] != true { return Err(Error::unsupported()); }
     let before = account::current()?;
     let before_secret = credentials::parse(&before["secret"])?;
     let force = credentials::expiry(&before_secret).is_none();
@@ -49,7 +50,7 @@ pub fn prepare() -> Result<Value> {
     let token = credentials::token(&secret)?;
     let refresh = util::text(&secret, &["refreshToken"]);
     let id_token = util::header(&util::text(&secret, &["idToken", "id_token"]), 16_384)?;
-    let changes = if client == "classic" {
+    let changes = if matches!(client, "classic" | "cli") {
         let expiry = chrono::DateTime::from_timestamp_millis(expires).ok_or_else(|| Error::new("账号凭证有效期无效"))?
             .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
         let mut payload = json!({ "token": {

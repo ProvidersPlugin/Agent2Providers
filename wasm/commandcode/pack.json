@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-commandcode",
   "name": "Command Code",
   "description": "提供带思考与工具的流式对话，支持 API Key、文件及本机登录态导入，可查模型与额度，不支持自动续期。",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.1",
   "protocol": 1,
   "providers": [
     { "id": "commandcode", "label": "Command Code", "order": 1, "default_enabled": true }

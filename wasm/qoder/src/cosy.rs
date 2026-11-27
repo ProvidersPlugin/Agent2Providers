@@ -29,6 +29,14 @@ fn machine_os() -> Result<String> {
     Ok(format!("{arch}_{platform}"))
 }
 pub fn headers(body: Option<&[u8]>, path: &str, credentials: &Credentials) -> Result<Value> {
+    headers_for_client(body, path, credentials, endpoints::CLI_CLIENT_TYPE)
+}
+pub fn headers_for_client(
+    body: Option<&[u8]>,
+    path: &str,
+    credentials: &Credentials,
+    client_type: &str,
+) -> Result<Value> {
     if credentials.user.is_empty() || credentials.machine.is_empty() || credentials.access.is_empty() {
         return Err(Error::http(400, "Qoder COSY 缺少账号或机器标识，请重新导入"));
     }
@@ -62,7 +70,7 @@ pub fn headers(body: Option<&[u8]>, path: &str, credentials: &Credentials) -> Re
     Ok(json!({ "Authorization": format!("Bearer COSY.{payload}.{signature}"), "Cosy-Key": cosy_key,
         "Cosy-User": credentials.user, "Cosy-Date": timestamp, "Cosy-Version": endpoints::COSY_VERSION,
         "Cosy-Machineid": credentials.machine, "Cosy-Machinetoken": credentials.machine,
-        "Cosy-Machinetype": "5", "Cosy-Machineos": os, "Cosy-Clienttype": "5", "Cosy-Clientip": "127.0.0.1",
+        "Cosy-Machinetype": "5", "Cosy-Machineos": os, "Cosy-Clienttype": client_type, "Cosy-Clientip": "127.0.0.1",
         "Cosy-Bodyhash": format!("{:x}", Md5::digest(body)), "Cosy-Bodylength": body.len().to_string(), "Cosy-Sigpath": sig_path,
         "Cosy-Data-Policy": "disagree", "Cosy-Organization-Id": "", "Cosy-Organization-Tags": "",
         "Login-Version": "v2", "X-Request-Id": request }))

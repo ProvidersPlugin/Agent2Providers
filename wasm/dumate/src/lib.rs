@@ -44,6 +44,8 @@ fn metadata() -> Value {
     attach(
         meta,
         vec![
+            class("balance", &[402], &["dumate_quota_exhausted"]),
+            class("rate_limit", &[429], &["dumate_rate_limited"]),
             class("auth", &[401], &["dumate_session_expired"]),
         ],
         vec![],

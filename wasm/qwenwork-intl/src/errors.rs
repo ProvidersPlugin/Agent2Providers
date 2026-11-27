@@ -160,6 +160,28 @@ pub fn classify(status: u16, body: &Value) -> Value {
             "content_filter",
             "千问办公 内容策略拒绝了当前请求，不是账号额度问题",
         )
+    } else if status == 402
+        || body["code"] == "qwenwork_balance_insufficient"
+        || body["providerCode"] == "qwenwork_balance_insufficient"
+        || [
+            "积分余额不足",
+            "余额不足",
+            "积分不足",
+            "credits exhausted",
+            "credit exhausted",
+            "credit balance",
+            "insufficient balance",
+            "insufficient credit",
+        ]
+        .iter()
+        .any(|word| text.contains(*word))
+    {
+        (
+            "quota_limited",
+            402,
+            "qwenwork_balance_insufficient",
+            "千问办公 积分余额不足",
+        )
     } else if signals.codes.iter().any(|code| QUOTA.contains(code))
         || body["code"] == "qwenwork_quota_limited"
         || [

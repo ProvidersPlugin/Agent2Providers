@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-lobsterai",
   "name": "LobsterAI",
   "description": "接入有道龙虾，提供对话与模型目录查询，支持浏览器登录、凭证导入与自动续期，可查积分并每日签到。",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.1",
   "protocol": 1,
   "providers": [
     {

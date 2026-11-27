@@ -172,20 +172,25 @@ fn valid_name(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }
 pub fn parse(payload: &Value) -> Result<Vec<Value>> {
-    for key in ["chat", "app"] {
-        if payload.get(key).is_some_and(|value| !value.is_array()) {
+    const SCENES: [&str; 3] = ["chat", "assistant", "app"];
+    for key in SCENES {
+        if payload
+            .get(key)
+            .is_some_and(|value| !value.is_null() && !value.is_array())
+        {
             return Err(Error::http(
                 502,
                 "Qoder 模型目录字段格式无效，已保留现有清单",
             ));
         }
     }
-    if !payload.get("chat").is_some_and(Value::is_array)
-        && !payload.get("app").is_some_and(Value::is_array)
+    if !SCENES
+        .iter()
+        .any(|key| payload.get(*key).is_some_and(Value::is_array))
     {
         return Err(Error::http(
             502,
-            "Qoder 模型目录缺少 chat/app 数组，已保留现有清单",
+            "Qoder 模型目录缺少 chat/assistant/app 数组，已保留现有清单",
         ));
     }
     let mut rows = payload["chat"].as_array().cloned().unwrap_or_default();
@@ -194,13 +199,18 @@ pub fn parse(payload: &Value) -> Result<Vec<Value>> {
         .map(|row| util::text(row, &["key"]))
         .filter(|key| !key.is_empty())
         .collect::<Vec<_>>();
-    for row in payload["app"].as_array().into_iter().flatten() {
-        let key = util::text(row, &["key"]);
-        if key.is_empty() || keys.contains(&key) || row["format"] != "openai" {
-            continue;
+    for scene in ["assistant", "app"] {
+        for row in payload[scene].as_array().into_iter().flatten() {
+            let key = util::text(row, &["key"]);
+            let format_ok = row
+                .get("format")
+                .is_none_or(|value| value.is_null() || value == "openai");
+            if key.is_empty() || keys.contains(&key) || !format_ok {
+                continue;
+            }
+            keys.push(key);
+            rows.push(row.clone());
         }
-        keys.push(key);
-        rows.push(row.clone());
     }
     let empty = rows.is_empty();
     if rows.len() > 2048 {
@@ -283,6 +293,31 @@ pub fn parse(payload: &Value) -> Result<Vec<Value>> {
         ));
     }
     Ok(models)
+}
+pub fn merge(mut base: Vec<Value>, extra: Vec<Value>) -> Vec<Value> {
+    let mut seen_ids = base
+        .iter()
+        .filter_map(|model| model["id"].as_str().map(str::to_lowercase))
+        .collect::<Vec<_>>();
+    let mut seen_keys = base
+        .iter()
+        .filter_map(|model| model["upstreamKey"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    for model in extra {
+        let id = model["id"].as_str().unwrap_or("").to_lowercase();
+        let key = model["upstreamKey"].as_str().unwrap_or("");
+        if id.is_empty()
+            || key.is_empty()
+            || seen_ids.contains(&id)
+            || seen_keys.iter().any(|existing| existing == key)
+        {
+            continue;
+        }
+        seen_ids.push(id);
+        seen_keys.push(key.to_string());
+        base.push(model);
+    }
+    base
 }
 pub fn public(models: &[Value]) -> Vec<Value> {
     models

@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-catpaw",
   "name": "CatPaw",
   "description": "提供图文对话与工具调用，支持官方网页登录、凭据及本机账号导入，可按账号查询模型目录与积分余额。",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.1",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

@@ -63,6 +63,24 @@
             "table":"ItemTable","key_column":"key","value_column":"value",
             "keys":["antigravityUnifiedStateSync.oauthToken","antigravityUnifiedStateSync.userStatus","antigravityUnifiedStateSync.enterprisePreferences","antigravityOnboarding","jetskiStateSync.agentManagerInitState"]}}
         ]
+      },
+      {
+        "id": "cli", "label": "Antigravity CLI (agy)", "platform": "windows",
+        "switch_only": true,
+        "executables": ["agy.exe"],
+        "locations": [
+          {"root":"local_app_data","path":"agy/bin/agy.exe"},
+          {"root":"local_app_data","path":"Programs/Antigravity/bin/agy.exe"},
+          {"root":"local_app_data","path":"magpie-agy-cli/agy.exe"},
+          {"root":"home","path":".local/bin/agy.exe"},
+          {"root":"home","path":".gemini/bin/agy.exe"},
+          {"root":"program_files","path":"agy/agy.exe"},
+          {"root":"program_files","path":"agy/bin/agy.exe"}
+        ],
+        "identity": {"kind":"authenticode","signers":["Google LLC"]},
+        "resources": [
+          {"id":"oauth","label":"Antigravity 登录凭证","storage":{"kind":"keyring","target":"gemini:antigravity","username":"antigravity"}}
+        ]
       }
     ]
   },

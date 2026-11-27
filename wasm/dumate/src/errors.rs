@@ -120,6 +120,32 @@ fn kind(status: u16, value: &Value) -> &'static str {
 }
 
 pub fn effective_status(status: u16, value: &Value) -> u16 {
+    if kind(status, value) == "quota_limited" {
+        let text = format!(
+            "{} {} {}",
+            message(value),
+            util::text(&value["error"], &["type", "code"]),
+            util::text(value, &["type", "providerCode", "code"])
+        )
+        .to_ascii_lowercase();
+        let is_rate = text.contains("rate") || text.contains("频率") || text.contains("频繁");
+        let is_balance = status == 402
+            || [
+                "insufficient credit",
+                "insufficient balance",
+                "dumate_quota_exhausted",
+                "余额不足",
+                "积分不足",
+                "积分耗尽",
+                "积分已用完",
+                "额度耗尽",
+            ]
+            .iter()
+            .any(|marker| text.contains(marker));
+        if is_balance && !is_rate {
+            return 402;
+        }
+    }
     if (400..600).contains(&status) {
         return status;
     }
@@ -153,13 +179,13 @@ pub fn effective_status(status: u16, value: &Value) -> u16 {
 
 pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
     let status = effective_status(status, value);
-    let mut error = Error::http(
-        status,
-        format!(
-            "百度搭子返回 {status}：{}",
-            util::safe_text(&message(value), protected, 600)
-        ),
-    )
+    let detail = util::safe_text(&message(value), protected, 600);
+    let summary = if detail.starts_with("百度搭子返回 ") {
+        detail
+    } else {
+        format!("百度搭子返回 {status}：{detail}")
+    };
+    let mut error = Error::http(status, summary)
     .with_code(match kind(status, value) {
         "token_expired" => "dumate_session_expired",
         "content_blocked" => "dumate_content_blocked",
@@ -180,8 +206,14 @@ pub fn classify(status: u16, body: &Value) -> Value {
     let reset_at = util::timestamp(&body["resetAt"])
         .or_else(|| util::timestamp(&body["error"]["resetAt"]))
         .filter(|at| *at > agent2api_wasm_sdk::now());
+    let detail: String = message(&body).chars().take(1000).collect();
+    let summary = if detail.starts_with("百度搭子返回 ") {
+        detail
+    } else {
+        format!("百度搭子返回 {status}：{detail}")
+    };
     json!({ "kind": kind(status, &body), "status": status,
-        "message": format!("百度搭子返回 {status}：{}", message(&body).chars().take(1000).collect::<String>()),
+        "message": summary,
         "upstream_code": code(&body), "reset_at": reset_at })
 }
 

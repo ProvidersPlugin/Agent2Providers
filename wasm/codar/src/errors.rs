@@ -101,6 +101,22 @@ fn kind(status: u16, value: &Value) -> &'static str {
     }
 }
 
+fn is_balance(status: u16, value: &Value) -> bool {
+    let code = code(value);
+    let lower = format!("{code} {}", message(value)).to_ascii_lowercase();
+    if ["rate_limit", "rate limit", "concurrent_limit", "too many"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    status == 402
+        || code == "codar_balance"
+        || ["insufficient balance", "insufficient credit", "余额不足", "积分不足"]
+            .iter()
+            .any(|word| lower.contains(word))
+}
+
 pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
     let business = util::number(&value["code"])
         .filter(|code| code.fract() == 0.0 && (400.0..600.0).contains(code));
@@ -111,15 +127,16 @@ pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
             upstream = code(&value["response"]["error"]);
         }
     }
-    let class = kind(
-        if status < 400 {
-            business.map(|code| code as u16).unwrap_or(status)
-        } else {
-            status
-        },
-        value,
-    );
-    let status = if status >= 400 {
+    let effective = if status < 400 {
+        business.map(|code| code as u16).unwrap_or(status)
+    } else {
+        status
+    };
+    let class = kind(effective, value);
+    let balance = class == "quota_limited" && is_balance(effective, value);
+    let status = if balance {
+        402
+    } else if status >= 400 {
         status
     } else {
         business.map(|code| code as u16).unwrap_or(match class {
@@ -132,6 +149,7 @@ pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
     if upstream.is_empty() || upstream.bytes().all(|byte| byte.is_ascii_digit()) {
         upstream = match class {
             "token_expired" => "codar_token_expired",
+            "quota_limited" if balance => "codar_balance",
             "quota_limited" => "codar_quota_limited",
             "content_blocked" => "codar_content_blocked",
             _ => "codar_upstream",
@@ -143,6 +161,8 @@ pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
         format!(
             "科搭返回 {status}（当前登录凭证仅支持单轮无工具请求，不支持多轮或工具调用）：{detail}"
         )
+    } else if detail.starts_with("科搭返回 ") {
+        detail
     } else {
         format!("科搭返回 {status}：{detail}")
     };
@@ -167,6 +187,7 @@ pub fn upstream(status: u16, value: &Value, protected: &[String]) -> Error {
 
 pub fn classify(status: u16, value: &Value) -> Value {
     let kind = kind(status, value);
+    let status = if kind == "quota_limited" && is_balance(status, value) { 402 } else { status };
     let mut result = json!({ "kind": kind, "message": util::safe_text(&message(value), &[], 600), "status": status,
         "upstream_code": value["upstreamCode"].as_i64().or_else(|| value["code"].as_i64()) });
     if kind == "quota_limited" {

@@ -42,21 +42,66 @@ pub struct Route {
 
 impl Route {
     pub fn reasoning_effort(&self, requested: &str) -> Option<&str> {
-        let requested = requested.trim().to_lowercase();
-        let alias = match requested.as_str() {
-            "low" => "light",
-            "light" => "low",
-            "xhigh" => "extra_high",
-            "extra_high" => "xhigh",
-            "max" => self.reasoning.last().map(String::as_str).unwrap_or("max"),
-            other => other,
-        };
-        self.reasoning
-            .iter()
-            .find(|level| level.as_str() == requested)
-            .or_else(|| self.reasoning.iter().find(|level| level.as_str() == alias))
-            .map(String::as_str)
+        resolve_reasoning_effort(&self.reasoning, requested)
     }
+}
+
+fn effort_rank(raw: &str) -> Option<u8> {
+    match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "minimal" | "min" | "xlow" | "extra-low" => Some(0),
+        "low" | "light" => Some(1),
+        "medium" | "med" | "normal" | "standard" => Some(2),
+        "high" => Some(3),
+        "xhigh" | "x-high" | "extra-high" => Some(4),
+        "max" | "extreme" => Some(5),
+        _ => None,
+    }
+}
+
+/// 按当前通道声明的档位列表解析客户端思考档位：
+/// 1. 目录无档位（不支持思考）时返回 None，由调用方丢弃参数；
+/// 2. 精确命中优先；显式关闭（off/none/disabled）仅在目录存在关闭档时发送；
+/// 3. 其他已知档位按别名或强弱序就近对齐（等距取较高档）；未知乱写值返回 None。
+pub fn resolve_reasoning_effort<'a>(levels: &'a [String], requested: &str) -> Option<&'a str> {
+    if levels.is_empty() {
+        return None;
+    }
+    let requested = requested.trim().to_ascii_lowercase();
+    if requested.is_empty() {
+        return None;
+    }
+    if let Some(exact) = levels
+        .iter()
+        .find(|level| level.eq_ignore_ascii_case(&requested))
+    {
+        return Some(exact.as_str());
+    }
+    if matches!(requested.as_str(), "off" | "none" | "disabled") {
+        return levels
+            .iter()
+            .find(|level| matches!(level.to_ascii_lowercase().as_str(), "off" | "none"))
+            .map(String::as_str);
+    }
+    let target = effort_rank(&requested)?;
+    if target == 5 {
+        return levels
+            .iter()
+            .filter_map(|level| effort_rank(level).map(|rank| (rank, level)))
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, level)| level.as_str())
+            .or_else(|| levels.last().map(String::as_str));
+    }
+    if let Some(alias) = levels.iter().find(|level| effort_rank(level) == Some(target)) {
+        return Some(alias.as_str());
+    }
+    levels
+        .iter()
+        .filter_map(|level| {
+            let rank = effort_rank(level)?;
+            Some((rank.abs_diff(target), std::cmp::Reverse(rank), level))
+        })
+        .min_by_key(|(dist, rank, _)| (*dist, *rank))
+        .map(|(_, _, level)| level.as_str())
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -406,11 +451,12 @@ fn catalog_entry(id: &str, entry: &Value) -> Value {
         if let Some(output) = output_limit(entry) {
             object.insert("maxOutputTokens".to_string(), json!(output));
         }
-        if let Some(reasoning) = supports_reasoning(entry) {
+        let supports = supports_reasoning(entry);
+        if let Some(reasoning) = supports {
             object.insert("supportsReasoning".to_string(), json!(reasoning));
         }
         let levels = reasoning_levels(entry);
-        if !levels.is_empty() {
+        if !levels.is_empty() || supports == Some(false) {
             object.insert("reasoningEffortLevels".into(), json!(levels));
         }
         if let Some(images) = supports_images(entry) {
@@ -601,4 +647,44 @@ fn text(object: &Value, key: &str) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_effort_drops_or_aligns_safely() {
+        assert_eq!(resolve_reasoning_effort(&[], "xhigh"), None);
+        let levels = vec!["low".into(), "medium".into(), "high".into()];
+        assert_eq!(resolve_reasoning_effort(&levels, "medium"), Some("medium"));
+        assert_eq!(resolve_reasoning_effort(&levels, "light"), Some("low"));
+        assert_eq!(resolve_reasoning_effort(&levels, "xhigh"), Some("high"));
+        assert_eq!(resolve_reasoning_effort(&levels, "minimal"), Some("low"));
+        assert_eq!(resolve_reasoning_effort(&levels, "max"), Some("high"));
+        assert_eq!(resolve_reasoning_effort(&levels, "off"), None);
+        assert_eq!(resolve_reasoning_effort(&levels, "banana"), None);
+
+        let gap = vec!["light".into(), "extra_high".into()];
+        assert_eq!(resolve_reasoning_effort(&gap, "low"), Some("light"));
+        assert_eq!(resolve_reasoning_effort(&gap, "xhigh"), Some("extra_high"));
+        assert_eq!(resolve_reasoning_effort(&gap, "medium"), Some("light"));
+        assert_eq!(resolve_reasoning_effort(&gap, "high"), Some("extra_high"));
+    }
+
+    #[test]
+    fn chat_model_emits_explicit_empty_reasoning_levels() {
+        let groups = vec![json!({
+            "function": "chat_v3",
+            "config_info_list": [{
+                "config_name": "mimo-v2.6-flash",
+                "display_config": { "display_name": "MiMo-V2.6-Flash", "model_capability": "chat_model" },
+                "model_detail_list": [{ "model_name": "mimo-v2.6-flash__dev", "max_tokens": 8192 }]
+            }]
+        })];
+        let catalog = parse(&groups);
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0]["supportsReasoning"], json!(false));
+        assert_eq!(catalog.models[0]["reasoningEffortLevels"], json!([]));
+    }
 }

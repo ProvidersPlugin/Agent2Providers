@@ -33,6 +33,7 @@ fn metadata() -> Value {
     attach(
         meta,
         vec![
+            class("balance", &[402], &["lobsterai_credit"]),
             class("rate_limit", &[429], &["42900"]),
             class("auth", &[401], &["40100", "40101"]),
             class("unsupported", &[403], &["40300"]),

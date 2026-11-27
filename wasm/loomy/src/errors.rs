@@ -64,6 +64,8 @@ pub fn classify(status: u16, body: &Value) -> Value {
     let raw = message(body);
     let message = if raw.is_empty() {
         format!("上游返回 {status}：Loomy 未返回有效的流式响应")
+    } else if raw.starts_with("上游返回 ") {
+        raw.clone()
     } else {
         format!("上游返回 {status}: {raw}")
     };
@@ -77,7 +79,8 @@ pub fn classify(status: u16, body: &Value) -> Value {
         return json!({ "kind": "token_expired", "message": message });
     }
     let lower = raw.to_lowercase();
-    if status == 429
+    let balance = status == 402
+        || body["providerCode"] == "loomy_balance"
         || matches!(status, 400..=599)
             && [
                 "积分余额不足",
@@ -86,8 +89,12 @@ pub fn classify(status: u16, body: &Value) -> Value {
                 "请获取积分后再试",
             ]
             .iter()
-            .any(|pattern| raw.contains(pattern))
-    {
+            .any(|pattern| raw.contains(pattern));
+    if balance {
+        return json!({ "kind": "quota_limited", "status": 402, "message": message,
+            "upstream_code": upstream_code, "reset_at": null });
+    }
+    if status == 429 {
         return json!({ "kind": "quota_limited", "status": 429, "message": message,
             "upstream_code": upstream_code, "reset_at": null });
     }
@@ -128,6 +135,7 @@ pub fn http_error(status: u16, payload: &Value, secrets: &[&str]) -> Error {
     );
     let mut error = Error::http(status, message).with_code(match class["kind"].as_str() {
         Some("token_expired") => "loomy_authentication",
+        Some("quota_limited") if status == 402 => "loomy_balance",
         Some("quota_limited") => "loomy_quota",
         Some("content_blocked") => "loomy_content_blocked",
         _ => "loomy_upstream",

@@ -1,5 +1,6 @@
-//! 每日登录初始化只在本账号当天第一次真实请求时提交；未知结果只回查积分，不盲目重发。
-//! 两池正增量才报 claimed，零增量不假报 done；每日预约保存在宿主账号范围，锁内 CAS。
+//! 每日登录签到：检查活动配置与套餐资格 → 读余额 → init-app 触发当日登录 →
+//! 查 client-popups/pending 并提交 DAILY_REWARD_DIALOG 领取 → 回查两池余额确认到账。
+//! 兼容旧版遗留的同日 pending 状态；每日状态保存在宿主账号范围，锁内 CAS。
 
 use super::{account, client, endpoints, usage};
 use agent2api_wasm_sdk::{
@@ -8,11 +9,27 @@ use agent2api_wasm_sdk::{
     AccountLock, Error, Result, Value,
 };
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 const KEY: &str = "daily-login-v1";
+const POPUP_RETRY_WAIT_MS: u64 = 1500;
+const REWARD_WAIT_MS: u64 = 2500;
+
+struct RewardPopup {
+    popup_id: i64,
+    instance_key: String,
+}
 
 fn report(outcome: &str, message: &str, credit: Option<String>) -> Value {
     json!({ "outcome": outcome, "message": message, "credit": credit, "streak": null, "retryAt": null })
+}
+
+fn format_delta(value: f64) -> String {
+    if value.fract().abs() < 0.005 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 fn plan_zero_reason(config: &Value, membership: &Value) -> Option<String> {
@@ -47,50 +64,130 @@ fn save(previous: &Snapshot, value: Value) -> Result<Snapshot> {
     Ok(current)
 }
 
-fn observe(record: &Value, previous: &Snapshot) -> Result<Value> {
-    let after = usage::balance(&record["secret"])?;
-    account::ensure_current(record)?;
-    let delta = |before: &Value, after: Option<f64>| {
-        after
-            .zip(account::number(before))
-            .map(|(after, before)| after - before)
-            .filter(|value| value.is_finite())
+fn positive_rewards(before: &usage::Balance, after: &usage::Balance) -> Vec<String> {
+    let delta = |before: Option<f64>, after: Option<f64>| {
+        before
+            .zip(after)
+            .map(|(before, after)| after - before)
+            .filter(|value| value.is_finite() && *value > 0.0)
     };
-    let deltas = [
-        (
-            "通用积分",
-            delta(&previous.value["before"]["points"], after.points),
-        ),
-        (
-            "星火积分",
-            delta(&previous.value["before"]["spark"], after.spark),
-        ),
-    ];
-    let rewards: Vec<String> = deltas
-        .iter()
-        .filter_map(|(label, delta)| {
-            delta
-                .filter(|delta| *delta > 0.0)
-                .map(|delta| format!("{label} +{delta}"))
-        })
-        .collect();
-    if rewards.is_empty() {
-        return Ok(report(
-            "inactive",
-            "今日登录初始化已提交，但暂未观测到新增积分（可能今日已领过，或当前账号不再发放每日登录奖励）；后续仅回查积分，不重复初始化",
-            None,
-        ));
+    [
+        ("通用积分", delta(before.points, after.points)),
+        ("星火积分", delta(before.spark, after.spark)),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.map(|value| format!("{label} +{}", format_delta(value))))
+    .collect()
+}
+
+fn balance_from_state(value: &Value) -> usage::Balance {
+    usage::Balance {
+        points: account::number(&value["before"]["points"]),
+        spark: account::number(&value["before"]["spark"]),
     }
-    let credit = rewards.join("，");
-    let mut value = previous.value.clone();
-    value["phase"] = json!("observed");
-    value["credit"] = json!(credit);
-    save(previous, value)?;
-    Ok(report(
-        "claimed",
-        &format!("每日登录奖励已观测到账：{credit}"),
-        Some(credit.clone()),
-    ))
+}
+
+fn is_daily_reward_popup(item: &Value) -> bool {
+    let component = item["componentType"]
+        .as_str()
+        .or_else(|| item["type"].as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if component.eq_ignore_ascii_case("DAILY_REWARD_DIALOG") {
+        return true;
+    }
+    let code = item["popupCode"]
+        .as_str()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    code.contains("DAILY") && code.contains("REWARD")
+}
+
+fn popup_id(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|v| i64::try_from(v).ok()))
+        .or_else(|| value.as_str().and_then(|v| v.trim().parse::<i64>().ok()))
+}
+
+fn fetch_daily_popups(secret: &Value) -> Result<Vec<RewardPopup>> {
+    let data = client::studio("GET", endpoints::POPUPS_PENDING, Some(secret))?.confirm("session")?;
+    let list = if data.is_null() {
+        return Ok(Vec::new());
+    } else if let Some(items) = data.as_array() {
+        items
+    } else if let Some(items) = data["popups"].as_array() {
+        items
+    } else {
+        return Err(Error::http(502, "AStudio 待领取奖励列表格式异常"));
+    };
+
+    let mut matched = 0usize;
+    let mut rewards = Vec::new();
+    let mut seen = HashSet::new();
+    for item in list {
+        if !item.is_object() || !is_daily_reward_popup(item) {
+            continue;
+        }
+        matched += 1;
+        let Some(id) = popup_id(&item["popupId"]) else {
+            continue;
+        };
+        let instance_key = account::text(item, &["instanceKey"]);
+        if instance_key.is_empty() {
+            continue;
+        }
+        if seen.insert((id, instance_key.clone())) {
+            rewards.push(RewardPopup {
+                popup_id: id,
+                instance_key,
+            });
+        }
+    }
+    if matched > 0 && rewards.is_empty() {
+        return Err(Error::http(502, "AStudio 待领取每日奖励缺少必要标识"));
+    }
+    Ok(rewards)
+}
+
+fn claim_daily_popups(record: &Value) -> (usize, Option<Error>) {
+    let secret = &record["secret"];
+    let popups = match fetch_daily_popups(secret) {
+        Ok(popups) => popups,
+        Err(error) => return (0, Some(error)),
+    };
+    let mut claimed = 0usize;
+    for popup in popups {
+        if let Err(error) = account::ensure_current(record) {
+            return (claimed, Some(error));
+        }
+        let body = json!({
+            "popupId": popup.popup_id,
+            "instanceKey": popup.instance_key,
+            "completed": true,
+        });
+        if let Err(error) = client::studio_json("POST", endpoints::POPUPS_COMPLETE, Some(secret), &body)
+            .and_then(|reply| reply.confirm("session"))
+        {
+            return (claimed, Some(error));
+        }
+        claimed += 1;
+    }
+    (claimed, None)
+}
+
+fn state_payload(day: i64, phase: &str, fingerprint: &str, before: &usage::Balance, credit: Option<&str>) -> Value {
+    let mut value = json!({
+        "day": day,
+        "phase": phase,
+        "fingerprint": fingerprint,
+        "before": { "points": before.points, "spark": before.spark },
+    });
+    if let Some(credit) = credit {
+        value["credit"] = json!(credit);
+    }
+    value
 }
 
 fn run() -> Result<Value> {
@@ -114,23 +211,18 @@ fn run() -> Result<Value> {
     if !previous.compatible {
         return Err(Error::http(409, "AStudio 每日登录状态版本不兼容"));
     }
-    if previous.value["day"].as_i64() == Some(day) {
-        if previous.value["fingerprint"] != fingerprint {
-            return Ok(report(
-                "failed",
-                "今日网页会话已更换，原初始化结果需先确认；未重复提交",
-                None,
-            ));
-        }
-        return match previous.value["phase"].as_str() {
-            Some("observed") => Ok(report("done", "今日每日登录奖励已经观测到账", None)),
-            Some("pending") => observe(&record, &previous),
-            _ => Err(Error::http(
-                409,
-                "AStudio 今日每日登录状态不完整，未重复提交",
-            )),
-        };
+    let same_day = previous.value["day"].as_i64() == Some(day);
+    let same_session = same_day && previous.value["fingerprint"] == fingerprint;
+    let prev_phase = if same_day {
+        previous.value["phase"].as_str()
+    } else {
+        None
+    };
+
+    if prev_phase == Some("observed") {
+        return Ok(report("done", "今日每日登录奖励已到账", None));
     }
+
     let config = client::studio("GET", endpoints::PLAN, Some(secret))?.data(true, "session")?;
     if config["dailyLoginEnabled"] == false {
         return Ok(report("inactive", "当前没有每日登录积分活动", None));
@@ -146,17 +238,127 @@ fn run() -> Result<Value> {
         Err(error) if error.code.as_deref() == Some("astudio_session_expired") => return Err(error),
         Err(_) => {}
     }
+
     let before = usage::balance(secret)?;
     account::ensure_current(&record)?;
-    let reserved = save(
+
+    // 同日此前已初始化或已确认领取但当时余额尚未刷新：先核对此时余额是否已到账。
+    if same_session && matches!(prev_phase, Some("pending" | "claimed")) {
+        let prev_before = balance_from_state(&previous.value);
+        let delayed = positive_rewards(&prev_before, &before);
+        if !delayed.is_empty() {
+            let credit = delayed.join("，");
+            save(
+                &previous,
+                state_payload(day, "observed", &fingerprint, &prev_before, Some(&credit)),
+            )?;
+            return Ok(report(
+                "claimed",
+                &format!("每日登录奖励已观测到账：{credit}"),
+                Some(credit),
+            ));
+        }
+    }
+
+    let already_claimed_today = same_session && prev_phase == Some("claimed");
+    let snapshot = save(
         &previous,
-        json!({ "day": day, "phase": "pending", "fingerprint": fingerprint,
-        "before": { "points": before.points, "spark": before.spark } }),
+        state_payload(
+            day,
+            if already_claimed_today { "claimed" } else { "pending" },
+            &fingerprint,
+            &before,
+            None,
+        ),
     )?;
     account::ensure_current(&record)?;
-    client::init(secret)?;
-    sdk::sleep(2500)?;
-    observe(&record, &reserved)
+
+    if !already_claimed_today {
+        client::init(secret)?;
+    }
+
+    let (mut claimed_count, mut claim_error) = claim_daily_popups(&record);
+    if let Some(error) = claim_error.as_ref() {
+        if matches!(
+            error.code.as_deref(),
+            Some("astudio_session_expired" | "astudio_model_expired")
+        ) {
+            return Err(claim_error.unwrap());
+        }
+    }
+
+    // 刚执行完初始化时，上游推广位可能存在短暂异步延迟；为空时稍等复查一次再下结论。
+    if claimed_count == 0 && claim_error.is_none() && !already_claimed_today {
+        sdk::sleep(POPUP_RETRY_WAIT_MS)?;
+        account::ensure_current(&record)?;
+        let (retry_claimed, retry_error) = claim_daily_popups(&record);
+        if let Some(error) = retry_error.as_ref() {
+            if matches!(
+                error.code.as_deref(),
+                Some("astudio_session_expired" | "astudio_model_expired")
+            ) {
+                return Err(retry_error.unwrap());
+            }
+        }
+        claimed_count = retry_claimed;
+        claim_error = retry_error;
+    }
+
+    if claimed_count > 0 {
+        sdk::sleep(REWARD_WAIT_MS)?;
+    }
+    let after = usage::balance(secret)?;
+    account::ensure_current(&record)?;
+
+    let rewards = positive_rewards(&before, &after);
+    if !rewards.is_empty() {
+        let credit = rewards.join("，");
+        save(
+            &snapshot,
+            state_payload(day, "observed", &fingerprint, &before, Some(&credit)),
+        )?;
+        return Ok(report(
+            "claimed",
+            &format!("每日登录奖励已到账：{credit}"),
+            Some(credit),
+        ));
+    }
+
+    if claimed_count > 0 {
+        let _ = save(
+            &snapshot,
+            state_payload(day, "claimed", &fingerprint, &before, None),
+        )?;
+        return Ok(report(
+            "claimed",
+            &format!(
+                "已领取今日每日登录奖励（服务端确认 {claimed_count} 项），积分读数暂未更新，稍后刷新余额可见"
+            ),
+            None,
+        ));
+    }
+
+    if let Some(error) = claim_error {
+        return Ok(report(
+            "failed",
+            &format!("每日登录已执行，但领取每日登录奖励失败：{}", error.message),
+            None,
+        ));
+    }
+
+    if already_claimed_today {
+        return Ok(report(
+            "done",
+            "今日每日登录奖励已领取，当前没有待领取项",
+            None,
+        ));
+    }
+
+    Ok(report(
+        "done",
+        "今日每日登录已完成，当前没有待领取的每日登录奖励（可能今日已领过）",
+        None,
+    ))
 }
 
 pub fn claim() -> Result<Value> {

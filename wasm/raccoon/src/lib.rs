@@ -34,7 +34,7 @@ use agent2api_wasm_sdk::{json, Error, Result, Value};
 agent2api_wasm_sdk::export_provider!(handle);
 
 fn metadata() -> Value {
-    use agent2api_wasm_sdk::error_rules::attach;
+    use agent2api_wasm_sdk::error_rules::{attach, class};
     let meta = json!({ "id": "raccoon", "label": "小浣熊", "order": 7,
         "capabilities": { "chat": true, "stateful": false, "refresh": true, "model_refresh": true, "usage": true,
             "checkin": true, "claims": true, "web_login": true, "sse_model_rewrite": true, "sse_strip_newline_chunks": false,
@@ -49,7 +49,16 @@ fn metadata() -> Value {
         "checkin": { "description": "桌面端每日积分：setting_info触发，账单核对到账", "daily": true, "modes": ["checkin"], "onboarding": true },
         "usage_query": { "concurrency": 1, "min_interval_ms": 1000 },
         "default_models": fallback::models(), "settings_schema": config::schema(), "settings_group": { "label": "小浣熊" } });
-    attach(meta, vec![], vec![])
+    attach(
+        meta,
+        vec![
+            class("balance", &[402], &["raccoon_balance", "1000007"]),
+            class("rate_limit", &[429], &["raccoon_rate_limited"]),
+            class("auth", &[401], &["raccoon_auth"]),
+            class("content", &[], &["raccoon_content_blocked"]),
+        ],
+        vec![],
+    )
 }
 fn handle(method: &str, params: Value) -> Result<Value> {
     match method {

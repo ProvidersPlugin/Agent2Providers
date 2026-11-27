@@ -50,9 +50,11 @@ fn metadata() -> Value {
             class("rate_limit", &[429], &["trae_rate_limited"]),
             class("auth", &[401], &["trae_session_expired"]),
             class("content", &[], &["trae_content_blocked"]),
+            class("unsupported", &[400], &["trae_route_capability"]),
         ],
         vec![
             rule("trae_plan", "套餐或模型额度耗尽", "当前套餐或模型额度不足时冷却该对象并切换可用账号。", "quota", &[], "trae_plan_limit", "switch_account", "fixed", 1800, true, 7200, "model"),
+            rule("trae_route_capability", "当前模型能力不支持", "当前账号目录下该模型不支持所需能力（如图片输入）；允许尝试其他兼容提供商，但不对 Trae 整家降权或冷却。", "unsupported", &[400], "trae_route_capability", "switch_provider", "none", 60, false, 60, "model"),
         ],
     )
 }
@@ -119,22 +121,69 @@ fn handle(method: &str, params: Value) -> Result<Value> {
                 || params["body"].pointer("/reasoning/effort").is_some()
             {
                 Ok(json!({ "action": "skip", "reason": "客户端已指定思考档位" }))
-            } else if params["level"].as_str().is_some_and(|level| {
-                matches!(
-                    level,
-                    "low" | "light" | "medium" | "high" | "xhigh" | "extra_high" | "max"
-                )
-            }) {
-                // 实际档位在payload中按当前账号route映射，不能按模型名称猜。
-                Ok(
-                    json!({ "action": "set", "field": "reasoning_effort", "value": params["level"] }),
-                )
             } else {
-                Ok(json!({ "action": "skip", "reason": "Trae 当前思考档位未获目录支持" }))
+                Ok(reasoning_patch(&params))
             }
         }
         "images.capabilities" => Ok(json!({ "generation": false, "editing": false })),
         _ => Err(Error::unsupported()),
+    }
+}
+
+fn reasoning_patch(params: &Value) -> Value {
+    let level = params["level"].as_str().unwrap_or("").trim();
+    if level.is_empty()
+        || matches!(
+            level.to_ascii_lowercase().as_str(),
+            "off" | "none" | "disabled"
+        )
+    {
+        return json!({ "action": "skip", "reason": "Trae 映射绑定不注入关闭思考" });
+    }
+    let model = params["model"].as_str().unwrap_or("").trim();
+    if !model.is_empty() {
+        if let Ok(cached) = sdk::catalog::cached() {
+            if let Some(entry) = cached["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|item| {
+                    item["id"]
+                        .as_str()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(model))
+                })
+            {
+                if let Some(raw_levels) = entry["reasoningEffortLevels"].as_array() {
+                    let levels: Vec<String> = raw_levels
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    return match catalog::resolve_reasoning_effort(&levels, level) {
+                        Some(resolved) => {
+                            json!({ "action": "set", "field": "reasoning_effort", "value": resolved })
+                        }
+                        None => {
+                            json!({ "action": "skip", "reason": "Trae 当前模型不支持所选思考档位" })
+                        }
+                    };
+                }
+                if entry["supportsReasoning"] == false {
+                    return json!({ "action": "skip", "reason": "Trae 当前模型不支持思考档位" });
+                }
+            }
+        }
+    }
+    if matches!(
+        level.to_ascii_lowercase().as_str(),
+        "minimal" | "low" | "light" | "medium" | "high" | "xhigh" | "extra_high" | "max"
+    ) {
+        // 缓存未命中时放行已知正向档位，最终在 payload 中按本账号真实路由对齐或丢弃。
+        json!({ "action": "set", "field": "reasoning_effort", "value": level })
+    } else {
+        json!({ "action": "skip", "reason": "Trae 当前思考档位未获目录支持" })
     }
 }
 

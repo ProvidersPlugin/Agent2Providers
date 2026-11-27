@@ -85,7 +85,7 @@ pub fn classify(status: u16, body: &Value) -> Value {
     } else if balance || status == 402 {
         (
             "quota_limited",
-            if status >= 400 { status } else { 402 },
+            402,
             "QuWork 余额或积分不足",
             None,
         )

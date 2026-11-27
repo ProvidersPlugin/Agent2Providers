@@ -80,6 +80,7 @@ fn window_rank(code: &str) -> u8 {
 }
 
 const SHORT_WINDOW_MAX_MS: i64 = 6 * 3_600_000;
+const MODEL_RECONCILE_EPS: f64 = 0.01;
 
 struct Entry {
     rank: u8,
@@ -172,7 +173,7 @@ fn reconcile_group_with_models(
         .iter()
         .map(|e| e.value)
         .fold(f64::INFINITY, f64::min);
-    if max_model_pct + 1e-6 >= min_entry_value {
+    if max_model_pct + MODEL_RECONCILE_EPS >= min_entry_value {
         return;
     }
 
@@ -211,7 +212,7 @@ fn reconcile_group_with_models(
             }
             for entry in &mut group.entries {
                 if entry.row["window"].as_str() == Some("weekly")
-                    && entry.value > max_model_pct + 1e-6
+                    && entry.value > max_model_pct + MODEL_RECONCILE_EPS
                 {
                     entry.row["constrainedByModel"] = json!(true);
                     if let Some(at) = model_reset {
@@ -875,5 +876,33 @@ mod tests {
         assert_eq!(windows[1]["constrainedByModel"], json!(true));
         assert_eq!(windows[1]["modelResetsAt"], json!(reset_at));
         assert!(windows[1]["resetsAt"].is_i64());
+    }
+
+    #[test]
+    fn wallets_does_not_flag_weekly_constrained_on_rounding_difference() {
+        let now_ms = 1_795_700_000_000_i64;
+        let reset_at = now_ms + 6 * 86_400_000 + 3_600_000;
+        let summary = json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        { "bucketId": "gemini-weekly", "remainingFraction": 0.747234, "resetTime": "2026-12-03T07:56:02Z" },
+                        { "bucketId": "gemini-5h", "remainingFraction": 1.0 }
+                    ]
+                }
+            ]
+        });
+        let model_quotas = vec![
+            json!({ "id": "gemini-4-neon", "group": "Gemini", "modelPercent": 74.72, "modelResetsAt": reset_at }),
+        ];
+
+        let (_, windows, _) = super::wallets_with_models(&summary, &[], &model_quotas, true, now_ms);
+        assert_eq!(
+            window_pairs(&windows),
+            vec![("Gemini", "5h", 100.0), ("Gemini", "weekly", 0.747234 * 100.0)]
+        );
+        assert!(windows[0].get("constrainedByModel").is_none());
+        assert!(windows[1].get("constrainedByModel").is_none());
     }
 }

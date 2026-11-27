@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-antigravity",
   "name": "Antigravity",
   "description": "提供对话、图片生成与编辑，支持 Google 网页登录、凭据导入与自动续期，可按账号查看模型和配额。",
-  "version": "0.1.1-beta.1",
+  "version": "0.1.1",
   "protocol": 1,
   "providers": [
     {

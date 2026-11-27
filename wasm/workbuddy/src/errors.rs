@@ -108,6 +108,37 @@ pub fn clean(message: &str, secrets: &[&str]) -> String {
     }
     message.chars().take(2000).collect()
 }
+/// 上游「通道校验失败」的业务码。
+///
+/// 用 `\u{2D}` 写横杠是刻意的：这个码里横杠与数字紧挨着，源码里直接写容易被
+/// 当成范围/减号读错，也容易被格式化工具改写；转义能保证编译出来的字节恒为
+/// `11<0x2D>128`。
+const CHANNEL_REFUSED: &str = "11\u{2D}128";
+
+/// 业务码是否命中 [`CHANNEL_REFUSED`]（按**原始文本**，不要求能解析成整数）。
+fn refused_code(value: &Value) -> bool {
+    fn walk(value: &Value, depth: usize) -> Option<&str> {
+        if depth == 0 {
+            return None;
+        }
+        if let Some(text) = value["code"].as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+        [
+            value.get("data"),
+            value.get("error"),
+            value.pointer("/response/data"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|v| walk(v, depth - 1))
+    }
+    walk(value, 6) == Some(CHANNEL_REFUSED)
+}
+
 fn classified(status: u16, body: &Value, secrets: &[&str]) -> Value {
     let code = code(body);
     let raw = message(body);
@@ -142,6 +173,11 @@ fn classified(status: u16, body: &Value, secrets: &[&str]) -> Value {
         ]
         .iter()
         .any(|s| raw.to_ascii_lowercase().contains(s));
+    // 上面那一支只覆盖「上游把码当数字下发」的形态。上游实际下发的是**字符串**
+    // `"11-128"`（带横杠）：`util::integer` 解析不出，`code()` 取不到，于是
+    // 通道校验失败会漏到 `fatal`，网关据此不做「换中性提示词同账号重试」。
+    // 这里按原始文本再判一次，两种形态都覆盖。
+    let blocked = blocked || refused_code(body);
     if blocked {
         return json!({ "kind": "content_blocked", "status": status.max(400), "message": message, "upstream_code": code });
     }

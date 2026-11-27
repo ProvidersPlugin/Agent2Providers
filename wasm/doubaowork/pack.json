@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-doubaowork",
   "name": "豆包工作",
   "description": "提供对话、思考、传图与生图，支持网页登录、凭据及本机登录态导入，可查模型额度、今日签到状态与任务领奖。",
-  "version": "0.1.1-beta.1",
+  "version": "0.1.1",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

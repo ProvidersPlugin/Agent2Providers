@@ -177,6 +177,7 @@ pub fn forward(mut params: Value) -> Result<()> {
         .and_then(|object| object.remove("headers"))
         .unwrap_or(Value::Null);
     let mut body = sdk::take_body(&mut params).unwrap_or(Value::Null);
+    let conversation = params["session"].as_str().unwrap_or("").to_string();
     drop(params);
     if !body.is_object() {
         return Err(Error::http(400, "Loomy 请求体必须是 JSON 对象"));
@@ -191,7 +192,7 @@ pub fn forward(mut params: Value) -> Result<()> {
     body["stream"] = json!(true);
     let anthropic = models::protocol(&model, &session)? == "anthropic";
     super::history::adapt(&mut body, &model)?;
-    let mut headers = headers::build(&session, &client_headers, false)?;
+    let mut headers = headers::build_with_session(&session, &client_headers, false, &conversation)?;
     let path = if anthropic {
         body = protocol::request("anthropic", &body, &model)?;
         headers["anthropic-version"] = json!("2023-06-01");

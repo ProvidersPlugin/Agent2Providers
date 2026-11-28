@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-workbuddy-intl",
   "name": "WorkBuddy 国际版",
   "description": "提供国际版对话、传图生图与搜索，支持官方授权、凭据及本机导入与自动续期，可查模型积分和领取活跃奖励。",
-  "version": "0.1.2-beta.1",
+  "version": "0.1.2",
   "protocol": 1,
   "providers": [{ "id": "workbuddy-intl", "label": "WorkBuddy 国际版", "order": 16, "default_enabled": true }],
   "entry": { "wasm32-unknown-unknown": "workbuddy-intl.wasm" },

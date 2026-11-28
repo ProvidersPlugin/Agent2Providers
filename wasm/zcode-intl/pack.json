@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-zcode-intl",
   "name": "ZCode 国际版",
   "description": "提供国际版编码套餐对话与模型目录，支持 Z.AI 网页登录、凭据导入、用量查询和活动福利套餐领取。",
-  "version": "0.1.2-beta.1",
+  "version": "0.1.2",
   "protocol": 1,
   "providers": [
     { "id": "zcode-intl", "label": "ZCode 国际版", "order": 14, "default_enabled": true }

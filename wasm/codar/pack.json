@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-codar",
   "name": "科搭 Codar",
   "description": "提供单轮无工具对话、生图与积分签到，支持微信扫码、短信及本机导入并自动续期（上游限制登录凭证用于第三方多轮或工具调用，不改写身份提示词）。",
-  "version": "0.1.2-beta.1",
+  "version": "0.1.2",
   "protocol": 1,
   "license": "AGPL-3.0-only",
   "providers": [

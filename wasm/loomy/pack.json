@@ -2,7 +2,7 @@
   "id": "agent2api-wasm-loomy",
   "name": "Loomy",
   "description": "提供对话与图片生成编辑，支持短信、密码及本机登录态导入，可查模型与双钱包积分、每日签到和领新手任务。",
-  "version": "0.1.1-beta.1",
+  "version": "0.1.1",
   "protocol": 1,
   "providers": [
     { "id": "loomy", "label": "Loomy", "order": 5, "default_enabled": true }

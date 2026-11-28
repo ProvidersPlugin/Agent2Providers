@@ -1,5 +1,5 @@
 //! 单身份 AutoClaw 国际版 Wasm。没有国内凭据、目录、回调或网络备用出口。
-//! Google / Zai 使用主程序托管的 Aliyun V2 与各自固定 loopback。
+//! Zai 登录使用主程序托管的 Aliyun V2 与固定 loopback。
 //! 只有本机凭据读取/解密需要固定来源 helper；浏览器登录不新增任何原生部署依赖。
 mod account;
 mod campaigns;
@@ -39,7 +39,7 @@ fn metadata() -> Value {
             "anonymous_default_session": false, "system_proxy_when_unset": false,
             "refresh_uses_account": true, "supports_default_model": false, "env_credentials": false },
         "login_methods": [{ "kind": "desktop", "button": "导入本机国际版登录态",
-            "hint": "读取国际版官方登录态；续期与安全写回需另行授权，Google / Zai 网页登录使用官方验证与固定回调" }],
+            "hint": "读取国际版官方登录态；续期与安全写回需另行授权，Zai 网页登录使用官方验证与固定回调" }],
         "account_features": { "usage": true, "credit_detail": true, "identifier": ["userId", "email"], "email_as_name": true,
             "expiry": ["expiresAt", "tokenExpiresAt"] },
         "checkin": { "description": "国际版每日签到任务，并核对登录活跃活动奖励", "modes": ["checkin"], "daily": true },

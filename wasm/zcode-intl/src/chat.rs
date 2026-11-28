@@ -121,6 +121,7 @@ pub fn forward(mut params: Value) -> Result<()> {
         .ok_or_else(|| Error::http(400, "ZCode 需要明确的模型名"))?
         .to_string();
     original["stream"] = json!(true);
+    let version = config::app_version()?;
     let start_plan = account::plan(secret) == account::START;
     let selected = super::models::selected(&model);
     let (url, mut headers, body, wire_model) = if start_plan {
@@ -138,7 +139,7 @@ pub fn forward(mut params: Value) -> Result<()> {
         let context =
             request_context::Context::new(&client_headers, &original, &account::mid(secret))?;
         drop(original);
-        let version = prompt::apply(&mut payload, &wire_model, &context)?;
+        prompt::apply(&mut payload, &wire_model, &context)?;
         let mut headers = config::identity_headers(&version, Some("ai-sdk/anthropic/3.0.81"));
         headers["Content-Type"] = json!("application/json");
         headers["Authorization"] = json!(format!("Bearer {token}"));
@@ -166,7 +167,7 @@ pub fn forward(mut params: Value) -> Result<()> {
         }
         let context =
             request_context::Context::new(&client_headers, &original, &account::mid(secret))?;
-        let mut headers = config::identity_headers(&config::app_version()?, None);
+        let mut headers = config::identity_headers(&version, None);
         headers["Content-Type"] = json!("application/json");
         headers["Accept"] = json!("*/*");
         headers["Authorization"] = json!(format!("Bearer {token}"));
@@ -233,6 +234,9 @@ pub fn forward(mut params: Value) -> Result<()> {
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if errors::code(&value) == Some(3007) {
             captcha::challenge()?;
+        }
+        if errors::version_refused(status, &value) {
+            return Err(errors::version_refused_error(Some(&version)));
         }
         return Err(errors::failure(status, &value));
     }

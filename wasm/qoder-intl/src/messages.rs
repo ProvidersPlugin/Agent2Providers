@@ -47,7 +47,7 @@ pub fn normalize(body: &Value) -> Result<Vec<Value>> {
         }
         match role {
             "system" | "developer" => {
-                let content = text(&row["content"]);
+                let content = neutralize_system_openers(&text(&row["content"]));
                 if !content.is_empty() {
                     systems.push(json!({ "role": "system", "content": content }));
                 }
@@ -171,4 +171,168 @@ pub fn tools(body: &Value) -> Result<Vec<Value>> {
         output.push(json!({ "type": "function", "function": mapped }));
     }
     Ok(output)
+}
+
+const AGENT_SDK_LINE: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+
+/// 仅对 system/developer 中的第三方客户端固定开场句做最小改写，避免触发 Qoder 上游假排队（10605/p3）或 400。
+pub fn neutralize_system_openers(text: &str) -> String {
+    let mut out = replace_ascii_ci(
+        text,
+        "you are claude code, anthropic's official cli for claude, running within the claude agent sdk.",
+        AGENT_SDK_LINE,
+    );
+    out = replace_ascii_ci(
+        &out,
+        "you are claude code, anthropic's official cli for claude.",
+        AGENT_SDK_LINE,
+    );
+    out = replace_ascii_ci(
+        &out,
+        "you are claude code, anthropic's official cli tool for claude.",
+        AGENT_SDK_LINE,
+    );
+    out = replace_ascii_ci(
+        &out,
+        "you are zcode, an interactive agent",
+        "You are an interactive coding agent",
+    );
+    out = replace_ascii_ci(&out, "you are kimi code,", "You are a coding agent,");
+    out = replace_ascii_ci(
+        &out,
+        "you are codex, based on",
+        "You are a coding agent, based on",
+    );
+    insert_harness_comma(&out)
+}
+
+fn replace_ascii_ci(input: &str, needle_lower: &str, replacement: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains(needle_lower) {
+        return input.to_string();
+    }
+    let mut result = String::with_capacity(input.len());
+    let mut pos = 0;
+    while let Some(rel) = lower[pos..].find(needle_lower) {
+        let start = pos + rel;
+        let end = start + needle_lower.len();
+        result.push_str(&input[pos..start]);
+        result.push_str(replacement);
+        pos = end;
+    }
+    result.push_str(&input[pos..]);
+    result
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn insert_harness_comma(input: &str) -> String {
+    const CONNECTORS: [&str; 5] = [
+        "powered by",
+        "running on",
+        "running in",
+        "built on",
+        "based on",
+    ];
+    let lower = input.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut result = String::with_capacity(input.len() + 8);
+    let mut cursor = 0;
+    let mut search = 0;
+    while let Some(rel) = lower[search..].find("you are ") {
+        let start = search + rel;
+        if start > 0 && is_word_byte(bytes[start - 1]) {
+            search = start + 8;
+            continue;
+        }
+        let after_prefix = start + 8;
+        let article_end = ["an ", "a ", "the "]
+            .iter()
+            .find_map(|article| {
+                lower[after_prefix..]
+                    .starts_with(article)
+                    .then_some(after_prefix + article.len())
+            });
+        let Some(scan_start) = article_end else {
+            search = after_prefix;
+            continue;
+        };
+        let mut inserted = false;
+        let mut idx = scan_start;
+        while idx < bytes.len() && idx.saturating_sub(scan_start) <= 80 {
+            if matches!(bytes[idx], b'\n' | b'\r' | b'.' | b',') {
+                break;
+            }
+            let role_len = if lower[idx..].starts_with("agent") {
+                Some(5)
+            } else if lower[idx..].starts_with("assistant") {
+                Some(9)
+            } else {
+                None
+            };
+            if let Some(len) = role_len {
+                let before_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
+                let after_role = idx + len;
+                let after_ok = after_role < bytes.len() && bytes[after_role].is_ascii_whitespace();
+                if before_ok && after_ok {
+                    let mut conn_start = after_role;
+                    while conn_start < bytes.len()
+                        && matches!(bytes[conn_start], b' ' | b'\t')
+                    {
+                        conn_start += 1;
+                    }
+                    let matched = CONNECTORS.iter().find(|conn| {
+                        lower[conn_start..].starts_with(*conn)
+                            && bytes
+                                .get(conn_start + conn.len())
+                                .is_none_or(|b| !is_word_byte(*b))
+                    });
+                    if matched.is_some() {
+                        result.push_str(&input[cursor..after_role]);
+                        result.push_str(", ");
+                        cursor = conn_start;
+                        search = conn_start;
+                        inserted = true;
+                        break;
+                    }
+                }
+            }
+            idx += 1;
+            while idx < bytes.len() && !input.is_char_boundary(idx) {
+                idx += 1;
+            }
+        }
+        if !inserted {
+            search = after_prefix;
+        }
+    }
+    result.push_str(&input[cursor..]);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_known_qoder_trapped_openers_only() {
+        assert_eq!(
+            neutralize_system_openers("You are an AI agent powered by DeepSeek Harness."),
+            "You are an AI agent, powered by DeepSeek Harness."
+        );
+        assert_eq!(
+            neutralize_system_openers("You are ZCode, an interactive agent"),
+            "You are an interactive coding agent"
+        );
+        assert_eq!(
+            neutralize_system_openers("You are Kimi Code, an interactive general AI agent."),
+            "You are a coding agent, an interactive general AI agent."
+        );
+        assert_eq!(
+            neutralize_system_openers("You are Codex, based on GPT-5."),
+            "You are a coding agent, based on GPT-5."
+        );
+    }
 }

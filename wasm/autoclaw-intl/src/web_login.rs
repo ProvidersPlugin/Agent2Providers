@@ -51,7 +51,6 @@ pub fn start(params: &Value, vendor: Vendor) -> Result<Value> {
     let mut next = reserved.value.clone();
     next["phase"] = json!("verification");
     next["interactionId"] = step["id"].clone();
-    next["captchaConfigId"] = step["captcha"]["configId"].clone();
     save(&reserved, next)?;
     Ok(json!({ "flow": flow, "url": "", "poll_interval_ms": 1500,
         "instructions": "请完成当前登录步骤的阿里云验证。", "external_browser": false, "allowed_hosts": [] }))
@@ -76,34 +75,23 @@ pub fn submit(params: &Value) -> Result<Value> {
     let vendor = Vendor::parse(before.value["vendor"].as_str().unwrap_or(""))?;
     let context = login_host::context(flow, vendor)?;
     if before.value["phase"] != "verification" || before.value["interactionId"] != context.interaction { return Err(replaced()); }
-    let input = if vendor == Vendor::Google { Some(managed::take_input()?) } else { None };
     let mut next = before.value.clone();
     next["phase"] = json!("authorizing");
     let reserved = save(&before, next)?;
     let lease = managed::open_loopback(login_host::profile(vendor)?, &context.interaction)?;
     oauth_urls::navigate(&lease.callback_url, vendor)?;
     let device = reserved.value["deviceId"].as_str().ok_or_else(replaced)?;
-    let authorization = if vendor == Vendor::Zai {
-        let result = sdk::host("login.autoclaw.authorization", json!({ "vendor": "zai", "leaseId": lease.lease_id, "deviceId": device }))?;
-        oauth_urls::Authorization {
-            url: result["url"].as_str().ok_or_else(replaced)?.to_string(),
-            official_state: result["officialState"].as_str().ok_or_else(replaced)?.to_string(),
-        }
-    } else {
-        let input = input.as_ref().ok_or_else(replaced)?;
-        let captcha = &input["captcha"];
-        if captcha["engine"] != "aliyun" || captcha["configId"] != before.value["captchaConfigId"] {
-            return Err(Error::coded("验证码不属于本轮国际版登录配置", "forbidden"));
-        }
-        let param = captcha["param"].as_str().ok_or_else(replaced)?;
-        oauth::request_url(vendor, &lease.callback_url, device, param, &context.authorization_origins)?
+    let Vendor::Zai = vendor;
+    let result = sdk::host("login.autoclaw.authorization", json!({ "vendor": "zai", "leaseId": lease.lease_id, "deviceId": device }))?;
+    let authorization = oauth_urls::Authorization {
+        url: result["url"].as_str().ok_or_else(replaced)?.to_string(),
+        official_state: result["officialState"].as_str().ok_or_else(replaced)?.to_string(),
     };
     let mut next = reserved.value.clone();
     next["phase"] = json!("waiting");
     next["navigateUri"] = json!(lease.callback_url);
     next["loopbackLease"] = json!(lease.lease_id);
     next["officialState"] = json!(authorization.official_state);
-    next["captchaConfigId"] = Value::Null;
     let reserved = save(&reserved, next)?;
     let step = managed::publish_browser(&context.interaction, &format!("AutoClaw 国际版 {} 授权", vendor.label()),
         "请在外部浏览器完成官方授权。远程使用时可粘贴最终完整回调地址；不要只复制授权码。",

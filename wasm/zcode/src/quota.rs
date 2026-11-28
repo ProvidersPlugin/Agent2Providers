@@ -1,6 +1,6 @@
 //! 账单先于模型请求读取以保留原始错误报文；只用真实1005补充说明，不切套餐或领取。
 use agent2api_wasm_sdk::{self as sdk, Error, Result, Value};
-use super::{account, claim_state::Ledger, config, errors, network, prompt, usage_billing, usage_sources};
+use super::{account, claim_state::Ledger, config, errors, network, usage_billing, usage_sources};
 
 fn time(value: &Value) -> Option<i64> {
     network::number(value).filter(|value| *value > 0.0 && *value < (1_i64 << 53) as f64)
@@ -29,7 +29,7 @@ fn ended_receipt(record: &Value, now: i64) -> Option<i64> {
 pub fn snapshot(record: &Value) -> Result<Option<Value>> {
     const TTL: i64 = 30_000;
     let binding = config::model_verification_binding(record);
-    let version = prompt::client_version()?;
+    let version = config::app_version()?;
     let before = config::transient("model-balance")?;
     let now = sdk::now();
     let at = before.value["at"].as_i64().unwrap_or(0);

@@ -57,7 +57,7 @@ fn metadata() -> Value {
             class("quota", &[], &["1005", "1113", "1308", "1310"]),
             class("auth", &[401], &["1000", "1001", "1002", "1003", "1004", "3007", "3012"]),
             class("unsupported", &[403, 501], &["1309", "1311", "1313", "1314", "1315"]),
-            class("bad_request", &[400, 413, 422], &["3001"]),
+            class("bad_request", &[400, 413, 422], &["3001", "zcode_version_refused"]),
             class("content", &[], &["1301", "content_filter"]),
         ],
         vec![

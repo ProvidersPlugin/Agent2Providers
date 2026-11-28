@@ -55,7 +55,7 @@ fn metadata() -> Value {
             class("rate_limit", &[429], &["1302", "1303", "3008", "3009"]),
             class("quota", &[], &["1005", "1113"]),
             class("auth", &[401], &["3007", "3012"]),
-            class("bad_request", &[400, 413, 422], &["3001"]),
+            class("bad_request", &[400, 413, 422], &["3001", "zcode_version_refused"]),
             class("content", &[], &["content_filter"]),
         ],
         vec![

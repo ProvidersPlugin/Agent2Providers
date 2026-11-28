@@ -7,12 +7,16 @@ use sha2::{Digest, Sha256};
 pub struct Payload {
     pub value: Value,
     pub thinking: bool,
+    pub request_id: String,
+    pub request_set_id: String,
+    pub session_id: String,
 }
 pub fn build(
     body: &Value,
     model: &Value,
     credentials: &Credentials,
     session: Option<&str>,
+    reuse: Option<(&str, &str)>,
 ) -> Result<Payload> {
     let key = model["upstreamKey"].as_str().unwrap_or("");
     let config = &model["config"];
@@ -46,12 +50,24 @@ pub fn build(
         .or_else(|| body["max_completion_tokens"].as_u64())
         .unwrap_or(catalog::MAX_OUTPUT as u64)
         .min(catalog::MAX_OUTPUT as u64) as i64;
-    let record = record_id(key, &messages, &tools, limit);
-    let seed = session
-        .filter(|value| !value.is_empty())
-        .or_else(|| body["session_id"].as_str())
-        .or_else(|| body["user"].as_str());
-    let session = session_id(&credentials.user, key, seed)?;
+    let request_id = util::uuid()?;
+    let (record, session) = match reuse {
+        Some((set_id, sess_id)) => (set_id.to_string(), sess_id.to_string()),
+        None => {
+            let record = record_id(key, &messages, &tools, limit);
+            let seed = session
+                .filter(|value| !value.is_empty())
+                .or_else(|| body["session_id"].as_str())
+                .or_else(|| body["user"].as_str());
+            let session = session_id(&credentials.user, key, seed)?;
+            (record, session)
+        }
+    };
+    let chat_record_id = if reuse.is_some() {
+        request_id.clone()
+    } else {
+        record.clone()
+    };
     let last = messages
         .iter()
         .rev()
@@ -88,7 +104,7 @@ pub fn build(
             slim[field] = value.clone();
         }
     }
-    let mut payload = json!({ "request_id": util::uuid()?, "request_set_id": record, "chat_record_id": record,
+    let mut payload = json!({ "request_id": request_id, "request_set_id": record, "chat_record_id": chat_record_id,
         "session_id": session, "stream": true, "chat_task": "FREE_INPUT", "is_reply": true,
         "is_retry": false, "source": 1, "version": "3", "session_type": "qodercli", "agent_id": "agent_common",
         "task_id": "common", "code_language": "", "chat_prompt": "", "image_urls": null, "aliyun_user_type": "", "system": "",
@@ -108,6 +124,9 @@ pub fn build(
     Ok(Payload {
         value: payload,
         thinking: thinking.enabled.is_some() || thinking.effort.is_some(),
+        request_id,
+        request_set_id: record,
+        session_id: session,
     })
 }
 fn session_id(user: &str, model: &str, seed: Option<&str>) -> Result<String> {

@@ -2,7 +2,6 @@
 use super::{
     account, config,
     network::{self, compact, integer, number, text},
-    prompt,
 };
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 
@@ -28,11 +27,7 @@ pub fn fetch(record: &Value) -> Result<Value> {
 }
 
 pub fn read(record: &Value) -> Result<Value> {
-    let version = if account::plan(&record["secret"]) == account::START {
-        prompt::client_version()?
-    } else {
-        config::app_version()?
-    };
+    let version = config::app_version()?;
     read_version(record, &version)
 }
 

@@ -1,5 +1,5 @@
 //! 国际版网页登录使用独立宿主 flow；本机方法4由添加账号的显式导入入口处理。
-//! 保留旧带用户授权的 method4 流程兼容，但不把它当作 Google/Zai OAuth。
+//! 保留旧带用户授权的 method4 流程兼容，但不把它当作 Zai OAuth。
 use super::{account, desktop, oauth::Vendor, util, web_login};
 use agent2api_wasm_sdk::{
     self as sdk, json,
@@ -17,10 +17,13 @@ pub fn start(params: &Value) -> Result<Value> {
     ) {
         return Err(Error::http(400, "AutoClaw 国际版登录入口无效"));
     }
-    match params["payload"]["methodIndex"].as_u64().unwrap_or(1) {
-        0 => web_login::start(params, Vendor::Zai),
-        1 => web_login::start(params, Vendor::Google),
-        4 => desktop_start(params),
+    match params["payload"]["methodIndex"].as_u64() {
+        Some(0) | None => web_login::start(params, Vendor::Zai),
+        Some(1) => Err(Error::http(
+            400,
+            "AutoClaw 国际版已移除 Google 登录，请改用 Zai 登录",
+        )),
+        Some(4) => desktop_start(params),
         _ => Err(Error::http(400, "手动或 JSON 凭据请通过对应账号表单提交")),
     }
 }

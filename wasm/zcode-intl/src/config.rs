@@ -5,18 +5,27 @@ use super::{
 };
 use agent2api_wasm_sdk::{self as sdk, json, state, Error, Result, Value};
 
-pub const DEFAULT_VERSION: &str = "3.18.2";
+pub const DEFAULT_VERSION: &str = "4.0.0";
 pub const PLATFORM: &str = "win32-x64";
 pub const OS_CATEGORY: &str = "windows";
 const CACHE_NAMESPACE: &str = "zcode-intl-configuration";
 
+fn semver_tuple(raw: &str) -> Option<(u64, u64, u64)> {
+    let core = raw.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((major, minor, patch))
+}
+
 pub fn app_version() -> Result<String> {
     let value = sdk::settings::get("appVersion")?;
-    let version = value
+    let synced = value
         .as_str()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_VERSION);
+        .filter(|value| !value.is_empty());
+    let version = synced.unwrap_or(DEFAULT_VERSION);
     if version.len() > 32
         || !version.as_bytes().first().is_some_and(u8::is_ascii_digit)
         || !version
@@ -25,7 +34,11 @@ pub fn app_version() -> Result<String> {
     {
         return Err(Error::http(400, "ZCode 国际版客户端版本设置格式无效"));
     }
-    Ok(version.to_string())
+    let effective = match (semver_tuple(version), semver_tuple(DEFAULT_VERSION)) {
+        (Some(current), Some(floor)) if current < floor => DEFAULT_VERSION,
+        _ => version,
+    };
+    Ok(effective.to_string())
 }
 
 pub fn identity_headers(version: &str, suffix: Option<&str>) -> Value {
@@ -194,7 +207,7 @@ fn target(raw: &str) -> Option<String> {
 
 pub fn schema() -> Value {
     json!({ "version": 1, "title": "ZCode 国际版活动与套餐", "runtime_overrides": false,
-        "description": "仅影响国际版，不读取国内版设置或环境变量；活动版本不改变套餐池推理模板绑定的版本。",
+        "description": "仅影响国际版，不读取国内版设置或环境变量；同步到的客户端版本号会同时用于编码套餐与套餐池请求。",
         "fields": [
             { "key": "appVersion", "label": "国际版客户端版本号", "type": "upstream_version", "source_id": "zcode", "default": DEFAULT_VERSION,
                 "description": "自动从官网同步最新正式版本，无需手动填写；断网或尚未同步时使用插件内置保底版本。" },

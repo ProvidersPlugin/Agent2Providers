@@ -66,37 +66,6 @@ fn required<'a>(pairs: &'a BTreeMap<String, String>, key: &str, max: usize) -> R
         && !value.bytes().any(|byte| byte.is_ascii_whitespace())).ok_or_else(invalid)
 }
 
-/// 只处理固定国际接口返回的 oauth_url；approved_origins 是内部宿主授权，不是用户输入。
-/// 保留 URL 原文，包括可能由上游代管的 PKCE challenge，不改 state/redirect_uri。
-pub fn authorization(raw: &str, vendor: Vendor, navigate_uri: &str, approved_origins: &[String]) -> Result<Authorization> {
-    navigate(navigate_uri, vendor)?;
-    if approved_origins.is_empty() || approved_origins.len() > 8 {
-        return Err(Error::http(503, "主程序尚未提供国际版官方授权页的受控来源许可"));
-    }
-    for origin in approved_origins {
-        let parsed = url(origin, 512)?;
-        if parsed.scheme() != "https" || parsed.port_or_known_default() != Some(443) || parsed.query().is_some()
-            || parsed.path() != "/" || parsed.origin().ascii_serialization() != *origin {
-            return Err(Error::coded("主程序授权页来源许可必须是精确的 HTTPS origin", "forbidden"));
-        }
-        match parsed.host() {
-            Some(url::Host::Domain(host)) if host.contains('.') && !host.ends_with('.') && !host.contains('*') => {},
-            _ => return Err(Error::coded("不允许把本机、IP 或通配来源作为国际版官方授权页", "forbidden")),
-        }
-    }
-    let parsed = url(raw, 16 * 1024)?;
-    if parsed.scheme() != "https" || !approved_origins.contains(&parsed.origin().ascii_serialization()) {
-        return Err(Error::coded("AutoClaw 国际版授权页不在主程序批准的官方来源内", "forbidden"));
-    }
-    let pairs = query(&parsed)?;
-    let official_state = required(&pairs, "state", 4096)?.to_string();
-    if pairs.get("redirect_uri").is_none_or(|value| value != navigate_uri)
-        || pairs.get("response_type").is_some_and(|value| value != "code") {
-        return Err(Error::http(502, "AutoClaw 官方授权地址没有绑定本轮登记的回调"));
-    }
-    Ok(Authorization { url: raw.into(), official_state })
-}
-
 pub fn callback(raw: &str, vendor: Vendor, navigate_uri: &str, official_state: &str) -> Result<Callback> {
     navigate(navigate_uri, vendor)?;
     if official_state.is_empty() || !util::printable(official_state, 4096) { return Err(invalid()); }

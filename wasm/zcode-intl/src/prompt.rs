@@ -39,10 +39,8 @@ fn blocks(value: Option<&Value>) -> Vec<Value> {
     }
 }
 
-pub fn apply(payload: &mut Value, model: &str, context: &Context) -> Result<String> {
+pub fn apply(payload: &mut Value, model: &str, context: &Context) -> Result<()> {
     let data = data()?;
-    let version = text(&data, "clientVersion");
-    if version.is_empty() { return Err(Error::new("ZCode 套餐池模板缺少客户端版本")); }
     let enabled = sdk::settings::get("gatewayPrompt")?.as_bool().unwrap_or(true);
     let overrides = sdk::settings::get("gatewayPromptText")?;
     let custom = blocks(payload.get("system"));
@@ -90,7 +88,7 @@ pub fn apply(payload: &mut Value, model: &str, context: &Context) -> Result<Stri
     }
     if !payload["metadata"].is_object() { payload["metadata"] = json!({}); }
     payload["metadata"]["user_id"] = json!(context.metadata_user);
-    Ok(version)
+    Ok(())
 }
 
 pub fn info() -> Result<Value> {

@@ -21,6 +21,7 @@ mod messages;
 mod models;
 mod output;
 mod protocol;
+mod queue;
 mod reasoning;
 mod refresh;
 mod thinking;
@@ -47,7 +48,8 @@ fn metadata() -> Value {
     attach(
         meta,
         vec![
-            class("rate_limit", &[429], &["qoder_rate_limited", "qoder_model_busy", "10605"]),
+            class("rate_limit", &[429], &["qoder_rate_limited"]),
+            class("rate_limit", &[503, 429], &["qoder_model_busy", "10605"]),
             class("quota", &[], &["qoder_quota_limited"]),
             class("auth", &[401], &["qoder_auth_expired", "105"]),
             class("unsupported", &[403, 501], &["qoder_forbidden"]),

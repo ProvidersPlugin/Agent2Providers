@@ -1,4 +1,4 @@
-//! 原生 Region::Intl 的 Zai/Google 三步协议；所有 POST 只到国际 userapi。
+//! 原生 Region::Intl 的 Zai 三步协议；所有 POST 只到国际 userapi。
 //! Aliyun 票据只能来自通用宿主的真实交互，不能由表单、账号验证码池或 native helper 代填。
 //! 本家原生交换协议没有客户端 code_verifier 字段；不虚构 PKCE，也不改上游授权页 challenge。
 use super::{account, client, endpoints, oauth_urls, profile, util};
@@ -8,38 +8,27 @@ pub const CAPTCHA_CONFIG: &str = "/userapi/overseasv1/oauth-captcha-config";
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Vendor {
     Zai,
-    Google,
 }
 impl Vendor {
     pub fn id(self) -> &'static str {
         match self {
             Self::Zai => "zai",
-            Self::Google => "google",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Zai => "Zai",
-            Self::Google => "Google",
         }
     }
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "zai" => Ok(Self::Zai),
-            "google" => Ok(Self::Google),
-            _ => Err(Error::http(400, "AutoClaw 国际版只支持 Zai 或 Google 授权")),
-        }
-    }
-    fn url_path(self) -> &'static str {
-        match self {
-            Self::Zai => "/userapi/overseasv1/zai-oauth-url",
-            Self::Google => "/userapi/overseasv1/google-oauth-url",
+            _ => Err(Error::http(400, "AutoClaw 国际版只支持 Zai 授权")),
         }
     }
     fn login_path(self) -> &'static str {
         match self {
             Self::Zai => "/userapi/overseasv1/zai-oauth-login",
-            Self::Google => "/userapi/overseasv1/google-oauth-login",
         }
     }
 }
@@ -106,50 +95,6 @@ pub fn captcha_config() -> Result<Value> {
     )
 }
 
-/// 只由当前通用宿主真人交互调用，不接收普通 RPC payload 中的验证码。
-pub fn request_url(
-    vendor: Vendor,
-    navigate: &str,
-    device: &str,
-    captcha: &str,
-    approved_origins: &[String],
-) -> Result<oauth_urls::Authorization> {
-    oauth_urls::navigate(navigate, vendor)?;
-    if device.len() != 64 || !device.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(Error::http(400, "AutoClaw 国际版授权设备标识无效"));
-    }
-    if captcha.is_empty() || !util::printable(captcha, 32 * 1024) || captcha != captcha.trim() {
-        return Err(Error::http(400, "缺少本轮真实完成的 Aliyun 验证结果"));
-    }
-    if approved_origins.is_empty() {
-        return Err(Error::http(503, "主程序尚未批准本轮国际版官方授权页来源"));
-    }
-    let operation = format!("国际 {} 授权地址获取", vendor.label());
-    let payload = client::post(
-        vendor.url_path(),
-        "",
-        &json!({ "source_id": "autoclaw", "device_id": device,
-        "navigate_uri": navigate, "ali_captcha_verify_param": captcha }),
-        &operation,
-    )?;
-    business(&payload, "获取授权地址")?;
-    let raw = payload["data"]["oauth_url"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::http(502, "AutoClaw 国际版没有返回官方授权地址"))?;
-    let authorization = oauth_urls::authorization(raw, vendor, navigate, approved_origins)?;
-    if payload["data"]
-        .get("state")
-        .is_some_and(|value| value.as_str() != Some(authorization.official_state.as_str()))
-    {
-        return Err(Error::http(
-            502,
-            "AutoClaw 官方授权地址与响应中的流程标识不一致",
-        ));
-    }
-    Ok(authorization)
-}
-
 /// 调用者先校验官方完整回调并 CAS 标记换码中；失败后不复用授权码。
 pub fn exchange(
     vendor: Vendor,
@@ -186,7 +131,7 @@ pub fn exchange(
     if token.starts_with("enc:") || refresh.starts_with("enc:") {
         return Err(Error::http(502, "国际版 OAuth 不应返回本机密文凭据"));
     }
-    // Zai / Google 等三方 OAuth 返回的 data.user_id 可能是外部账号 ID，而 AutoClaw 令牌校验与刷新一律以 JWT 中的 user_id 为准。
+    // Zai OAuth 返回的 data.user_id 可能是外部账号 ID，而 AutoClaw 令牌校验与刷新一律以 JWT 中的 user_id 为准。
     let token_user = util::scalar(&util::claims(&token)["user_id"]);
     let user = if token_user.is_empty() {
         util::scalar(&data["user_id"])

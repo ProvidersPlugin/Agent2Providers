@@ -9,9 +9,9 @@
     "login.managed.v1", "login.loopback.v1", "login.captcha.aliyun.v1"
   ],
   "managed_login": {
-    "methods": [0, 1],
-    "loopback_profiles": ["autoclaw-intl.google.v1", "autoclaw-intl.zai.v1"],
-    "authorization_origins": ["https://accounts.google.com"]
+    "methods": [0],
+    "loopback_profiles": ["autoclaw-intl.zai.v1"],
+    "authorization_origins": []
   },
   "helpers": ["desktop.credentials.autoclaw-intl.v1", "desktop.refresh.autoclaw-intl.v1"],
   "origins": ["https://autoglm-api.autoglm.ai"],

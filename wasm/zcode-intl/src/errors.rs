@@ -64,6 +64,31 @@ fn reset(body: &Value) -> Option<i64> {
     })
 }
 
+pub fn version_refused(status: u16, body: &Value) -> bool {
+    if !(200..300).contains(&status) {
+        return false;
+    }
+    let Some(map) = body.as_object() else {
+        return false;
+    };
+    if body["success"] == false || code(body) != Some(0) || !message(body).trim().is_empty() {
+        return false;
+    }
+    !["data", "error", "content", "choices", "result", "usage", "parts", "candidates"]
+        .iter()
+        .any(|key| map.get(*key).is_some_and(|value| !value.is_null()))
+}
+
+pub fn version_refused_error(version: Option<&str>) -> Error {
+    let message = match version.filter(|value| !value.trim().is_empty()) {
+        Some(version) => format!(
+            "ZCode 上游返回空响应（200 code=0），当前请求的客户端版本（{version}）可能已不被上游接受；请在提供商设置中同步最新 ZCode 版本或更新插件后重试"
+        ),
+        None => "ZCode 上游返回空响应（200 code=0），当前请求的客户端版本可能已不被上游接受；请在提供商设置中同步最新 ZCode 版本或更新插件后重试".to_string(),
+    };
+    Error::http(400, message).with_code("zcode_version_refused")
+}
+
 pub fn classify(status: u16, body: &Value) -> Value {
     let code = code(body);
     let raw = message(body).to_ascii_lowercase();
@@ -122,6 +147,12 @@ pub fn classify(status: u16, body: &Value) -> Value {
             failed,
             "ZCode 上游参数校验失败，请核对设备标识与请求格式",
         )
+    } else if version_refused(status, body) {
+        (
+            "fatal",
+            400,
+            "ZCode 上游返回空响应（200 code=0），当前请求的客户端版本可能已不被上游接受；请在提供商设置中同步最新 ZCode 版本或更新插件后重试",
+        )
     } else {
         ("fatal", failed, "ZCode 上游请求未成功")
     };
@@ -129,6 +160,9 @@ pub fn classify(status: u16, body: &Value) -> Value {
 }
 
 pub fn failure(status: u16, body: &Value) -> Error {
+    if version_refused(status, body) {
+        return version_refused_error(None);
+    }
     let classified = classify(status, body);
     let code = code(body);
     let mut error = Error::http(
